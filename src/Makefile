@@ -1,13 +1,15 @@
-BLARNEY_ROOT = $(realpath ../blarney)
+PEBBLES_ROOT = $(realpath ..)
+BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 BLC = $(BLARNEY_ROOT)/Scripts/blc
 
 .PHONY: all
 all:
 	$(BLC) $(BLC_FLAGS) Main.hs -o Pebbles
 	./Pebbles
-	make -C Pebbles-Verilog
+	make -C verilog
 	make -C ../boot
 
 clean:
 	make -C ../boot clean
-	rm -rf *.o *.hi Pebbles Pebbles-Verilog
+	make -C verilog clean
+	rm -rf *.o *.hi Pebbles

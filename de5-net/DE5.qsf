@@ -2245,11 +2245,13 @@ set_instance_assignment -name PLL_COMPENSATION_MODE DIRECT -to u0|mem_if_ddr3_em
 set_global_assignment -name USE_DLL_FREQUENCY_FOR_DQS_DELAY_CHAIN ON
 
 set_global_assignment -name QIP_FILE SoC/synthesis/SoC.qip
-set_global_assignment -name VERILOG_FILE ../../../Verilog/Altera/BlockRAM.v
-set_global_assignment -name VERILOG_FILE ../../../Verilog/Altera/BlockRAMTrueDual.v
+set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAM.v
+set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMTrueDual.v
+set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMBE.v
+set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMTrueDualBE.v
 set_global_assignment -name VERILOG_FILE JTAGUART.v
 set_global_assignment -name VERILOG_FILE PebblesTop.v
-set_global_assignment -name VERILOG_FILE ../Pebbles-Verilog/Pebbles.v
+set_global_assignment -name VERILOG_FILE ../src/verilog/Pebbles.v
 set_global_assignment -name SDC_FILE DE5.sdc
 set_global_assignment -name VERILOG_FILE DE5.v
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top

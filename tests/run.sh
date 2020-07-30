@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export PATH=$PATH:$(realpath ../bin)
+export PEBBLES_ROOT=${PEBBLES_ROOT-$(realpath ..)}
 
-VERILOG=../src/Pebbles-Verilog
+VERILOG=$PEBBLES_ROOT/src/verilog
 
 if [ ! -f "$VERILOG/SimPebbles" ]; then
   echo Please build the simulator first

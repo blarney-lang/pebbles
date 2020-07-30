@@ -1,14 +1,16 @@
-ifndef QUARTUS_ROOTDIR
-  $(error Please set QUARTUS_ROOTDIR)
-endif
+PEBBLES_ROOT ?= $(realpath ..)
 
 .PHONY: one
-one: 
+one: checkenv
+	make -C $(PEBBLES_ROOT)/src
+	make -C $(PEBBLES_ROOT)/boot
 	qsys-generate -syn SoC.qsys
 	quartus_sh --flow compile DE5.qpf
 
 .PHONY: many
-many:
+many: checkenv
+	make -C $(PEBBLES_ROOT)/src
+	make -C $(PEBBLES_ROOT)/boot
 	qsys-generate -syn SoC.qsys
 	quartus_dse DE5.qpf    \
     --num-seeds 7               \
@@ -18,16 +20,16 @@ many:
 	quartus_dse DE5.qpf --report fmax_summary
 
 .PHONY: report
-report:
+report: checkenv
 	quartus_dse DE5.qpf --report utilization
 	quartus_dse DE5.qpf --report fmax_summary
 
 .PHONY: download-sof
-download-sof:
+download-sof: checkenv
 	quartus_pgm -m jtag -o "p;DE5.sof"
 
 .PHONY: update-mif
-update-mif:
+update-mif: checkenv
 	quartus_cdb --update_mif DE5.qpf
 	quartus_asm DE5.qpf
 
@@ -40,3 +42,8 @@ clean: clean-mif
 .PHONY: clean-mif
 clean-mif:
 	rm -f *.mif
+
+# Raise error if QUARTUS_ROOTDIR not set
+.PHONY: checkenv
+checkenv:
+	$(if $(value QUARTUS_ROOTDIR), , $(error Please set QUARTUS_ROOTDIR))

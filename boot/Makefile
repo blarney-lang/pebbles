@@ -1,6 +1,8 @@
-RTL = ../src/Pebbles-Verilog
-QP = ../de5-net
-BIN = ../tests/
+PEBBLES_ROOT ?= $(realpath ..)
+
+RTL = $(PEBBLES_ROOT)/src/verilog
+QP = $(PEBBLES_ROOT)/de5-net
+BIN = $(PEBBLES_ROOT)/tests/
 
 # Binary utilities
 RV_ARCH    = rv32i
@@ -39,7 +41,7 @@ $(QP)/prog.mif: InstrMem.ihex
 
 $(RTL)/data.hex: DataMem.ihex
 	$(BIN)/ihex-to-img.py DataMem.ihex hex $(INSTR_BYTES) 4 $(DATA_BYTES) 1 \
-    > $(RTL)/dat0.hex
+    > $(RTL)/data.hex
 
 $(QP)/data.mif: DataMem.ihex
 	$(BIN)/ihex-to-img.py DataMem.ihex mif $(INSTR_BYTES) 4 $(DATA_BYTES) 1 \
