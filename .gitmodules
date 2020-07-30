@@ -1,0 +1,3 @@
+[submodule "blarney"]
+	path = blarney
+	url = https://github.com/blarney-lang/blarney
