@@ -14,9 +14,9 @@ INSTR_BYTES = 65536
 # Sizes of data memory in words
 DATA_BYTES = 65536
 
-.PHONY: all
-all: $(patsubst %.S,%.code.hex,$(wildcard *.S)) \
-     $(patsubst %.S,%.data.hex,$(wildcard *.S))
+.PHONY: hex-files
+hex-files: $(patsubst %.S,%.code.hex,$(wildcard *.S)) \
+           $(patsubst %.S,%.data.hex,$(wildcard *.S))
 
 %.code.hex: %.code.ihex
 	./ihex-to-img.py $< hex 0 4 $(INSTR_BYTES) 1 > $@
@@ -36,6 +36,10 @@ all: $(patsubst %.S,%.code.hex,$(wildcard *.S)) \
 
 %.o: %.S test_macros.h riscv_test.h encoding.h
 	$(RV_CC) $(CFLAGS) -Wall -c -o $@ $<
+
+.PHONY: test
+test:
+	./run.sh
 
 .PHONY: clean
 clean:

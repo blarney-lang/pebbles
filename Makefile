@@ -8,7 +8,7 @@ sim: blarney-present
 
 .PHONY: test
 test: sim
-	cd tests && ./run.sh
+	make -C tests test
 
 .PHONY: clean
 clean:
