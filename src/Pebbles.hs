@@ -53,15 +53,6 @@ decode =
   , "imm[11:0] rs1<5> 001 rd<5> 1110011" --> "CSRRW"
   ]
 
--- RISCV I pre-execute
--- ===================
-
-preExecute :: State -> Action ()
-preExecute s = do
-  -- Signal late result on a load
-  when (s.opcode `is` ["LOAD"]) do
-    s.late <== true
-
 -- RISCV I execute
 -- ===============
 
@@ -130,6 +121,7 @@ execute csrUnit mem s = do
   let addr = s.opA + s.opBorImm
 
   when (s.opcode `is` ["LOAD"]) do
+    s.late <== true
     dataMemRead mem addr
 
   when (s.opcode `is` ["STORE"]) do
@@ -174,7 +166,6 @@ makePebbles sim uartIn = do
   makeCPUPipeline sim $
     Config {
       decodeTable = decode
-    , preExecRules = preExecute
     , execRules = execute csrUnit mem
     , postExecRules = postExecute mem
     }

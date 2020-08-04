@@ -21,8 +21,6 @@ data Config =
   Config {
     -- Decode table
     decodeTable :: [(String, String)]
-    -- Action for pre-execute stage
-  , preExecRules :: State -> Action ()
     -- Action for execute stage
   , execRules :: State -> Action ()
     -- Action for post-execute stage
@@ -105,47 +103,52 @@ makeCPUPipeline sim c = do
   pc2 :: Reg (Bit 32) <- makeReg dontCare
   pc3 :: Reg (Bit 32) <- makeReg dontCare
 
-  -- Instruction registers for pipeline stages 2 and 3 and 4
+  -- Instruction registers for pipeline stages 2, 3 and 4
   instr2 :: Reg Instr <- makeReg 0
   instr3 :: Reg Instr <- makeReg 0
   instr4 :: Reg Instr <- makeReg 0
 
-  -- Triggers for pipeline stages 2 and 3
-  go2 :: Reg (Bit 1) <- makeDReg 0
-  go3 :: Reg (Bit 1) <- makeDReg 0
-  go4 :: Reg (Bit 1) <- makeDReg 0
+  -- Enablings register for pipeline stages 2, 3, and 4
+  active2 :: Reg (Bit 1) <- makeReg false
+  active3 :: Reg (Bit 1) <- makeReg false
+  active4 :: Reg (Bit 1) <- makeDReg false
 
   always do
     -- Stage 0: Instruction Fetch
     -- ==========================
 
     -- PC to fetch
-    let pcFetch = pcNext.active ?
-                    (pcNext.val, stallWire.val ? (pc1.val, pc1.val + 4))
-    pc1 <== pcFetch
+    let pcFetch = pcNext.active ? (pcNext.val, pc1.val + 4)
 
     -- Index the instruction memory
     let instrAddr = lower (slice @31 @2 pcFetch)
     load instrMem instrAddr
 
-    -- Always trigger stage 1, except on first cycle
-    let go1 :: Bit 1 = reg 0 1
+    -- Handle stall
+    if stallWire.val
+      then instrMem.preserveOut
+      else pc1 <== pcFetch
+
+    -- Stage 1 always active, except on first cycle
+    let active1 :: Bit 1 = reg 0 1
 
     -- Stage 1: Operand Fetch
     -- ======================
 
-    -- Trigger stage 2, except on pipeline flush or stall
-    when go1 do
-      when (pcNext.active.inv .&. stallWire.val.inv) do
-        go2 <== 1
+    if pcNext.active
+      then do
+        -- Disable stage 2 on pipeline flush
+        active2 <== false
+      else do
+        -- Move to stage 2 when not stalling
+        when (stallWire.val.inv) do
+          active2 <== active1
+          instr2  <== instrMem.out
+          pc2     <== pc1.val
 
     -- Fetch operands
-    load regFileA (instrMem.out.srcA)
-    load regFileB (instrMem.out.srcB)
-
-    -- Latch instruction and PC for next stage
-    instr2 <== instrMem.out
-    pc2 <== pc1.val
+    load regFileA (stallWire.val ? (instr2.val.srcA, instrMem.out.srcA))
+    load regFileB (stallWire.val ? (instr2.val.srcB, instrMem.out.srcB))
 
     -- Stage 2: Latch Operands
     -- =======================
@@ -153,19 +156,20 @@ makeCPUPipeline sim c = do
     -- Decode instruction
     let (tagMap, fieldMap) = matchMap False (c.decodeTable) (instr2.val)
 
-    -- Register forwarding logic
-    let forward rS other =
+    -- Register forwarding from stage 3
+    let forward3 rS other =
          (resultWire.active .&. (instr3.val.dst .==. instr2.val.rS)) ?
          (resultWire.val, other)
 
-    let forward' rS other =
+    -- Register forwarding from stage 4
+    let forward4 rS other =
          (finalResultWire.active .&.
            (instr4.val.dst .==. instr2.val.rS)) ?
              (finalResultWire.val, other)
 
     -- Register forwarding
-    let a = forward srcA (forward' srcA (regFileA.out))
-    let b = forward srcB (forward' srcB (regFileB.out))
+    let a = forward3 srcA (forward4 srcA (regFileA.out))
+    let b = forward3 srcB (forward4 srcB (regFileB.out))
 
     -- Use "imm" field if valid, otherwise use register b
     let bOrImm = if Map.member "imm" fieldMap
@@ -178,36 +182,17 @@ makeCPUPipeline sim c = do
     regB <== b
     regBorImm <== bOrImm
 
-    -- State for pre-execute stage
-    let state = State {
-            instr = instr2.val
-          , opA = a
-          , opB = b
-          , opBorImm = bOrImm
-          , pc = ReadWrite (pc2.val) (error "Can't write PC in pre-execute")
-          , result = error "Can't write result in pre-execute"
-          , late = WriteOnly (lateWire <==)
-          , opcode = tagMap
-          , fields = fieldMap
-          }
-
-    -- Pre-execute action
-    when (go2.val) do
-      preExecRules c state
-
-    -- Pipeline stall
-    when (lateWire.val) do
-      when ((instrMem.out.srcA .==. instr2.val.dst) .|.
-            (instrMem.out.srcB .==. instr2.val.dst)) do
-        stallWire <== true
-
     -- Latch instruction and PC for next stage
     instr3 <== instr2.val
     pc3 <== pc2.val
 
-    -- Trigger stage 3, except on pipeline flush
-    when (pcNext.active.inv) do
-      go3 <== go2.val
+    if pcNext.active
+      then do
+        -- Disable stage 3 on pipeline flush
+        active3 <== false
+      else do
+        -- Enable stage 3 when there's no pipeline stall
+        active3 <== active2.val .&. stallWire.val.inv
 
     -- Stage 3: Execute
     -- ================
@@ -227,15 +212,21 @@ makeCPUPipeline sim c = do
           , result = WriteOnly $ \x ->
                        when (instr3.val.dst .!=. 0) do
                          resultWire <== x
-          , late = error "Cant write late signal in execute"
+          , late = WriteOnly (lateWire <==)
           , opcode = tagMap3
           , fields = fieldMap3
           }
 
     -- Execute action
-    when (go3.val) do
+    when (active3.val) do
       execRules c state
-      go4 <== go3.val
+      active4 <== true
+
+    -- Pipeline stall
+    when (lateWire.val) do
+      when ((instr2.val.srcA .==. instr3.val.dst) .|.
+            (instr2.val.srcB .==. instr3.val.dst)) do
+        stallWire <== true
 
     instr4 <== instr3.val
 
@@ -262,7 +253,7 @@ makeCPUPipeline sim c = do
           }
 
     -- Post-execute rules
-    when (go4.val) do
+    when (active4.val) do
       postExecRules c state
 
     -- Determine final result

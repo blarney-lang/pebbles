@@ -8,7 +8,7 @@ The 5 pipeline stages are:
 
   1. Intruction Fetch
   2. Operand Fetch
-  3. Operand Latch (also: pre-execute)
+  3. Operand Latch
   4. Execute
   5. Writeback (also: post-execute)
 
@@ -24,7 +24,7 @@ This is achieved by parameterising the pipeline by:
   * Three functions to extract the two source registers and the 
     destination register from a three-operand instruction.
   * Three sets of (pattern, rule) pairs that are applied to the
-    instruction in the pre-execute, execute, and post-execute stages.
+    instruction in the execute, and post-execute stages.
 
 Each rule is passed the pipeline state, which is used by the rule to
 communicate with the pipeline.  This state contains the following
@@ -39,7 +39,7 @@ fields:
     written, to modify the program counter.
     If unwritten, the pipeline implicity updates the program counter
     to point to the next instruction in memory.
-  * `late`, available in the pre-execute stage only.  Pulsing this
+  * `late`, available in the execute stage only.  Pulsing this
     wire tells the pipeline that the result of the instruction will be
     determined *late*, in the post-execute stage rather than the execute
     stage.
