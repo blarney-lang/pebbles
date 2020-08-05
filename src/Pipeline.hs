@@ -1,6 +1,7 @@
 module Pipeline where
 
--- 5-stage pipeline for 32-bit 3-operand register-based CPU.
+-- 32-bit, 5-stage, scalar, in-order pipeline
+-- with register-forwarding and static branch prediction
 
 import Blarney
 import Blarney.Option
@@ -16,18 +17,24 @@ type RegId = Bit 5
 -- Instruction memory size
 type InstrAddr = Bit 14
 
+-- Data memory size
+type DataAddrBits = 14
+
+-- Implement data memory as block RAM with byte-enables
+type DataMem = RAMBE DataAddrBits 4
+
 -- Pipeline configuration
 data Config =
   Config {
     -- Decode table
-    decodeTable :: [(String, String)]
+    decodeStage :: [(String, String)]
     -- Action for execute stage
-  , execRules :: State -> Action ()
-    -- Action for post-execute stage
-  , postExecRules :: State -> Action ()
+  , executeStage :: State -> Action ()
+    -- Action for memory-response stage
+  , memResponseStage :: State -> Bit 32 -> Action ()
   }
 
--- Pipeline state, visisble to the ISA
+-- Pipeline state, visisble to the instruction set
 data State =
   State {
     -- Current instruction
@@ -40,8 +47,9 @@ data State =
   , pc :: ReadWrite (Bit 32)
     -- Write the instruction result
   , result :: WriteOnly (Bit 32)
-    -- Indicate late result (i.e. computed in writeback rather than execute)
-  , late :: WriteOnly (Bit 1)
+    -- Memory access methods
+  , memLoad :: Bit 32 -> Action ()
+  , memStore :: Bit 32 -> Bit 4 -> Bit 32 -> Action ()
     -- Result of instruction decode
   , opcode :: TagMap String
   , fields :: FieldMap
@@ -57,10 +65,10 @@ is m (key:keys) =
     Just b -> b .|. is m keys
 
 -- Pipeline
-makeCPUPipeline :: Bool -> Config -> Module ()
-makeCPUPipeline sim c = do
+makePipeline :: Bool -> Config -> Module ()
+makePipeline sim c = do
   -- Compute field selector functions from decode table
-  let selMap = matchSel (c.decodeTable)
+  let selMap = matchSel (c.decodeStage)
 
   -- Functions for extracting register ids from an instruction
   let srcA :: Instr -> RegId = getFieldSel selMap "rs1"
@@ -70,6 +78,9 @@ makeCPUPipeline sim c = do
   -- Instruction memory
   let ext = if sim then ".hex" else ".mif"
   instrMem :: RAM InstrAddr Instr <- makeRAMInit ("prog" ++ ext)
+
+  -- Data memory
+  dataMem :: DataMem <- makeRAMInitBE ("data" ++ ext)
 
   -- Two block RAMs allows two operands to be read,
   -- and one result to be written, on every cycle
@@ -94,10 +105,6 @@ makeCPUPipeline sim c = do
   lateWire :: Wire (Bit 1) <- makeWire 0
   stallWire :: Wire (Bit 1) <- makeWire 0
 
-  -- Cycle counter
-  count :: Reg (Bit 32) <- makeReg 0
-  always (count <== count.val + 1)
-
   -- Program counters for each pipeline stage
   pc1 :: Reg (Bit 32) <- makeReg 0xfffffffc
   pc2 :: Reg (Bit 32) <- makeReg dontCare
@@ -108,7 +115,7 @@ makeCPUPipeline sim c = do
   instr3 :: Reg Instr <- makeReg 0
   instr4 :: Reg Instr <- makeReg 0
 
-  -- Enablings register for pipeline stages 2, 3, and 4
+  -- Stage-active registers for pipeline stages 2, 3, and 4
   active2 :: Reg (Bit 1) <- makeReg false
   active3 :: Reg (Bit 1) <- makeReg false
   active4 :: Reg (Bit 1) <- makeDReg false
@@ -154,7 +161,7 @@ makeCPUPipeline sim c = do
     -- =======================
 
     -- Decode instruction
-    let (tagMap, fieldMap) = matchMap False (c.decodeTable) (instr2.val)
+    let (tagMap, fieldMap) = matchMap False (c.decodeStage) (instr2.val)
 
     -- Register forwarding from stage 3
     let forward3 rS other =
@@ -212,15 +219,19 @@ makeCPUPipeline sim c = do
           , result = WriteOnly $ \x ->
                        when (instr3.val.dst .!=. 0) do
                          resultWire <== x
-          , late = WriteOnly (lateWire <==)
+          , memLoad = \a -> do
+              lateWire <== true
+              active4 <== true
+              loadBE dataMem (lower (upper a :: Bit 30))
+          , memStore = \a be d -> do
+              storeBE dataMem (lower (upper a :: Bit 30)) be d
           , opcode = tagMap3
           , fields = fieldMap3
           }
 
     -- Execute action
     when (active3.val) do
-      execRules c state
-      active4 <== true
+      executeStage c state
 
     -- Pipeline stall
     when (lateWire.val) do
@@ -237,24 +248,25 @@ makeCPUPipeline sim c = do
     let tagMap4 = Map.map buffer tagMap3
     let fieldMap4 = Map.map bufferField fieldMap3
 
-    -- State for post-execute stage
+    -- State for memory response stage
     let state = State {
             instr = instr4.val
           , opA = regA.val.old
           , opB = regB.val.old
           , opBorImm = regBorImm.val.old
-          , pc = error "Can't access PC in post-execute"
+          , pc = error "Can't access PC in mem response"
           , result = WriteOnly $ \x ->
                        when (instr4.val.dst .!=. 0) do
                          postResultWire <== x
-          , late = error "Can't write late signal in post-execute"
+          , memLoad = error "Can't issue load in memory response stage"
+          , memStore = error "Can't issue store in memory response stage"
           , opcode = tagMap4
           , fields = fieldMap4
           }
 
-    -- Post-execute rules
+    -- Memory response stage
     when (active4.val) do
-      postExecRules c state
+      memResponseStage c state (dataMem.outBE)
 
     -- Determine final result
     let rd = instr4.val.dst

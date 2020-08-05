@@ -9,11 +9,10 @@ import Blarney.BitScan
 -- Pebbles imports
 import CSR
 import Trap
-import DataMem
 import Pipeline
 
--- RISCV I decode
--- ==============
+-- RISC-V I Decode
+-- ===============
 
 decode =
   [ "imm[31:12] rd<5> 0110111" --> "LUI"
@@ -53,11 +52,11 @@ decode =
   , "imm[11:0] rs1<5> 001 rd<5> 1110011" --> "CSRRW"
   ]
 
--- RISCV I execute
--- ===============
+-- RISC-V I Execute
+-- ================
 
-execute :: CSRUnit -> DataMem -> State -> Action ()
-execute csrUnit mem s = do
+execute :: CSRUnit -> State -> Action ()
+execute csrUnit s = do
   -- 33-bit add/sub/compare
   let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
   let addA = (uns ? (0, at @31 (s.opA))) # s.opA
@@ -118,15 +117,16 @@ execute csrUnit mem s = do
   when (s.opcode `is` ["JAL", "JALR"]) do
     s.result <== s.pc.val + 4
 
-  let addr = s.opA + s.opBorImm
+  -- Memory access
+  let memAddr = s.opA + s.opBorImm
+  let memAccessWidth = getField (s.fields) "aw"
 
   when (s.opcode `is` ["LOAD"]) do
-    s.late <== true
-    dataMemRead mem addr
+    memLoad s memAddr
 
   when (s.opcode `is` ["STORE"]) do
-    let accessWidth = getField (s.fields) "aw"
-    dataMemWrite mem (accessWidth.val) addr (s.opB)
+    let byteEn = genByteEnable (memAccessWidth.val) memAddr
+    memStore s memAddr byteEn (writeAlign (memAccessWidth.val) (s.opB))
 
   when (s.opcode `is` ["FENCE"]) do
     noAction
@@ -141,33 +141,90 @@ execute csrUnit mem s = do
     readCSR csrUnit (s.opBorImm.truncate) (s.result)
     writeCSR csrUnit (s.opBorImm.truncate) (s.opA)
 
--- RISCV I post-execute
--- ====================
+-- RISCV I memory access helpers
+-- =============================
 
-postExecute :: DataMem -> State -> Action ()
-postExecute mem s = do
-  let unsignedLoad = getField (s.fields) "ul"
-  let accessWidth = getField (s.fields) "aw"
+-- RV32I memory access width
+type AccessWidth = Bit 2
 
-  when (s.opcode `is` ["LOAD"]) do
-    s.result <== readMux mem (s.opA + s.opBorImm)
-                   (accessWidth.val) (unsignedLoad.val)
+-- Byte, half-word, or word access?
+isByteAccess, isHalfAccess, isWordAccess :: AccessWidth -> Bit 1
+isByteAccess = (.==. 0b00)
+isHalfAccess = (.==. 0b01)
+isWordAccess = (.==. 0b10)
 
--- RV32I CPU, with UART input and output channels
+-- Determine byte enables given access-width and address
+genByteEnable :: AccessWidth -> Bit 32 -> Bit 4
+genByteEnable w addr =
+  select [
+    isWordAccess w --> 0b1111
+  , isHalfAccess w --> (a.==.2) # (a.==.2) # (a.==.0) # (a.==.0)
+  , isByteAccess w --> (a.==.3) # (a.==.2) # (a.==.1) # (a.==.0)
+  ]
+  where a :: Bit 2 = truncate addr
+
+-- Align write-data using access-width
+writeAlign :: AccessWidth -> Bit 32 -> Bit 32
+writeAlign w d =
+  select [
+    isWordAccess w --> b3 # b2 # b1 # b0
+  , isHalfAccess w --> b1 # b0 # b1 # b0
+  , isByteAccess w --> b0 # b0 # b0 # b0
+  ]
+  where
+    b0 = slice @7 @0 d
+    b1 = slice @15 @8 d
+    b2 = slice @23 @16 d
+    b3 = slice @31 @24 d
+
+-- Determine result of load from memory response
+loadMux :: Bit 32 -> Bit 32 -> AccessWidth -> Bit 1 -> Bit 32
+loadMux respData addr w isUnsigned =
+    select [
+      isWordAccess w --> b3 # b2 # b1 # b0
+    , isHalfAccess w --> hExt # h
+    , isByteAccess w --> bExt # b
+    ]
+  where
+    a = lower addr :: Bit 2
+    b = select [
+          a .==. 0 --> b0
+        , a .==. 1 --> b1
+        , a .==. 2 --> b2
+        , a .==. 3 --> b3
+        ]
+    h = (at @1 a .==. 0) ? (b1 # b0, b3 # b2)
+    bExt = isUnsigned ? (0, signExtend (at @7 b))
+    hExt = isUnsigned ? (0, signExtend (at @15 h))
+    b0 = slice @7 @0 respData
+    b1 = slice @15 @8 respData
+    b2 = slice @23 @16 respData
+    b3 = slice @31 @24 respData
+
+-- RISCV I memory response
+-- =======================
+
+memResponse :: State -> Bit 32 -> Action ()
+memResponse s respData = do
+  let isUnsignedLoad = getField (s.fields) "ul"
+  let memAccessWidth = getField (s.fields) "aw"
+  s.result <== loadMux respData (s.opA + s.opBorImm)
+                 (memAccessWidth.val) (isUnsignedLoad.val)
+
+-- RV32I core with UART input and output channels
+-- ==============================================
+
 makePebbles :: Bool -> Stream (Bit 8) -> Module (Stream (Bit 8))
 makePebbles sim uartIn = do
-  -- Tightly-coupled data memory
-  mem <- makeDataMem sim
-
   -- CSR unit
   (uartOut, csrUnit) <- makeCSRUnit uartIn
 
-  -- CPU pipeline
-  makeCPUPipeline sim $
+  -- Processor pipeline
+  makePipeline sim $
     Config {
-      decodeTable = decode
-    , execRules = execute csrUnit mem
-    , postExecRules = postExecute mem
+      decodeStage = decode
+    , executeStage = execute csrUnit
+    , memResponseStage = memResponse
     }
 
   return uartOut
