@@ -3,10 +3,16 @@ module Pipeline where
 -- 32-bit, 5-stage, scalar, in-order pipeline
 -- with register-forwarding and static branch prediction
 
+-- General imports
 import Blarney
+import Blarney.Queue
 import Blarney.Option
+import Blarney.Stream
 import Blarney.BitScan
 import qualified Data.Map as Map
+
+-- Local imports
+import DataMem
 
 -- Instructions
 type Instr = Bit 32
@@ -16,12 +22,6 @@ type RegId = Bit 5
 
 -- Instruction memory size
 type InstrAddr = Bit 14
-
--- Data memory size
-type DataAddrBits = 14
-
--- Implement data memory as block RAM with byte-enables
-type DataMem = RAMBE DataAddrBits 4
 
 -- Pipeline configuration
 data Config =
@@ -55,18 +55,9 @@ data State =
   , fields :: FieldMap
   }
 
--- Helper function for determining opcode
-infix 8 `is`
-is :: (Ord tag, Show tag) => TagMap tag -> [tag] -> Bit 1
-is m [] = false
-is m (key:keys) =
-  case Map.lookup key m of
-    Nothing -> error ("Unknown opcode " ++ show key)
-    Just b -> b .|. is m keys
-
 -- Pipeline
-makePipeline :: Bool -> Config -> Module ()
-makePipeline sim c = do
+makePipeline :: Bool -> Config -> Stream MemResp -> Module (Stream MemReq)
+makePipeline sim c memResps = do
   -- Compute field selector functions from decode table
   let selMap = matchSel (c.decodeStage)
 
@@ -79,9 +70,6 @@ makePipeline sim c = do
   let ext = if sim then ".hex" else ".mif"
   instrMem :: RAM InstrAddr Instr <- makeRAMInit ("prog" ++ ext)
 
-  -- Data memory
-  dataMem :: DataMem <- makeRAMInitBE ("data" ++ ext)
-
   -- Two block RAMs allows two operands to be read,
   -- and one result to be written, on every cycle
   regFileA :: RAM RegId (Bit 32) <- makeDualRAMForward 0
@@ -92,18 +80,29 @@ makePipeline sim c = do
   regB :: Reg (Bit 32) <- makeReg dontCare
   regBorImm :: Reg (Bit 32) <- makeReg dontCare
 
-  -- Wire used to overidge the update to the PC,
-  -- in case of a branch instruction
+  -- Wire used to override the update to the PC,
+  -- in case of a branch instruction,
+  -- which also triggers a pipeline flush
   pcNext :: Wire (Bit 32) <- makeWire dontCare
+
+  -- Pipeline stall
+  stallWire :: Wire (Bit 1) <- makeWire 0
+
+  -- Invariant: pipeline stall and flush should never happen at same time
+  always do
+    when (stallWire.val .&. pcNext.active) do
+      display "Pipeline assertion failed: simultaneous stall and flush"
 
   -- Result of the execute stage
   resultWire :: Wire (Bit 32) <- makeWire dontCare
-  postResultWire :: Wire (Bit 32) <- makeWire dontCare
+  memRespResultWire :: Wire (Bit 32) <- makeWire dontCare
   finalResultWire :: Wire (Bit 32) <- makeWire dontCare
 
-  -- Pipeline stall
-  lateWire :: Wire (Bit 1) <- makeWire 0
-  stallWire :: Wire (Bit 1) <- makeWire 0
+  -- Memory request queue
+  memReqQueue :: Queue MemReq <- makeBypassQueue
+
+  -- Is there a request in flight?
+  memReqInFlight :: Reg (Bit 1) <- makeReg false
 
   -- Program counters for each pipeline stage
   pc1 :: Reg (Bit 32) <- makeReg 0xfffffffc
@@ -118,7 +117,6 @@ makePipeline sim c = do
   -- Stage-active registers for pipeline stages 2, 3, and 4
   active2 :: Reg (Bit 1) <- makeReg false
   active3 :: Reg (Bit 1) <- makeReg false
-  active4 :: Reg (Bit 1) <- makeDReg false
 
   always do
     -- Stage 0: Instruction Fetch
@@ -184,15 +182,21 @@ makePipeline sim c = do
                         in imm.valid ? (imm.val, b)
                    else b
 
-    -- Latch operands
-    regA <== a
-    regB <== b
-    regBorImm <== bOrImm
+    when (stallWire.val.inv) do
+      -- Latch operands
+      regA <== a
+      regB <== b
+      regBorImm <== bOrImm
 
-    -- Latch instruction and PC for next stage
-    instr3 <== instr2.val
-    pc3 <== pc2.val
+      -- Latch instruction and PC for next stage
+      instr3 <== instr2.val
+      pc3 <== pc2.val
 
+    -- Stall on back-pressure from memory subsystem
+    when (memReqQueue.notFull.inv) do
+      stallWire <== true
+
+    -- Enable execute stage?
     if pcNext.active
       then do
         -- Disable stage 3 on pipeline flush
@@ -205,9 +209,11 @@ makePipeline sim c = do
     -- ================
 
     -- Buffer the decode tables
-    let bufferField opt = Option (buffer (opt.valid)) (map buffer (opt.val))
-    let tagMap3 = Map.map buffer tagMap
-    let fieldMap3 = Map.map bufferField fieldMap
+    let bufferEn = delayEn dontCare
+    let bufferField en opt =
+          Option (bufferEn en (opt.valid)) (map (bufferEn en) (opt.val))
+    let tagMap3 = Map.map (bufferEn (active2.val)) tagMap
+    let fieldMap3 = Map.map (bufferField (active2.val)) fieldMap
 
     -- State for execute stage
     let state = State {
@@ -220,33 +226,38 @@ makePipeline sim c = do
                        when (instr3.val.dst .!=. 0) do
                          resultWire <== x
           , memLoad = \a -> do
-              lateWire <== true
-              active4 <== true
-              loadBE dataMem (lower (upper a :: Bit 30))
+              let req = MemReq {
+                          memReqIsStore = false
+                        , memReqAddr    = a
+                        , memReqByteEn  = dontCare
+                        , memReqData    = dontCare
+                        }
+              enq memReqQueue req
+              memReqInFlight <== true
+              stallWire <== true
           , memStore = \a be d -> do
-              storeBE dataMem (lower (upper a :: Bit 30)) be d
+              let req = MemReq {
+                          memReqIsStore = true
+                        , memReqAddr    = a
+                        , memReqByteEn  = be
+                        , memReqData    = d
+                        }
+              enq memReqQueue req
           , opcode = tagMap3
           , fields = fieldMap3
           }
 
-    -- Execute action
+    -- Execute stage
     when (active3.val) do
       executeStage c state
-
-    -- Pipeline stall
-    when (lateWire.val) do
-      when ((instr2.val.srcA .==. instr3.val.dst) .|.
-            (instr2.val.srcB .==. instr3.val.dst)) do
-        stallWire <== true
-
-    instr4 <== instr3.val
+      instr4 <== instr3.val
 
     -- Stage 4: Writeback
     -- ==================
 
     -- Buffer the decode tables
-    let tagMap4 = Map.map buffer tagMap3
-    let fieldMap4 = Map.map bufferField fieldMap3
+    let tagMap4 = Map.map (bufferEn (active3.val)) tagMap3
+    let fieldMap4 = Map.map (bufferField (active3.val)) fieldMap3
 
     -- State for memory response stage
     let state = State {
@@ -254,10 +265,10 @@ makePipeline sim c = do
           , opA = regA.val.old
           , opB = regB.val.old
           , opBorImm = regBorImm.val.old
-          , pc = error "Can't access PC in mem response"
+          , pc = error "Can't access PC in memory response stage"
           , result = WriteOnly $ \x ->
                        when (instr4.val.dst .!=. 0) do
-                         postResultWire <== x
+                         memRespResultWire <== x
           , memLoad = error "Can't issue load in memory response stage"
           , memStore = error "Can't issue store in memory response stage"
           , opcode = tagMap4
@@ -265,17 +276,26 @@ makePipeline sim c = do
           }
 
     -- Memory response stage
-    when (active4.val) do
-      memResponseStage c state (dataMem.outBE)
+    if memResps.canPeek
+      then do
+        memResps.consume
+        memResponseStage c state (memResps.peek)
+        memReqInFlight <== false
+      else do
+        -- Stall while waiting for response
+        when (memReqInFlight.val) do
+          stallWire <== true
 
     -- Determine final result
     let rd = instr4.val.dst
-    when (postResultWire.active) do
-      finalResultWire <== postResultWire.val
-    when (postResultWire.active.inv .&. delay 0 (resultWire.active)) do
+    when (memRespResultWire.active) do
+      finalResultWire <== memRespResultWire.val
+    when (memRespResultWire.active.inv .&. delay 0 (resultWire.active)) do
       finalResultWire <== resultWire.val.old
 
     -- Writeback
     when (finalResultWire.active) do
       store regFileA rd (finalResultWire.val)
       store regFileB rd (finalResultWire.val)
+
+    return (memReqQueue.toStream)

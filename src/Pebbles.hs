@@ -9,6 +9,7 @@ import Blarney.BitScan
 -- Pebbles imports
 import CSR
 import Trap
+import DataMem
 import Pipeline
 
 -- RISC-V I Decode
@@ -215,16 +216,20 @@ memResponse s respData = do
 -- ==============================================
 
 makePebbles :: Bool -> Stream (Bit 8) -> Module (Stream (Bit 8))
-makePebbles sim uartIn = do
+makePebbles sim uartIn = mdo
   -- CSR unit
   (uartOut, csrUnit) <- makeCSRUnit uartIn
 
+  -- Data tightly-coupled memory
+  memResps <- makeDTCM sim memReqs
+
   -- Processor pipeline
-  makePipeline sim $
-    Config {
-      decodeStage = decode
-    , executeStage = execute csrUnit
-    , memResponseStage = memResponse
-    }
+  let config =
+        Config {
+          decodeStage = decode
+        , executeStage = execute csrUnit
+        , memResponseStage = memResponse
+        }
+  memReqs <- makePipeline sim config memResps
 
   return uartOut
