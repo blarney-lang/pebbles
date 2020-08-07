@@ -234,6 +234,8 @@ makePipeline sim c memResps = do
                         }
               enq memReqQueue req
               memReqInFlight <== true
+              -- In future, we could allow independent instructions to
+              -- bypass multi-cycle load instructions
               stallWire <== true
           , memStore = \a be d -> do
               let req = MemReq {
