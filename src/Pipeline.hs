@@ -32,7 +32,23 @@ data Config =
   , executeStage :: State -> Action ()
     -- Action for memory-response stage
   , memResponseStage :: State -> Bit 32 -> Action ()
+    -- Resumption for multi-cycle instructions
+  , resumeStage :: Stream ResumeReq
   }
+
+-- Identifier for instruction suspension/resumption
+-- For this scalar pipeline, we only allow one suspended instruction
+-- at a time, so use the id to store destination register
+type InstrId = RegId
+
+-- Resume request to pipeline for multi-cycle instructions
+data ResumeReq =
+  ResumeReq {
+    -- Unique identifier that was given by the suspend call
+    resumeReqId :: InstrId
+    -- Data representing the result of the suspended operation
+  , resumeReqData :: Bit 32
+  } deriving (Generic, Bits)
 
 -- Pipeline state, visisble to the instruction set
 data State =
@@ -50,10 +66,22 @@ data State =
     -- Memory access methods
   , memLoad :: Bit 32 -> Action ()
   , memStore :: Bit 32 -> Bit 4 -> Bit 32 -> Action ()
+    -- Call this to implement a multi-cycle instruction
+    -- Results are returned via resume stage
+  , suspend :: Action InstrId
+    -- Call this if instruction cannot currently be executed
+    -- (Perhaps resources are not currently available)
+  , retry :: Action ()
     -- Result of instruction decode
   , opcode :: TagMap String
   , fields :: FieldMap
   }
+
+-- TODO: implement suspend+retry methods, and resume stage
+--   stall on suspend
+--   stall on retry, but reinvoke execute stage
+--   consume resume reqs in writeback
+-- TODO: implement load/store via suspend+retry+resume?
 
 -- Pipeline
 makePipeline :: Bool -> Config -> Stream MemResp -> Module (Stream MemReq)

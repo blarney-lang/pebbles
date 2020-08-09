@@ -15,7 +15,7 @@ import Pipeline
 -- RISC-V I Decode
 -- ===============
 
-decode =
+decodeI =
   [ "imm[31:12] rd<5> 0110111" --> "LUI"
   , "imm[31:12] rd<5> 0010111" --> "AUIPC"
   , "imm[11:0] rs1<5> 000 rd<5> 0010011" --> "ADD"
@@ -56,8 +56,8 @@ decode =
 -- RISC-V I Execute
 -- ================
 
-execute :: CSRUnit -> State -> Action ()
-execute csrUnit s = do
+executeI :: CSRUnit -> State -> Action ()
+executeI csrUnit s = do
   -- 33-bit add/sub/compare
   let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
   let addA = (uns ? (0, at @31 (s.opA))) # s.opA
@@ -142,8 +142,8 @@ execute csrUnit s = do
     readCSR csrUnit (s.opBorImm.truncate) (s.result)
     writeCSR csrUnit (s.opBorImm.truncate) (s.opA)
 
--- RISCV I memory access helpers
--- =============================
+-- RISC-V I memory access helpers
+-- ==============================
 
 -- RV32I memory access width
 type AccessWidth = Bit 2
@@ -202,15 +202,104 @@ loadMux respData addr w isUnsigned =
     b2 = slice @23 @16 respData
     b3 = slice @31 @24 respData
 
--- RISCV I memory response
--- =======================
+-- RISC-V I memory response
+-- ========================
 
-memResponse :: State -> Bit 32 -> Action ()
-memResponse s respData = do
+memResponseI :: State -> Bit 32 -> Action ()
+memResponseI s respData = do
   let isUnsignedLoad = getField (s.fields) "ul"
   let memAccessWidth = getField (s.fields) "aw"
   s.result <== loadMux respData (s.opA + s.opBorImm)
                  (memAccessWidth.val) (isUnsignedLoad.val)
+
+-- RISC-V M extension
+-- ==================
+
+-- TODO: implement division insructions too
+
+decodeM =
+  [ "0000001 rs2<5> rs1<5> 0 mul<2> rd<5> 0110011" --> "MUL"
+  ]
+
+-- Request to multiplier unit
+data MulReq =
+  MulReq {
+    -- Unique identifier from pipeline
+    mulReqId :: InstrId
+    -- Operands to multiply
+  , mulReqA :: Bit 32
+  , mulReqB :: Bit 32
+    -- Do we want the lower (or upper) bits of the result?
+  , mulReqLower :: Bit 1
+    -- Are the operands signed or unsigned?
+  , mulReqUnsignedA :: Bit 1
+  , mulReqUnsignedB :: Bit 1
+  } deriving (Generic, Bits)
+
+-- Multiplier unit interface
+data MulUnit =
+  MulUnit {
+    canMul :: Bit 1
+  , enqMul :: MulReq -> Action ()
+  , resumeMul :: Stream ResumeReq
+  }
+
+-- Multiplier unit (half throughput to save area)
+-- To get a DSP multiplier, inputs and outputs must be registered
+-- We assume the two input operands are already registered
+makeMulUnit :: Module MulUnit
+makeMulUnit = do
+  -- Registers for request and result
+  reqReg <- makeReg dontCare
+  resultReg <- makeReg dontCare
+
+  -- Do we have space to store the result?
+  fullReg <- makeReg false
+
+  return
+    MulUnit {
+      canMul = full.val.inv
+    , enqMul = \req -> do
+       let msbA = bit @31 (req.mulReqA)
+       let msbB = bit @31 (req.mulReqB)
+       let extA = mulReqUnsignedA ? (0, msbA)
+       let extB = mulReqUnsignedA ? (0, msbB)
+       let mulA = signExtend (extA # req.mulReqA) :: Bit 64
+       let mulB = signExtend (extB # req.mulReqB) :: Bit 64
+       reqReg <== req
+       resultReg <== mulA * mulB
+       fullReg <== true
+    , resumeMul =
+        Source {
+          peek = 
+            ResumeReq {
+              resumeReqId = reqReg.val.id
+            , resumeReqData = reqREg.val.mulReqLower ?
+                (result.lower, result.upper)
+            }
+        , canPeek = fullReg.val
+        , consume = fullReg <== false
+        }
+    }
+
+-- Execute state for M extension
+executeM :: State -> MulUnit -> Action ()
+executeM s mulUnit = do
+    when (s.opcode `is` ["MUL"]) do
+      if mulUnit.canMul
+        then do
+          id <- s.suspend
+          let mulInfo :: Bit 2 = getField (s.fields) "mul"
+          enqMul mulUnit
+            MulReq {
+              mulReqId = id
+            , mulReqA = s.opA
+            , mulReqB = s.opB
+            , mulReqLower = mulInfo .==. 0b00
+            , mulReqUnsignedA = mulInfo .==. 0b11
+            , mulReqUnsignedB = bit @1 mulInfo
+            }
+        else s.retry
 
 -- RV32I core with UART input and output channels
 -- ==============================================
@@ -226,9 +315,9 @@ makePebbles sim uartIn = mdo
   -- Processor pipeline
   let config =
         Config {
-          decodeStage = decode
-        , executeStage = execute csrUnit
-        , memResponseStage = memResponse
+          decodeStage = decodeI
+        , executeStage = executeI csrUnit
+        , memResponseStage = memResponseI
         }
   memReqs <- makePipeline sim config memResps
 
