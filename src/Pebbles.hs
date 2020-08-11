@@ -4,6 +4,7 @@ module Pebbles where
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+import Blarney.Option
 import Blarney.BitScan
 
 -- Pebbles imports
@@ -215,7 +216,7 @@ memResponseI s respData = do
 -- RISC-V M extension
 -- ==================
 
--- TODO: implement division insructions too
+-- TODO: implement division instructions too
 
 decodeM =
   [ "0000001 rs2<5> rs1<5> 0 mul<2> rd<5> 0110011" --> "MUL"
@@ -258,24 +259,24 @@ makeMulUnit = do
 
   return
     MulUnit {
-      canMul = full.val.inv
+      canMul = fullReg.val.inv
     , enqMul = \req -> do
-       let msbA = bit @31 (req.mulReqA)
-       let msbB = bit @31 (req.mulReqB)
-       let extA = mulReqUnsignedA ? (0, msbA)
-       let extB = mulReqUnsignedA ? (0, msbB)
+       let msbA = at @31 (req.mulReqA)
+       let msbB = at @31 (req.mulReqB)
+       let extA = req.mulReqUnsignedA ? (0, msbA)
+       let extB = req.mulReqUnsignedB ? (0, msbB)
        let mulA = signExtend (extA # req.mulReqA) :: Bit 64
        let mulB = signExtend (extB # req.mulReqB) :: Bit 64
        reqReg <== req
-       resultReg <== mulA * mulB
+       resultReg <== mulA .*. mulB
        fullReg <== true
     , resumeMul =
         Source {
           peek = 
             ResumeReq {
-              resumeReqId = reqReg.val.id
-            , resumeReqData = reqREg.val.mulReqLower ?
-                (result.lower, result.upper)
+              resumeReqId = reqReg.val.mulReqId
+            , resumeReqData = reqReg.val.mulReqLower ?
+                (resultReg.val.lower, resultReg.val.upper)
             }
         , canPeek = fullReg.val
         , consume = fullReg <== false
@@ -283,21 +284,21 @@ makeMulUnit = do
     }
 
 -- Execute state for M extension
-executeM :: State -> MulUnit -> Action ()
-executeM s mulUnit = do
+executeM :: MulUnit -> State -> Action ()
+executeM mulUnit s = do
     when (s.opcode `is` ["MUL"]) do
       if mulUnit.canMul
         then do
           id <- s.suspend
-          let mulInfo :: Bit 2 = getField (s.fields) "mul"
+          let mulInfo :: Option (Bit 2) = getField (s.fields) "mul"
           enqMul mulUnit
             MulReq {
               mulReqId = id
             , mulReqA = s.opA
             , mulReqB = s.opB
-            , mulReqLower = mulInfo .==. 0b00
-            , mulReqUnsignedA = mulInfo .==. 0b11
-            , mulReqUnsignedB = bit @1 mulInfo
+            , mulReqLower = mulInfo.val .==. 0b00
+            , mulReqUnsignedA = mulInfo.val .==. 0b11
+            , mulReqUnsignedB = at @1 (mulInfo.val)
             }
         else s.retry
 
@@ -312,12 +313,18 @@ makePebbles sim uartIn = mdo
   -- Data tightly-coupled memory
   memResps <- makeDTCM sim memReqs
 
+  -- Multiplier
+  mulUnit <- makeMulUnit
+
   -- Processor pipeline
   let config =
         Config {
-          decodeStage = decodeI
-        , executeStage = executeI csrUnit
+          decodeStage = decodeI ++ decodeM
+        , executeStage = \s -> do
+            executeI csrUnit s
+            executeM mulUnit s
         , memResponseStage = memResponseI
+        , resumeStage = mulUnit.resumeMul
         }
   memReqs <- makePipeline sim config memResps
 

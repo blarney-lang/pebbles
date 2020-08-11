@@ -37,9 +37,8 @@ data Config =
   }
 
 -- Identifier for instruction suspension/resumption
--- For this scalar pipeline, we only allow one suspended instruction
--- at a time, so use the id to store destination register
-type InstrId = RegId
+-- (Unused for this scalar pipeline)
+type InstrId = Bit 0
 
 -- Resume request to pipeline for multi-cycle instructions
 data ResumeReq =
@@ -77,10 +76,6 @@ data State =
   , fields :: FieldMap
   }
 
--- TODO: implement suspend+retry methods, and resume stage
---   stall on suspend
---   stall on retry, but reinvoke execute stage
---   consume resume reqs in writeback
 -- TODO: implement load/store via suspend+retry+resume?
 
 -- Pipeline
@@ -131,6 +126,12 @@ makePipeline sim c memResps = do
 
   -- Is there a request in flight?
   memReqInFlight :: Reg (Bit 1) <- makeReg false
+
+  -- Is there a multi-cycle instruction in progress?
+  suspendInProgress :: Reg (Bit 1) <- makeReg false
+
+  -- Did instruction in execute stage request a retry on previous cycle?
+  doRetry :: Reg (Bit 1) <- makeDReg false
 
   -- Program counters for each pipeline stage
   pc1 :: Reg (Bit 32) <- makeReg 0xfffffffc
@@ -273,13 +274,21 @@ makePipeline sim c memResps = do
                         , memReqData    = d
                         }
               enq memReqQueue req
+          , suspend = do
+              suspendInProgress <== true
+              stallWire <== true
+              return dontCare
+          , retry = do
+              doRetry <== true
+              stallWire <== true
           , opcode = tagMap3
           , fields = fieldMap3
           }
 
     -- Execute stage
-    when (active3.val) do
+    when (active3.val .|. doRetry.val) do
       executeStage c state
+    when (active3.val) do
       instr4 <== instr3.val
 
     -- Stage 4: Writeback
@@ -301,20 +310,31 @@ makePipeline sim c memResps = do
                          memRespResultWire <== x
           , memLoad = error "Can't issue load in memory response stage"
           , memStore = error "Can't issue store in memory response stage"
+          , suspend = error "Can't resume in memory response stage"
+          , retry = error "Can't retry in memory response stage"
           , opcode = tagMap4
           , fields = fieldMap4
           }
 
-    -- Memory response stage
+    -- Memory response / resume stage
     if memResps.canPeek
       then do
         memResps.consume
         memResponseStage c state (memResps.peek)
         memReqInFlight <== false
       else do
-        -- Stall while waiting for response
-        when (memReqInFlight.val) do
-          stallWire <== true
+        let resumeReqs = c.resumeStage
+        if resumeReqs.canPeek
+          then do
+            let resumeReq = resumeReqs.peek
+            resumeReqs.consume
+            when (instr4.val.dst .!=. 0) do
+              memRespResultWire <== resumeReqs.peek.resumeReqData
+            suspendInProgress <== false
+          else do
+            -- Stall while waiting for response
+            when (memReqInFlight.val .|. suspendInProgress.val) do
+              stallWire <== true
 
     -- Determine final result
     let rd = instr4.val.dst
