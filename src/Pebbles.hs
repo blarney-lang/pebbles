@@ -265,10 +265,10 @@ makeMulUnit = do
        let msbB = at @31 (req.mulReqB)
        let extA = req.mulReqUnsignedA ? (0, msbA)
        let extB = req.mulReqUnsignedB ? (0, msbB)
-       let mulA = signExtend (extA # req.mulReqA) :: Bit 64
-       let mulB = signExtend (extB # req.mulReqB) :: Bit 64
+       let mulA = extA # req.mulReqA
+       let mulB = extB # req.mulReqB
        reqReg <== req
-       resultReg <== mulA .*. mulB
+       resultReg <== slice @63 @0 (fullMul True mulA mulB)
        fullReg <== true
     , resumeMul =
         Source {
