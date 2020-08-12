@@ -6,6 +6,7 @@ import Blarney.Queue
 import Blarney.Stream
 import Blarney.Option
 import Blarney.BitScan
+import Blarney.SourceSink
 
 -- Pebbles imports
 import CSR
@@ -57,8 +58,8 @@ decodeI =
 -- RISC-V I Execute
 -- ================
 
-executeI :: CSRUnit -> State -> Action ()
-executeI csrUnit s = do
+executeI :: CSRUnit -> MemUnit -> State -> Action ()
+executeI csrUnit memUnit s = do
   -- 33-bit add/sub/compare
   let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
   let addA = (uns ? (0, at @31 (s.opA))) # s.opA
@@ -120,15 +121,28 @@ executeI csrUnit s = do
     s.result <== s.pc.val + 4
 
   -- Memory access
-  let memAddr = s.opA + s.opBorImm
-  let memAccessWidth = getField (s.fields) "aw"
-
-  when (s.opcode `is` ["LOAD"]) do
-    memLoad s memAddr
-
-  when (s.opcode `is` ["STORE"]) do
-    let byteEn = genByteEnable (memAccessWidth.val) memAddr
-    memStore s memAddr byteEn (writeAlign (memAccessWidth.val) (s.opB))
+  when (s.opcode `is` ["LOAD", "STORE"]) do
+    let memAddr = s.opA + s.opBorImm
+    let memAccessWidth = getField (s.fields) "aw"
+    let memIsUnsignedLoad = getField (s.fields) "ul"
+    if memUnit.memReqs.canPut
+      then do
+        let isStore = s.opcode `is` ["STORE"]
+        -- Currently the memory subsystem doesn't issue store responses
+        -- so we make sure to only suspend on a load
+        id <- whenR (isStore.inv) (s.suspend)
+        -- Send request to memory unit
+        put (memUnit.memReqs)
+          MemReq {
+            memReqId          = id
+          , memReqIsStore     = isStore
+          , memReqAddr        = memAddr
+          , memReqByteEn      = genByteEnable (memAccessWidth.val) memAddr
+          , memReqData        = writeAlign (memAccessWidth.val) (s.opB)
+          , memReqAccessWidth = memAccessWidth.val
+          , memReqIsUnsigned  = memIsUnsignedLoad.val
+          }
+      else s.retry
 
   when (s.opcode `is` ["FENCE"]) do
     noAction
@@ -206,12 +220,14 @@ loadMux respData addr w isUnsigned =
 -- RISC-V I memory response
 -- ========================
 
-memResponseI :: State -> Bit 32 -> Action ()
-memResponseI s respData = do
-  let isUnsignedLoad = getField (s.fields) "ul"
-  let memAccessWidth = getField (s.fields) "aw"
-  s.result <== loadMux respData (s.opA + s.opBorImm)
-                 (memAccessWidth.val) (isUnsignedLoad.val)
+memRespToResumeReq :: MemResp -> ResumeReq
+memRespToResumeReq (respData, origReq) =
+  ResumeReq {
+    resumeReqId = origReq.memReqId
+  , resumeReqData =
+      loadMux respData (origReq.memReqAddr)
+        (origReq.memReqAccessWidth) (origReq.memReqIsUnsigned)
+  }
 
 -- RISC-V M extension
 -- ==================
@@ -240,9 +256,8 @@ data MulReq =
 -- Multiplier unit interface
 data MulUnit =
   MulUnit {
-    canMul :: Bit 1
-  , enqMul :: MulReq -> Action ()
-  , resumeMul :: Stream ResumeReq
+    mulReqs :: Sink MulReq
+  , mulResps :: Source ResumeReq
   }
 
 -- Multiplier unit (half throughput to save area)
@@ -259,18 +274,21 @@ makeMulUnit = do
 
   return
     MulUnit {
-      canMul = fullReg.val.inv
-    , enqMul = \req -> do
-       let msbA = at @31 (req.mulReqA)
-       let msbB = at @31 (req.mulReqB)
-       let extA = req.mulReqUnsignedA ? (0, msbA)
-       let extB = req.mulReqUnsignedB ? (0, msbB)
-       let mulA = extA # req.mulReqA
-       let mulB = extB # req.mulReqB
-       reqReg <== req
-       resultReg <== slice @63 @0 (fullMul True mulA mulB)
-       fullReg <== true
-    , resumeMul =
+      mulReqs =
+        Sink {
+          canPut = fullReg.val.inv
+        , put = \req -> do
+            let msbA = at @31 (req.mulReqA)
+            let msbB = at @31 (req.mulReqB)
+            let extA = req.mulReqUnsignedA ? (0, msbA)
+            let extB = req.mulReqUnsignedB ? (0, msbB)
+            let mulA = extA # req.mulReqA
+            let mulB = extB # req.mulReqB
+            reqReg <== req
+            resultReg <== slice @63 @0 (fullMul True mulA mulB)
+            fullReg <== true
+        }
+    , mulResps =
         Source {
           peek = 
             ResumeReq {
@@ -286,21 +304,21 @@ makeMulUnit = do
 -- Execute state for M extension
 executeM :: MulUnit -> State -> Action ()
 executeM mulUnit s = do
-    when (s.opcode `is` ["MUL"]) do
-      if mulUnit.canMul
-        then do
-          id <- s.suspend
-          let mulInfo :: Option (Bit 2) = getField (s.fields) "mul"
-          enqMul mulUnit
-            MulReq {
-              mulReqId = id
-            , mulReqA = s.opA
-            , mulReqB = s.opB
-            , mulReqLower = mulInfo.val .==. 0b00
-            , mulReqUnsignedA = mulInfo.val .==. 0b11
-            , mulReqUnsignedB = at @1 (mulInfo.val)
-            }
-        else s.retry
+  when (s.opcode `is` ["MUL"]) do
+    if mulUnit.mulReqs.canPut
+      then do
+        id <- s.suspend
+        let mulInfo :: Option (Bit 2) = getField (s.fields) "mul"
+        put (mulUnit.mulReqs)
+          MulReq {
+            mulReqId = id
+          , mulReqA = s.opA
+          , mulReqB = s.opB
+          , mulReqLower = mulInfo.val .==. 0b00
+          , mulReqUnsignedA = mulInfo.val .==. 0b11
+          , mulReqUnsignedB = at @1 (mulInfo.val)
+          }
+      else s.retry
 
 -- RV32I core with UART input and output channels
 -- ==============================================
@@ -310,22 +328,22 @@ makePebbles sim uartIn = mdo
   -- CSR unit
   (uartOut, csrUnit) <- makeCSRUnit uartIn
 
-  -- Data tightly-coupled memory
-  memResps <- makeDTCM sim memReqs
+  -- Tightly-coupled data memory
+  memUnit <- makeDTCM sim
 
   -- Multiplier
   mulUnit <- makeMulUnit
 
   -- Processor pipeline
-  let config =
-        Config {
-          decodeStage = decodeI ++ decodeM
-        , executeStage = \s -> do
-            executeI csrUnit s
-            executeM mulUnit s
-        , memResponseStage = memResponseI
-        , resumeStage = mulUnit.resumeMul
-        }
-  memReqs <- makePipeline sim config memResps
+  makePipeline sim 
+    Config {
+      decodeStage = decodeI ++ decodeM
+    , executeStage = \s -> do
+        executeI csrUnit memUnit s
+        executeM mulUnit s
+    , resumeStage = mergeTwoSources
+        (fmap memRespToResumeReq (memUnit.memResps))
+        (mulUnit.mulResps)
+    }
 
   return uartOut
