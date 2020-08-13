@@ -2,6 +2,7 @@ module Pebbles where
 
 -- Blarney imports
 import Blarney
+import Blarney.Stmt
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.Option
@@ -232,10 +233,9 @@ memRespToResumeReq (respData, origReq) =
 -- RISC-V M extension
 -- ==================
 
--- TODO: implement division instructions too
-
 decodeM =
   [ "0000001 rs2<5> rs1<5> 0 mul<2> rd<5> 0110011" --> "MUL"
+  , "0000001 rs2<5> rs1<5> 1 div<2> rd<5> 0110011" --> "DIV"
   ]
 
 -- Request to multiplier unit
@@ -263,8 +263,8 @@ data MulUnit =
 -- Multiplier unit (half throughput to save area)
 -- To get a DSP multiplier, inputs and outputs must be registered
 -- We assume the two input operands are already registered
-makeMulUnit :: Module MulUnit
-makeMulUnit = do
+makeHalfMulUnit :: Module MulUnit
+makeHalfMulUnit = do
   -- Registers for request and result
   reqReg <- makeReg dontCare
   resultReg <- makeReg dontCare
@@ -301,9 +301,132 @@ makeMulUnit = do
         }
     }
 
+-- Request to divider unit
+data DivReq =
+  DivReq {
+    -- Unique identifier from pipeline
+    divReqId :: InstrId
+    -- Numerator and denominator
+  , divReqNum :: Bit 32
+  , divReqDenom :: Bit 32
+    -- Signed or unsigned division?
+  , divReqIsSigned :: Bit 1
+    -- Do we want the quotient or remainder?
+  , divReqGetRemainder :: Bit 1
+  } deriving (Generic, Bits)
+
+-- Divider unit interface
+data DivUnit =
+  DivUnit {
+    divReqs :: Sink DivReq
+  , divResps :: Source ResumeReq
+  }
+
+-- Divider unit (sequential state machine version)
+makeSeqDivUnit :: Module DivUnit
+makeSeqDivUnit = do
+  -- Numerator, denominator, quotient, and remainder
+  n :: Reg (Bit 32) <- makeReg dontCare
+  d :: Reg (Bit 32) <- makeReg dontCare
+  q :: Reg (Bit 32) <- makeReg dontCare
+  r :: Reg (Bit 32) <- makeReg dontCare
+
+  -- Counter
+  count :: Reg (Bit 6) <- makeReg dontCare
+
+  -- Is the result ready for consumption?
+  done :: Reg (Bit 1) <- makeReg false
+
+  -- Is the result currently being computed?
+  busy :: Reg (Bit 1) <- makeReg false
+
+  -- Trigger division state machine
+  trigger :: Reg (Bit 1) <- makeDReg false
+
+  -- Signed or unsigned division?
+  isSigned :: Reg (Bit 1) <- makeReg dontCare
+
+  -- Quotient or remainder?
+  getRemainder :: Reg (Bit 1) <- makeReg dontCare
+
+  -- Flip the sign of the result?
+  negResult :: Reg (Bit 1) <- makeReg dontCare
+
+  -- Output register
+  output :: Reg (Bit 32) <- makeReg dontCare
+
+  -- Remember the request id
+  reqId :: Reg InstrId <- makeReg dontCare
+
+  -- Helper function to shift left by one
+  let shl x = x .<<. (1 :: Bit 1)
+
+  -- State machine
+  runStmtOn (trigger.val) do
+    -- Prepare division
+    action do
+      let divByZero = d.val .==. 0
+      let n_msb = at @31 (n.val)
+      let d_msb = at @31 (d.val)
+      -- Negate numerator and denominator if required
+      when (isSigned.val .&. divByZero.inv) do
+        when n_msb do
+          n <== n.val.negate
+        when d_msb do
+          d <== d.val.negate
+      -- Initialise state machine
+      q <== 0
+      r <== 0
+      count <== 32
+      -- Negate result?
+      negResult <== isSigned.val .&. divByZero.inv .&.
+        (getRemainder.val ? (n_msb, n_msb .^. d_msb))
+    -- Binary long division algorithm (taken from Wikipedia)
+    while (count.val .!=. 0) do
+      action do
+        let r' = r.val.shl .|. zeroExtend (at @31 (n.val))
+        let sub = r' .>=. d.val
+        r <== r' - (sub ? (d.val, 0))
+        q <== q.val.shl .|. (sub ? (1, 0))
+        n <== n.val.shl
+        count <== count.val - 1
+    -- Prepare result
+    action do
+      done <== true
+      busy <== false
+      -- Choose quotient or remainder, and optionally negate
+      let result = getRemainder.val ? (r.val, q.val)
+      output <== negResult.val ? (result.negate, result)
+
+  return
+    DivUnit {
+      divReqs =
+        Sink {
+          canPut = busy.val.inv .&. done.val.inv
+        , put = \req -> do
+            reqId <== req.divReqId
+            n <== req.divReqNum
+            d <== req.divReqDenom
+            isSigned <== req.divReqIsSigned
+            getRemainder <== req.divReqGetRemainder
+            busy <== true
+            trigger <== true
+        }
+    , divResps =
+        Source {
+          canPeek = done.val
+        , peek =
+            ResumeReq {
+              resumeReqId = reqId.val
+            , resumeReqData = output.val
+            }
+        , consume = do done <== false
+        }
+    }
+
 -- Execute state for M extension
-executeM :: MulUnit -> State -> Action ()
-executeM mulUnit s = do
+executeM :: MulUnit -> DivUnit -> State -> Action ()
+executeM mulUnit divUnit s = do
   when (s.opcode `is` ["MUL"]) do
     if mulUnit.mulReqs.canPut
       then do
@@ -320,6 +443,21 @@ executeM mulUnit s = do
           }
       else s.retry
 
+  when (s.opcode `is` ["DIV"]) do
+    if mulUnit.mulReqs.canPut
+      then do
+        id <- s.suspend
+        let divInfo :: Option (Bit 2) = getField (s.fields) "div"
+        put (divUnit.divReqs)
+          DivReq {
+            divReqId = id
+          , divReqNum = s.opA
+          , divReqDenom = s.opB
+          , divReqIsSigned = at @0 (divInfo.val.inv)
+          , divReqGetRemainder = at @1 (divInfo.val)
+          }
+      else s.retry
+
 -- RV32I core with UART input and output channels
 -- ==============================================
 
@@ -332,7 +470,10 @@ makePebbles sim uartIn = mdo
   memUnit <- makeDTCM sim
 
   -- Multiplier
-  mulUnit <- makeMulUnit
+  mulUnit <- makeHalfMulUnit
+
+  -- Divider
+  divUnit <- makeSeqDivUnit
 
   -- Processor pipeline
   makePipeline sim 
@@ -340,10 +481,12 @@ makePebbles sim uartIn = mdo
       decodeStage = decodeI ++ decodeM
     , executeStage = \s -> do
         executeI csrUnit memUnit s
-        executeM mulUnit s
-    , resumeStage = mergeTwoSources
-        (fmap memRespToResumeReq (memUnit.memResps))
-        (mulUnit.mulResps)
+        executeM mulUnit divUnit s
+    , resumeStage = mergeSourcesTree
+        [ fmap memRespToResumeReq (memUnit.memResps)
+        , mulUnit.mulResps
+        , divUnit.divResps
+        ]
     }
 
   return uartOut
