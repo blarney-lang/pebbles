@@ -1,10 +1,11 @@
-module CSR where
-
--- Control/status registers
+module Pebbles.Instructions.CSRUnit where
 
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+
+-- Control/status registers
+-- ========================
 
 -- +-------------+---------+--------+-------------------------------------+
 -- | CSR         | Address | Access | Description                         |

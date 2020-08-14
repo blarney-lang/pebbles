@@ -1,11 +1,11 @@
-module Trap where
+module Pebbles.Instructions.Trap where
 
 -- Blarney imports
 import Blarney
 
 -- Pebbles imports
-import CSR
-import Pipeline
+import Pebbles.Instructions.CSRUnit
+import Pebbles.Pipeline.Interface
 
 type ExceptionCode = Bit 31
 
