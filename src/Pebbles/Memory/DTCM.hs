@@ -62,7 +62,11 @@ makeDTCM sim = do
         }
     , memResps =
         Source {
-          peek = (dataMem.outBE, reqReg.val)
+          peek =
+            MemResp {
+              memRespData = dataMem.outBE
+            , memRespInfo = reqReg.val
+            }
         , canPeek = ready.val
         , consume = doConsume <== true
         }

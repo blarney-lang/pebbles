@@ -23,8 +23,13 @@ data MemReq =
   } deriving (Generic, Bits)
 
 -- A memory response to the processor
--- Includes a copy of the original request
-type MemResp = (Bit 32, MemReq)
+data MemResp =
+  MemResp {
+    -- Response data
+    memRespData :: Bit 32
+    -- A copy of the original request
+  , memRespInfo :: MemReq
+  } deriving (Generic, Bits)
 
 -- Memory unit interface
 data MemUnit =

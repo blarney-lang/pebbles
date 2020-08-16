@@ -220,10 +220,11 @@ loadMux respData addr w isUnsigned =
 
 -- Convert memory response to pipeline resume request
 memRespToResumeReq :: MemResp -> ResumeReq
-memRespToResumeReq (respData, origReq) =
+memRespToResumeReq resp =
   ResumeReq {
     resumeReqId = origReq.memReqId
   , resumeReqData =
-      loadMux respData (origReq.memReqAddr)
+      loadMux (resp.memRespData) (origReq.memReqAddr)
         (origReq.memReqAccessWidth) (origReq.memReqIsUnsigned)
   }
+  where origReq = resp.memRespInfo
