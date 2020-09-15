@@ -1,63 +1,27 @@
-module Pipeline where
+module Pebbles.Pipeline.Scalar where
 
 -- 32-bit, 5-stage, scalar, in-order pipeline
 -- with register-forwarding and static branch prediction
 
--- General imports
+-- Blarney imports
 import Blarney
 import Blarney.Queue
 import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
+
+-- General imports
 import qualified Data.Map as Map
 
--- Local imports
-import DataMem
-
--- Instructions
-type Instr = Bit 32
-
--- Register identifiers
-type RegId = Bit 5
+-- Pebbles imports
+import Pebbles.Pipeline.Interface
 
 -- Instruction memory size
 type InstrAddr = Bit 14
 
--- Pipeline configuration
-data Config =
-  Config {
-    -- Decode table
-    decodeStage :: [(String, String)]
-    -- Action for execute stage
-  , executeStage :: State -> Action ()
-    -- Action for memory-response stage
-  , memResponseStage :: State -> Bit 32 -> Action ()
-  }
-
--- Pipeline state, visisble to the instruction set
-data State =
-  State {
-    -- Current instruction
-    instr :: Bit 32
-    -- Source operands
-  , opA :: Bit 32
-  , opB :: Bit 32
-  , opBorImm :: Bit 32
-    -- Program counter interface
-  , pc :: ReadWrite (Bit 32)
-    -- Write the instruction result
-  , result :: WriteOnly (Bit 32)
-    -- Memory access methods
-  , memLoad :: Bit 32 -> Action ()
-  , memStore :: Bit 32 -> Bit 4 -> Bit 32 -> Action ()
-    -- Result of instruction decode
-  , opcode :: TagMap String
-  , fields :: FieldMap
-  }
-
 -- Pipeline
-makePipeline :: Bool -> Config -> Stream MemResp -> Module (Stream MemReq)
-makePipeline sim c memResps = do
+makePipeline :: Bool -> Config -> Module ()
+makePipeline sim c = do
   -- Compute field selector functions from decode table
   let selMap = matchSel (c.decodeStage)
 
@@ -95,14 +59,14 @@ makePipeline sim c memResps = do
 
   -- Result of the execute stage
   resultWire :: Wire (Bit 32) <- makeWire dontCare
-  memRespResultWire :: Wire (Bit 32) <- makeWire dontCare
+  resumeResultWire :: Wire (Bit 32) <- makeWire dontCare
   finalResultWire :: Wire (Bit 32) <- makeWire dontCare
 
-  -- Memory request queue
-  memReqQueue :: Queue MemReq <- makeBypassQueue
+  -- Is there a multi-cycle instruction in progress?
+  suspendInProgress :: Reg (Bit 1) <- makeReg false
 
-  -- Is there a request in flight?
-  memReqInFlight :: Reg (Bit 1) <- makeReg false
+  -- Did instruction in execute stage request a retry on previous cycle?
+  doRetry :: Reg (Bit 1) <- makeDReg false
 
   -- Program counters for each pipeline stage
   pc1 :: Reg (Bit 32) <- makeReg 0xfffffffc
@@ -192,10 +156,6 @@ makePipeline sim c memResps = do
       instr3 <== instr2.val
       pc3 <== pc2.val
 
-    -- Stall on back-pressure from memory subsystem
-    when (memReqQueue.notFull.inv) do
-      stallWire <== true
-
     -- Enable execute stage?
     if pcNext.active
       then do
@@ -225,79 +185,49 @@ makePipeline sim c memResps = do
           , result = WriteOnly $ \x ->
                        when (instr3.val.dst .!=. 0) do
                          resultWire <== x
-          , memLoad = \a -> do
-              let req = MemReq {
-                          memReqIsStore = false
-                        , memReqAddr    = a
-                        , memReqByteEn  = dontCare
-                        , memReqData    = dontCare
-                        }
-              enq memReqQueue req
-              memReqInFlight <== true
-              -- In future, we could allow independent instructions to
-              -- bypass multi-cycle load instructions
+          , suspend = do
+              -- In future, we could allow independent instructions
+              -- to bypass multi-cycle instructions
+              suspendInProgress <== true
               stallWire <== true
-          , memStore = \a be d -> do
-              let req = MemReq {
-                          memReqIsStore = true
-                        , memReqAddr    = a
-                        , memReqByteEn  = be
-                        , memReqData    = d
-                        }
-              enq memReqQueue req
+              return dontCare
+          , retry = do
+              doRetry <== true
+              stallWire <== true
           , opcode = tagMap3
           , fields = fieldMap3
           }
 
     -- Execute stage
-    when (active3.val) do
+    when (active3.val .|. doRetry.val) do
       executeStage c state
+    when (active3.val) do
       instr4 <== instr3.val
 
     -- Stage 4: Writeback
     -- ==================
 
-    -- Buffer the decode tables
-    let tagMap4 = Map.map (bufferEn (active3.val)) tagMap3
-    let fieldMap4 = Map.map (bufferField (active3.val)) fieldMap3
-
-    -- State for memory response stage
-    let state = State {
-            instr = instr4.val
-          , opA = regA.val.old
-          , opB = regB.val.old
-          , opBorImm = regBorImm.val.old
-          , pc = error "Can't access PC in memory response stage"
-          , result = WriteOnly $ \x ->
-                       when (instr4.val.dst .!=. 0) do
-                         memRespResultWire <== x
-          , memLoad = error "Can't issue load in memory response stage"
-          , memStore = error "Can't issue store in memory response stage"
-          , opcode = tagMap4
-          , fields = fieldMap4
-          }
-
-    -- Memory response stage
-    if memResps.canPeek
+    -- Resume stage for multi-cycle instructions
+    let resumeReqs = c.resumeStage
+    if resumeReqs.canPeek
       then do
-        memResps.consume
-        memResponseStage c state (memResps.peek)
-        memReqInFlight <== false
+        resumeReqs.consume
+        when (instr4.val.dst .!=. 0) do
+          resumeResultWire <== resumeReqs.peek.resumeReqData
+        suspendInProgress <== false
       else do
         -- Stall while waiting for response
-        when (memReqInFlight.val) do
+        when (suspendInProgress.val) do
           stallWire <== true
 
     -- Determine final result
     let rd = instr4.val.dst
-    when (memRespResultWire.active) do
-      finalResultWire <== memRespResultWire.val
-    when (memRespResultWire.active.inv .&. delay 0 (resultWire.active)) do
+    when (resumeResultWire.active) do
+      finalResultWire <== resumeResultWire.val
+    when (resumeResultWire.active.inv .&. delay 0 (resultWire.active)) do
       finalResultWire <== resultWire.val.old
 
     -- Writeback
     when (finalResultWire.active) do
       store regFileA rd (finalResultWire.val)
       store regFileB rd (finalResultWire.val)
-
-    return (memReqQueue.toStream)

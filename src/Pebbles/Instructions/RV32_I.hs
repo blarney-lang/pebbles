@@ -1,21 +1,24 @@
-module Pebbles where
+module Pebbles.Instructions.RV32_I where
 
 -- Blarney imports
 import Blarney
+import Blarney.Stmt
 import Blarney.Queue
 import Blarney.Stream
+import Blarney.Option
 import Blarney.BitScan
+import Blarney.SourceSink
 
 -- Pebbles imports
-import CSR
-import Trap
-import DataMem
-import Pipeline
+import Pebbles.Memory.Interface
+import Pebbles.Instructions.Trap
+import Pebbles.Instructions.CSRUnit
+import Pebbles.Pipeline.Interface
 
--- RISC-V I Decode
--- ===============
+-- Decode stage
+-- ============
 
-decode =
+decodeI =
   [ "imm[31:12] rd<5> 0110111" --> "LUI"
   , "imm[31:12] rd<5> 0010111" --> "AUIPC"
   , "imm[11:0] rs1<5> 000 rd<5> 0010011" --> "ADD"
@@ -53,11 +56,11 @@ decode =
   , "imm[11:0] rs1<5> 001 rd<5> 1110011" --> "CSRRW"
   ]
 
--- RISC-V I Execute
--- ================
+-- Execute stage
+-- =============
 
-execute :: CSRUnit -> State -> Action ()
-execute csrUnit s = do
+executeI :: CSRUnit -> MemUnit -> State -> Action ()
+executeI csrUnit memUnit s = do
   -- 33-bit add/sub/compare
   let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
   let addA = (uns ? (0, at @31 (s.opA))) # s.opA
@@ -119,15 +122,28 @@ execute csrUnit s = do
     s.result <== s.pc.val + 4
 
   -- Memory access
-  let memAddr = s.opA + s.opBorImm
-  let memAccessWidth = getField (s.fields) "aw"
-
-  when (s.opcode `is` ["LOAD"]) do
-    memLoad s memAddr
-
-  when (s.opcode `is` ["STORE"]) do
-    let byteEn = genByteEnable (memAccessWidth.val) memAddr
-    memStore s memAddr byteEn (writeAlign (memAccessWidth.val) (s.opB))
+  when (s.opcode `is` ["LOAD", "STORE"]) do
+    let memAddr = s.opA + s.opBorImm
+    let memAccessWidth = getField (s.fields) "aw"
+    let memIsUnsignedLoad = getField (s.fields) "ul"
+    if memUnit.memReqs.canPut
+      then do
+        let isStore = s.opcode `is` ["STORE"]
+        -- Currently the memory subsystem doesn't issue store responses
+        -- so we make sure to only suspend on a load
+        id <- whenR (isStore.inv) (s.suspend)
+        -- Send request to memory unit
+        put (memUnit.memReqs)
+          MemReq {
+            memReqId          = id
+          , memReqIsStore     = isStore
+          , memReqAddr        = memAddr
+          , memReqByteEn      = genByteEnable (memAccessWidth.val) memAddr
+          , memReqData        = writeAlign (memAccessWidth.val) (s.opB)
+          , memReqAccessWidth = memAccessWidth.val
+          , memReqIsUnsigned  = memIsUnsignedLoad.val
+          }
+      else s.retry
 
   when (s.opcode `is` ["FENCE"]) do
     noAction
@@ -142,8 +158,8 @@ execute csrUnit s = do
     readCSR csrUnit (s.opBorImm.truncate) (s.result)
     writeCSR csrUnit (s.opBorImm.truncate) (s.opA)
 
--- RISCV I memory access helpers
--- =============================
+-- Memory access helpers
+-- =====================
 
 -- RV32I memory access width
 type AccessWidth = Bit 2
@@ -202,34 +218,13 @@ loadMux respData addr w isUnsigned =
     b2 = slice @23 @16 respData
     b3 = slice @31 @24 respData
 
--- RISCV I memory response
--- =======================
-
-memResponse :: State -> Bit 32 -> Action ()
-memResponse s respData = do
-  let isUnsignedLoad = getField (s.fields) "ul"
-  let memAccessWidth = getField (s.fields) "aw"
-  s.result <== loadMux respData (s.opA + s.opBorImm)
-                 (memAccessWidth.val) (isUnsignedLoad.val)
-
--- RV32I core with UART input and output channels
--- ==============================================
-
-makePebbles :: Bool -> Stream (Bit 8) -> Module (Stream (Bit 8))
-makePebbles sim uartIn = mdo
-  -- CSR unit
-  (uartOut, csrUnit) <- makeCSRUnit uartIn
-
-  -- Data tightly-coupled memory
-  memResps <- makeDTCM sim memReqs
-
-  -- Processor pipeline
-  let config =
-        Config {
-          decodeStage = decode
-        , executeStage = execute csrUnit
-        , memResponseStage = memResponse
-        }
-  memReqs <- makePipeline sim config memResps
-
-  return uartOut
+-- Convert memory response to pipeline resume request
+memRespToResumeReq :: MemResp -> ResumeReq
+memRespToResumeReq resp =
+  ResumeReq {
+    resumeReqId = origReq.memReqId
+  , resumeReqData =
+      loadMux (resp.memRespData) (origReq.memReqAddr)
+        (origReq.memReqAccessWidth) (origReq.memReqIsUnsigned)
+  }
+  where origReq = resp.memRespInfo
