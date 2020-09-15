@@ -27,9 +27,9 @@ data Config =
   , resumeStage :: Stream ResumeReq
   }
 
--- Identifier for instruction suspension/resumption
--- (Unused for this scalar pipeline)
-type InstrId = Bit 0
+-- Instruction identifier for suspension/resumption
+-- Currently limited to a max of 64 outstanding suspensions
+type InstrId = Bit 6
 
 -- Resume request to pipeline for multi-cycle instructions
 data ResumeReq =
