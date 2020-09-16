@@ -43,23 +43,34 @@ data ResumeReq =
 -- Pipeline state, visisble to the execute stage
 data State =
   State {
-    -- Current instruction
+    -- Current instruction.
     instr :: Bit 32
-    -- Source operands
+
+    -- Source operands. These contain the values of the two source registers.
   , opA :: Bit 32
   , opB :: Bit 32
   , opBorImm :: Bit 32
-    -- Program counter interface
+
+    -- Program counter interface. This may be read, to obtain the PC
+    -- of the currently executing instruction.  It may be written,
+    -- to modify the PC. If unwritten, the pipeline implicity
+    -- updates the PC to point to the next instruction in memory.
   , pc :: ReadWrite (Bit 32)
-    -- Write the instruction result
+
+    -- Instruction result interface.  Writing to this modifies 
+    -- the destination register.
   , result :: WriteOnly (Bit 32)
-    -- Call this to implement a multi-cycle instruction
-    -- Results are returned via resume stage
+
+    -- Call this to implement a multi-cycle instruction.
+    -- Results are returned via resume stage.
   , suspend :: Action InstrId
-    -- Call this if instruction cannot currently be executed
-    -- (Perhaps resources are not currently available)
+    -- Call this if the instruction cannot currently be executed
+    -- (perhaps resources are not currently available).
   , retry :: Action ()
-    -- Result of instruction decode
+
+    -- Result of instruction decode.  Idenfities the opcode which the
+    -- instruction decoded to, and contains any fields of the
+    -- instruction identified by the decoder.
   , opcode :: TagMap String
   , fields :: FieldMap
   }

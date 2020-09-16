@@ -2,6 +2,17 @@ module Pebbles.Pipeline.Scalar where
 
 -- 32-bit, 5-stage, scalar, in-order pipeline
 -- with register-forwarding and static branch prediction
+--
+-- The 5 pipeline stages are:
+--
+--  1. Intruction Fetch
+--  2. Operand Fetch
+--  3. Operand Latch
+--  4. Execute
+--  5. Writeback (also: post-execute)
+--
+-- The Operand Latch stage is a bit unusual, but removes the register
+-- file read delay from combinatorial path of the Execute stage.
 
 -- Blarney imports
 import Blarney
