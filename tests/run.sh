@@ -2,9 +2,9 @@
 
 export PEBBLES_ROOT=${PEBBLES_ROOT-$(realpath ..)}
 
-VERILOG=$PEBBLES_ROOT/src/verilog
+SIM=$PEBBLES_ROOT/sim/
 
-if [ ! -f "$VERILOG/SimPebbles" ]; then
+if [ ! -f "$SIM/SimPebbles" ]; then
   echo Please build the simulator first
   exit -1
 fi
@@ -14,10 +14,10 @@ make --quiet
 for FILE in *.S; do
   TEST=$(basename $FILE .S)
   echo -ne "$TEST\t"
-  cp $TEST.code.hex $VERILOG/prog.hex
-  cp $TEST.data.hex $VERILOG/data.hex
+  cp $TEST.code.hex $SIM/prog.hex
+  cp $TEST.data.hex $SIM/data.hex
   pushd . > /dev/null
-  cd $VERILOG
+  cd $SIM
   RESULT=$(./SimPebbles | head -n 1 | cut -d ' ' -f 2)
   popd > /dev/null
   if [ "$RESULT" == "0x00000001" ]; then

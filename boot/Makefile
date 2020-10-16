@@ -1,8 +1,8 @@
 PEBBLES_ROOT ?= $(realpath ..)
 
-RTL = $(PEBBLES_ROOT)/src/verilog
+SIM = $(PEBBLES_ROOT)/sim
 QP = $(PEBBLES_ROOT)/de5-net
-BIN = $(PEBBLES_ROOT)/tests/
+BIN = $(PEBBLES_ROOT)/tests
 
 # Binary utilities
 RV_ARCH    = rv32i
@@ -28,20 +28,20 @@ INSTR_BYTES = 65536
 DATA_BYTES  = 65536
 
 .PHONY: all
-all: $(RTL)/prog.hex $(QP)/prog.mif \
-     $(RTL)/data.hex $(QP)/data.mif
+all: $(SIM)/prog.hex $(QP)/prog.mif \
+     $(SIM)/data.hex $(QP)/data.mif
 
-$(RTL)/prog.hex: InstrMem.ihex
+$(SIM)/prog.hex: InstrMem.ihex
 	$(BIN)/ihex-to-img.py InstrMem.ihex hex 0 4 $(INSTR_BYTES) 1 \
-    > $(RTL)/prog.hex
+    > $(SIM)/prog.hex
 
 $(QP)/prog.mif: InstrMem.ihex
 	$(BIN)/ihex-to-img.py InstrMem.ihex mif 0 4 $(INSTR_BYTES) 1 \
     > $(QP)/prog.mif
 
-$(RTL)/data.hex: DataMem.ihex
+$(SIM)/data.hex: DataMem.ihex
 	$(BIN)/ihex-to-img.py DataMem.ihex hex $(INSTR_BYTES) 4 $(DATA_BYTES) 1 \
-    > $(RTL)/data.hex
+    > $(SIM)/data.hex
 
 $(QP)/data.mif: DataMem.ihex
 	$(BIN)/ihex-to-img.py DataMem.ihex mif $(INSTR_BYTES) 4 $(DATA_BYTES) 1 \

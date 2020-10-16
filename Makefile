@@ -1,10 +1,10 @@
 .PHONY: verilog
-verilog: blarney-present
+verilog: blarney/Makefile
 	make -C src
 
 .PHONY: sim
-sim: blarney-present
-	make -C src
+sim: verilog
+	make -C sim
 
 .PHONY: test
 test: sim
@@ -16,10 +16,8 @@ clean:
 	make -C src clean
 	make -C de5-net clean
 	make -C tests clean
+	make -C sim clean
 
 # Fetch blarney repo if it's not there
-.PHONY: blarney-present
-blarney-present: blarney/Makefile
-
 blarney/Makefile:
 	git submodule update --init --recursive
