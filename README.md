@@ -16,7 +16,9 @@ the external world.
 ## Build instructions
 
 You will need Verilator, the RISC-V SDK, and a fairly recent version
-of GHC (8.6.1 or later).  On Ubuntu 20.04, you can do:
+of GHC (8.6.1 or later).
+
+On Ubuntu 20.04, you can do:
 
 ```
   sudo apt install verilator
