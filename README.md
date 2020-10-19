@@ -15,10 +15,10 @@ the external world.
 
 ## Build instructions
 
-You will need Verilator, the RISC-V SDK, and a fairly recent version
+We'll need Verilator, the RISC-V SDK, and a fairly recent version
 of GHC (8.6.1 or later).
 
-On Ubuntu 20.04, you can do:
+On Ubuntu 20.04, we can simply do:
 
 ```sh
 > sudo apt install verilator
@@ -26,7 +26,7 @@ On Ubuntu 20.04, you can do:
 > sudo apt install ghc-8.6.5
 ```
 
-Now, recursively clone the repo:
+Now, we recursively clone the repo:
 
 ```sh
 > git clone --recursive https://github.com/blarney-lang/pebbles
@@ -43,8 +43,8 @@ will generate Verilog for the scalar RV32IM core, compile it with
 Verilator, and then run the RISC-V test suite on the resulting
 simulator.
 
-You can also run [this C program](boot/main.c) through the simulator
-as follows.
+We can also run [this C program](boot/main.c) through the simulator as
+follows.
 
 ```sh
 > make sim
