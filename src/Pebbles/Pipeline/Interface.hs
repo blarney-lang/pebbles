@@ -16,17 +16,6 @@ type Instr = Bit 32
 -- Register identifiers
 type RegId = Bit 5
 
--- Pipeline configuration
-data Config =
-  Config {
-    -- Decode table
-    decodeStage :: [(String, String)]
-    -- Action for execute stage
-  , executeStage :: State -> Action ()
-    -- Resumption for multi-cycle instructions
-  , resumeStage :: Stream ResumeReq
-  }
-
 -- Instruction identifier for suspension/resumption
 -- Currently limited to a max of 64 outstanding suspensions
 type InstrId = Bit 6

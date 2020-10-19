@@ -30,9 +30,22 @@ import Pebbles.Pipeline.Interface
 -- Instruction memory size
 type InstrAddr = Bit 14
 
--- Pipeline
-makePipeline :: Bool -> Config -> Module ()
-makePipeline sim c = do
+-- Scalar pipeline configuration
+data ScalarPipelineConfig =
+  ScalarPipelineConfig {
+    -- Instruction memory initilaisation file
+    instrMemInitFile :: Maybe String
+    -- Decode table
+  , decodeStage :: [(String, String)]
+    -- Action for execute stage
+  , executeStage :: State -> Action ()
+    -- Resumption for multi-cycle instructions
+  , resumeStage :: Stream ResumeReq
+  }
+
+-- Scalar pipeline
+makeScalarPipeline :: ScalarPipelineConfig -> Module ()
+makeScalarPipeline c = do
   -- Compute field selector functions from decode table
   let selMap = matchSel (c.decodeStage)
 
@@ -42,8 +55,7 @@ makePipeline sim c = do
   let dst  :: Instr -> RegId = getFieldSel selMap "rd"
 
   -- Instruction memory
-  let ext = if sim then ".hex" else ".mif"
-  instrMem :: RAM InstrAddr Instr <- makeRAMInit ("prog" ++ ext)
+  instrMem :: RAM InstrAddr Instr <- makeRAMCore (c.instrMemInitFile)
 
   -- Two block RAMs allows two operands to be read,
   -- and one result to be written, on every cycle

@@ -17,11 +17,10 @@ import Pebbles.Memory.Interface
 type DTCMAddrWidth = 14
 
 -- Tightly-coupled data memory with single-cycle read latency
-makeDTCM :: Bool -> Module MemUnit
-makeDTCM sim = do
+makeDTCM :: Maybe String -> Module MemUnit
+makeDTCM initFile = do
   -- Data memory (block RAM with byte enables)
-  let ext = if sim then ".hex" else ".mif"
-  dataMem :: RAMBE DTCMAddrWidth 4 <- makeRAMInitBE ("data" ++ ext)
+  dataMem :: RAMBE DTCMAddrWidth 4 <- makeRAMBECore initFile
 
   -- Is response ready for consuming?
   ready :: Reg (Bit 1) <- makeReg false
