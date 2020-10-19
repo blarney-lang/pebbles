@@ -18,6 +18,7 @@ the external world.
 You will need Verilator, the RISC-V SDK, and a fairly recent version
 of GHC (8.6.1 or later).
 
+
 On Ubuntu 20.04, you can do:
 
 ```
@@ -26,7 +27,13 @@ On Ubuntu 20.04, you can do:
   sudo apt install ghc-8.6.5
 ```
 
-Then there are various build options for Pebbles:
+Now, recursively clone the repo:
+
+```
+  git clone --recursive https://github.com/blarney-lang/pebbles
+```
+
+Inside the repo, there are various build options:
 
   * `make verilog` - generate verilog for the scalar RV32IM core.
   * `make sim` - build a Verilator simulator for the core.
