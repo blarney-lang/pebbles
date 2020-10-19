@@ -25,7 +25,7 @@ data ScalarCoreConfig =
   , scalarCoreDataMemInitFile  :: Maybe String
   }
 
--- RV32I core with UART input and output channels
+-- RV32IM core with UART input and output channels
 makeScalarCore :: ScalarCoreConfig -> Stream (Bit 8) -> Module (Stream (Bit 8))
 makeScalarCore config uartIn = mdo
   -- CSR unit
