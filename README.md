@@ -5,8 +5,13 @@ Pebbles is a RISC-V processor with plugable pipelines.  The
 [pipeline](src/Pebbles/Pipeline) are defined separately, with the idea
 being that we can define multiple different pipelines for the same
 instruction set, bringing new levels of modularity and reusability to
-processor development.  We do this with the help of a modern HDL, in
-our case [Blarney](https://github.com/blarney-lang/blarney).
+processor development.  We do this with the help of a modern HDL
+called [Blarney](https://github.com/blarney-lang/blarney).
+
+At the moment, Pebbles is very basic.  It consists of a single RV32IM
+core with a 5-stage scalar pipeline, tightly coupled internal
+instruction and data memories, and a single 8-bit stream interface to
+the external world.
 
 ## Build instructions
 
@@ -26,10 +31,6 @@ configured):
 ```
   sudo apt install ghc-8.6.3
 ```
-
-At the moment, Pebbles is very basic.  It consists of a single RV32IM
-core with a 5-stage pipeline, tightly coupled internal instruction and
-data memories, and a single 8-bit stream interface to the external world!
 
 Then there are various build options for Pebbles:
 
