@@ -18,7 +18,7 @@ for FILE in *.S; do
   cp $TEST.data.hex $SIM/data.hex
   pushd . > /dev/null
   cd $SIM
-  RESULT=$(./SimPebbles | head -n 1 | cut -d ' ' -f 2)
+  RESULT=$(./SimPebbles | head -n 1 | awk '{print $2}')
   popd > /dev/null
   if [ "$RESULT" == "0x00000001" ]; then
     echo "PASSED"
