@@ -11,8 +11,8 @@ import Pebbles.Pipeline.Interface
 -- Request to divider unit
 data DivReq =
   DivReq {
-    -- Unique identifier from pipeline
-    divReqId :: InstrId
+    -- Instruction info from pipeline
+    divReqInfo :: InstrInfo
     -- Numerator and denominator
   , divReqNum :: Bit 32
   , divReqDenom :: Bit 32
@@ -62,8 +62,8 @@ makeSeqDivUnit = do
   -- Output register
   output :: Reg (Bit 32) <- makeReg dontCare
 
-  -- Remember the request id
-  reqId :: Reg InstrId <- makeReg dontCare
+  -- Remember the request info
+  reqInfo :: Reg InstrInfo <- makeReg dontCare
 
   -- Helper function to shift left by one
   let shl x = x .<<. (1 :: Bit 1)
@@ -111,7 +111,7 @@ makeSeqDivUnit = do
         Sink {
           canPut = busy.val.inv .&. done.val.inv
         , put = \req -> do
-            reqId <== req.divReqId
+            reqInfo <== req.divReqInfo
             n <== req.divReqNum
             d <== req.divReqDenom
             isSigned <== req.divReqIsSigned
@@ -124,7 +124,7 @@ makeSeqDivUnit = do
           canPeek = done.val
         , peek =
             ResumeReq {
-              resumeReqId = reqId.val
+              resumeReqInfo = reqInfo.val
             , resumeReqData = output.val
             }
         , consume = do done <== false

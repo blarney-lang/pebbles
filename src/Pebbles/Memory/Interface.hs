@@ -13,7 +13,7 @@ import Pebbles.Pipeline.Interface
 -- Memory request from the processor
 data MemReq =
   MemReq {
-    memReqId          :: InstrId
+    memReqInfo        :: InstrInfo
   , memReqIsStore     :: Bit 1
   , memReqAddr        :: Bit 32
   , memReqByteEn      :: Bit 4

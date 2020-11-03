@@ -131,11 +131,11 @@ executeI csrUnit memUnit s = do
         let isStore = s.opcode `is` ["STORE"]
         -- Currently the memory subsystem doesn't issue store responses
         -- so we make sure to only suspend on a load
-        id <- whenR (isStore.inv) (s.suspend)
+        info <- whenR (isStore.inv) (s.suspend)
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
-            memReqId          = id
+            memReqInfo        = info
           , memReqIsStore     = isStore
           , memReqAddr        = memAddr
           , memReqByteEn      = genByteEnable (memAccessWidth.val) memAddr
@@ -222,7 +222,7 @@ loadMux respData addr w isUnsigned =
 memRespToResumeReq :: MemResp -> ResumeReq
 memRespToResumeReq resp =
   ResumeReq {
-    resumeReqId = origReq.memReqId
+    resumeReqInfo = origReq.memReqInfo
   , resumeReqData =
       loadMux (resp.memRespData) (origReq.memReqAddr)
         (origReq.memReqAccessWidth) (origReq.memReqIsUnsigned)
