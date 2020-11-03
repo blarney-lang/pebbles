@@ -78,6 +78,10 @@ makeSIMTPipeline c =
   liftNat (c.logMaxInstrs) \(_ :: Proxy t_logInstrs) ->
   liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) -> do
 
+    -- Sanity check
+    staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
+      "makeSIMTPipeline: WarpId is wider than InstrId"
+
     -- Number of warps and warp size
     let numWarps = 2 ^ c.logNumWarps
     let warpSize = c.executeStage.length
@@ -266,7 +270,7 @@ makeSIMTPipeline c =
     -- Stages 5 and 6: Execute and Writeback
     -- =====================================
 
-    -- Function to convert between 32-bit PC and instruction address
+    -- Functions to convert between 32-bit PC and instruction address
     let fromPC :: Bit 32 -> Bit t_logInstrs =
           \pc -> truncateCast (slice @31 @2 pc)
     let toPC :: Bit t_logInstrs -> Bit 32 =

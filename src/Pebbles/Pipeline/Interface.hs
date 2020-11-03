@@ -16,11 +16,16 @@ type Instr = Bit 32
 -- Register identifiers
 type RegId = Bit 5
 
+-- Instruction id, for instruction suspension/resumption
+-- Currently limited to a max of 64 outstanding suspensions
+type InstrIdWidth = 6
+type InstrId = Bit InstrIdWidth
+
 -- Instruction info for suspension/resumption
 data InstrInfo =
   InstrInfo {
-    -- Currently limited to a max of 64 outstanding suspensions
-    instrId :: Bit 6
+    -- Instruction id
+    instrId :: InstrId
     -- Destination register of suspended instruction
   , instrDest :: RegId
   } deriving (Generic, Bits)
