@@ -6,6 +6,7 @@ module Pebbles.Core.Scalar where
 import Blarney
 import Blarney.Stream
 import Blarney.SourceSink
+import Blarney.Interconnect
 
 -- Pebbles imports
 import Pebbles.Memory.Interface
@@ -48,7 +49,7 @@ makeScalarCore config uartIn = mdo
     , executeStage = \s -> do
         executeI csrUnit memUnit s
         executeM mulUnit divUnit s
-    , resumeStage = mergeSourcesTree
+    , resumeStage = mergeTree
         [ fmap memRespToResumeReq (memUnit.memResps)
         , mulUnit.mulResps
         , divUnit.divResps
