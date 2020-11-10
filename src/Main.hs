@@ -12,15 +12,19 @@ main = do
   -- Simulation version
   let simConfig =
         ScalarCoreConfig {
-          scalarCoreInstrMemInitFile = Just "prog.hex"
-        , scalarCoreDataMemInitFile  = Just "data.hex"
+          scalarCoreInstrMemInitFile     = Just "prog.hex"
+        , scalarCoreDataMemInitFile      = Just "data.hex"
+        , scalarCoreDataMemLogNumWords   = 14
+        , scalarCoreInstrMemLogNumInstrs = 14
         }
   writeVerilogModule (makeScalarCoreSim simConfig) "SimPebbles" "../sim/"
 
   -- Synthesis version
   let config =
         ScalarCoreConfig {
-          scalarCoreInstrMemInitFile = Just "prog.mif"
-        , scalarCoreDataMemInitFile  = Just "data.mif"
+          scalarCoreInstrMemInitFile   = Just "prog.mif"
+        , scalarCoreDataMemInitFile    = Just "data.mif"
+        , scalarCoreDataMemLogNumWords = 14
+        , scalarCoreInstrMemLogNumInstrs = 14
         }
   writeVerilogModule (makeScalarCore config) "Pebbles" "./"

@@ -19,21 +19,31 @@ import Pebbles.Instructions.CSRUnit
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
 
--- Configuration parameters
+-- | Configuration parameters
 data ScalarCoreConfig =
   ScalarCoreConfig {
+    -- | Initialisation file for instruction memory
     scalarCoreInstrMemInitFile :: Maybe String
-  , scalarCoreDataMemInitFile  :: Maybe String
+    -- | Initialisation file for tightly coupled data memory
+  , scalarCoreDataMemInitFile :: Maybe String
+    -- | Size of tightly coupled data memory
+  , scalarCoreDataMemLogNumWords :: Int
+    -- | Size of tightly coupled instruction memory
+  , scalarCoreInstrMemLogNumInstrs :: Int
   }
 
--- RV32IM core with UART input and output channels
+-- | RV32IM core with UART input and output channels
 makeScalarCore :: ScalarCoreConfig -> Stream (Bit 8) -> Module (Stream (Bit 8))
 makeScalarCore config uartIn = mdo
   -- CSR unit
   (uartOut, csrUnit) <- makeCSRUnit uartIn
 
   -- Tightly-coupled data memory
-  memUnit <- makeDTCM (config.scalarCoreDataMemInitFile)
+  memUnit <- makeDTCM
+    DTCMConfig {
+      dtcmInitFile = config.scalarCoreDataMemInitFile
+    , dtcmLogNumWords = config.scalarCoreDataMemLogNumWords
+    }
 
   -- Multiplier
   mulUnit <- makeHalfMulUnit
@@ -45,6 +55,7 @@ makeScalarCore config uartIn = mdo
   makeScalarPipeline
     ScalarPipelineConfig {
       instrMemInitFile = config.scalarCoreInstrMemInitFile
+    , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
     , decodeStage = decodeI ++ decodeM
     , executeStage = \s -> do
         executeI csrUnit memUnit s
@@ -58,7 +69,7 @@ makeScalarCore config uartIn = mdo
 
   return uartOut
 
--- Simulation version
+-- | Simulation version
 makeScalarCoreSim :: ScalarCoreConfig -> Module ()
 makeScalarCoreSim config = do
   uartOut <- makeScalarCore config nullStream
