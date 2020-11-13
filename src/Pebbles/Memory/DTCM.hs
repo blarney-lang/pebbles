@@ -26,7 +26,7 @@ data DTCMConfig =
   }
 
 -- | Tightly-coupled data memory with single-cycle read latency
-makeDTCM :: DTCMConfig -> Module MemUnit
+makeDTCM :: Bits t_id => DTCMConfig -> Module (MemUnit t_id)
 makeDTCM conf = 
   -- Determine address width at type level
   liftNat (conf.dtcmLogNumWords) \(_ :: Proxy t_addrWidth) -> do
@@ -38,10 +38,10 @@ makeDTCM conf =
     ready :: Reg (Bit 1) <- makeReg false
 
     -- Current request
-    reqWire :: Wire MemReq <- makeWire dontCare
+    reqWire :: Wire (MemReq t_id) <- makeWire dontCare
 
-    -- Ooriginal request
-    reqReg :: Reg MemReq <- makeReg dontCare
+    -- Original request id
+    reqIdReg :: Reg t_id <- makeReg dontCare
 
     -- Wire pulsed when response is consumed
     doConsume :: Wire (Bit 1) <- makeWire false
@@ -56,7 +56,7 @@ makeDTCM conf =
       -- Handle requests
       let req = reqWire.val
       when (reqWire.active) do
-        reqReg <== req
+        reqIdReg <== req.memReqId
         let addr = truncateCast (upper (req.memReqAddr) :: Bit 30)
         if req.memReqIsStore
           then storeBE dataMem addr (req.memReqByteEn) (req.memReqData)
@@ -75,8 +75,8 @@ makeDTCM conf =
           Source {
             peek =
               MemResp {
-                memRespData = dataMem.outBE
-              , memRespInfo = reqReg.val
+                memRespId = reqIdReg.val
+              , memRespData = dataMem.outBE
               }
           , canPeek = ready.val
           , consume = doConsume <== true

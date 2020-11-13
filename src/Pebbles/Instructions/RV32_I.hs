@@ -5,13 +5,13 @@ import Blarney
 import Blarney.Stmt
 import Blarney.Queue
 import Blarney.Stream
-import Blarney.Option
 import Blarney.BitScan
 import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.Memory.Interface
 import Pebbles.Instructions.Trap
+import Pebbles.Instructions.Memory
 import Pebbles.Instructions.CSRUnit
 import Pebbles.Pipeline.Interface
 
@@ -59,7 +59,7 @@ decodeI =
 -- Execute stage
 -- =============
 
-executeI :: CSRUnit -> MemUnit -> State -> Action ()
+executeI :: CSRUnit -> MemUnit MemReqId -> State -> Action ()
 executeI csrUnit memUnit s = do
   -- 33-bit add/sub/compare
   let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
@@ -135,13 +135,17 @@ executeI csrUnit memUnit s = do
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
-            memReqInfo        = info
-          , memReqIsStore     = isStore
-          , memReqAddr        = memAddr
-          , memReqByteEn      = genByteEnable (memAccessWidth.val) memAddr
-          , memReqData        = writeAlign (memAccessWidth.val) (s.opB)
-          , memReqAccessWidth = memAccessWidth.val
-          , memReqIsUnsigned  = memIsUnsignedLoad.val
+            memReqId =
+              MemReqId {
+                memReqIdLogAccessWidth = memAccessWidth.val
+              , memReqIdAddr = lower memAddr
+              , memReqIdIsUnsigned = memIsUnsignedLoad.val
+              , memReqIdInstrInfo = info
+              }
+          , memReqIsStore = isStore
+          , memReqAddr = memAddr
+          , memReqByteEn = genByteEnable (memAccessWidth.val) memAddr
+          , memReqData = writeAlign (memAccessWidth.val) (s.opB)
           }
       else s.retry
 
@@ -157,74 +161,3 @@ executeI csrUnit memUnit s = do
   when (s.opcode `is` ["CSRRW"]) do
     readCSR csrUnit (s.opBorImm.truncate) (s.result)
     writeCSR csrUnit (s.opBorImm.truncate) (s.opA)
-
--- Memory access helpers
--- =====================
-
--- RV32I memory access width
-type AccessWidth = Bit 2
-
--- Byte, half-word, or word access?
-isByteAccess, isHalfAccess, isWordAccess :: AccessWidth -> Bit 1
-isByteAccess = (.==. 0b00)
-isHalfAccess = (.==. 0b01)
-isWordAccess = (.==. 0b10)
-
--- Determine byte enables given access-width and address
-genByteEnable :: AccessWidth -> Bit 32 -> Bit 4
-genByteEnable w addr =
-  select [
-    isWordAccess w --> 0b1111
-  , isHalfAccess w --> (a.==.2) # (a.==.2) # (a.==.0) # (a.==.0)
-  , isByteAccess w --> (a.==.3) # (a.==.2) # (a.==.1) # (a.==.0)
-  ]
-  where a :: Bit 2 = truncate addr
-
--- Align write-data using access-width
-writeAlign :: AccessWidth -> Bit 32 -> Bit 32
-writeAlign w d =
-  select [
-    isWordAccess w --> b3 # b2 # b1 # b0
-  , isHalfAccess w --> b1 # b0 # b1 # b0
-  , isByteAccess w --> b0 # b0 # b0 # b0
-  ]
-  where
-    b0 = slice @7 @0 d
-    b1 = slice @15 @8 d
-    b2 = slice @23 @16 d
-    b3 = slice @31 @24 d
-
--- Determine result of load from memory response
-loadMux :: Bit 32 -> Bit 32 -> AccessWidth -> Bit 1 -> Bit 32
-loadMux respData addr w isUnsigned =
-    select [
-      isWordAccess w --> b3 # b2 # b1 # b0
-    , isHalfAccess w --> hExt # h
-    , isByteAccess w --> bExt # b
-    ]
-  where
-    a = lower addr :: Bit 2
-    b = select [
-          a .==. 0 --> b0
-        , a .==. 1 --> b1
-        , a .==. 2 --> b2
-        , a .==. 3 --> b3
-        ]
-    h = (at @1 a .==. 0) ? (b1 # b0, b3 # b2)
-    bExt = isUnsigned ? (0, signExtend (at @7 b))
-    hExt = isUnsigned ? (0, signExtend (at @15 h))
-    b0 = slice @7 @0 respData
-    b1 = slice @15 @8 respData
-    b2 = slice @23 @16 respData
-    b3 = slice @31 @24 respData
-
--- Convert memory response to pipeline resume request
-memRespToResumeReq :: MemResp -> ResumeReq
-memRespToResumeReq resp =
-  ResumeReq {
-    resumeReqInfo = origReq.memReqInfo
-  , resumeReqData =
-      loadMux (resp.memRespData) (origReq.memReqAddr)
-        (origReq.memReqAccessWidth) (origReq.memReqIsUnsigned)
-  }
-  where origReq = resp.memRespInfo

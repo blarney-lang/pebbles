@@ -13,6 +13,7 @@ import Pebbles.Memory.Interface
 import Pebbles.Memory.DTCM
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.Scalar
+import Pebbles.Instructions.Memory
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.CSRUnit
