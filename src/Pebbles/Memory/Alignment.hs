@@ -1,23 +1,12 @@
-module Pebbles.Instructions.Memory where
+module Pebbles.Memory.Alignment where
+
+-- Memory access alignment helpers
 
 -- Blarney imports
 import Blarney
 
 -- Pebbles imports
 import Pebbles.Memory.Interface
-import Pebbles.Pipeline.Interface
-
--- Memory access helpers
--- =====================
-
--- | RV32I memory access width (bytes = 2 ^ AccessWidth)
-type AccessWidth = Bit 2
-
--- | Byte, half-word, or word access?
-isByteAccess, isHalfAccess, isWordAccess :: AccessWidth -> Bit 1
-isByteAccess = (.==. 0b00)
-isHalfAccess = (.==. 0b01)
-isWordAccess = (.==. 0b10)
 
 -- | Determine byte enables given access-width and address
 genByteEnable :: AccessWidth -> Bit 32 -> Bit 4
@@ -65,29 +54,3 @@ loadMux respData a w isUnsigned =
     b1 = slice @15 @8 respData
     b2 = slice @23 @16 respData
     b3 = slice @31 @24 respData
-
--- | Memory request identifer, which we use to store information about
--- the request that's typically needed when processing the response
-data MemReqId =
-  MemReqId {
-    -- | Access width of request
-    memReqIdLogAccessWidth :: AccessWidth
-    -- | Lower bits of the address
-  , memReqIdAddr :: Bit 2
-    -- | Is it an unsigned load?
-  , memReqIdIsUnsigned :: Bit 1
-    -- | Information about the suspended instruction that needs
-    -- to be passed back to the pipeline in the resume stage
-  , memReqIdInstrInfo :: InstrInfo
-  } deriving (Generic, Bits)
-
--- | Convert memory response to pipeline resume request
-memRespToResumeReq :: MemResp MemReqId -> ResumeReq
-memRespToResumeReq resp =
-  ResumeReq {
-    resumeReqInfo = id.memReqIdInstrInfo
-  , resumeReqData =
-      loadMux (resp.memRespData) (id.memReqIdAddr)
-        (id.memReqIdLogAccessWidth) (id.memReqIdIsUnsigned)
-  }
-  where id = resp.memRespId

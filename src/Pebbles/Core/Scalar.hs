@@ -9,11 +9,10 @@ import Blarney.SourceSink
 import Blarney.Interconnect
 
 -- Pebbles imports
-import Pebbles.Memory.Interface
 import Pebbles.Memory.DTCM
-import Pebbles.Pipeline.Interface
+import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Scalar
-import Pebbles.Instructions.Memory
+import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.CSRUnit
@@ -69,6 +68,14 @@ makeScalarCore config uartIn = mdo
     }
 
   return uartOut
+
+-- | Convert memory response to pipeline resume request
+memRespToResumeReq :: MemResp InstrInfo -> ResumeReq
+memRespToResumeReq resp =
+  ResumeReq {
+    resumeReqInfo = resp.memRespId
+  , resumeReqData = resp.memRespData
+  }
 
 -- | Simulation version
 makeScalarCoreSim :: ScalarCoreConfig -> Module ()

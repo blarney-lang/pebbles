@@ -4,8 +4,8 @@ module Pebbles.Pipeline.SIMT
   , makeSIMTPipeline
   ) where
 
--- Simple 32-bit SIMT pipeline, with implicit thread convergence (a
--- la Simty) and a configurable number of warps and warp size.
+-- Simple 32-bit SIMT pipeline, with implicit thread convergence (a la
+-- Simty) and a configurable number of warps and warp size.
 --
 -- There are 7 pipeline stages:
 --
@@ -27,6 +27,11 @@ module Pebbles.Pipeline.SIMT
 -- threads, then a bubble passes through the pipeline and the warp
 -- will be tried again later.  In future, we might attempt to avoid
 -- scheduling a warp that contains a suspended thread.
+--
+-- Other considerations for future: (1) give retried instructions a
+-- higher priority than new instructions in the warp scheduler; (2)
+-- incorporate function call depth into active thread selection, a la
+-- Simty.
 
 -- Blarney imports
 import Blarney

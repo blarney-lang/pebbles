@@ -11,7 +11,6 @@ import Blarney.SourceSink
 -- Pebbles imports
 import Pebbles.Memory.Interface
 import Pebbles.Instructions.Trap
-import Pebbles.Instructions.Memory
 import Pebbles.Instructions.CSRUnit
 import Pebbles.Pipeline.Interface
 
@@ -59,7 +58,7 @@ decodeI =
 -- Execute stage
 -- =============
 
-executeI :: CSRUnit -> MemUnit MemReqId -> State -> Action ()
+executeI :: CSRUnit -> MemUnit InstrInfo -> State -> Action ()
 executeI csrUnit memUnit s = do
   -- 33-bit add/sub/compare
   let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
@@ -128,24 +127,19 @@ executeI csrUnit memUnit s = do
     let memIsUnsignedLoad = getField (s.fields) "ul"
     if memUnit.memReqs.canPut
       then do
-        let isStore = s.opcode `is` ["STORE"]
+        let isLoad = s.opcode `is` ["LOAD"]
         -- Currently the memory subsystem doesn't issue store responses
         -- so we make sure to only suspend on a load
-        info <- whenR (isStore.inv) (s.suspend)
+        info <- whenR isLoad (s.suspend)
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
-            memReqId =
-              MemReqId {
-                memReqIdLogAccessWidth = memAccessWidth.val
-              , memReqIdAddr = lower memAddr
-              , memReqIdIsUnsigned = memIsUnsignedLoad.val
-              , memReqIdInstrInfo = info
-              }
-          , memReqIsStore = isStore
+            memReqId = info
+          , memReqAccessWidth = memAccessWidth.val
+          , memReqOp = isLoad ? (memLoadOp, memStoreOp)
           , memReqAddr = memAddr
-          , memReqByteEn = genByteEnable (memAccessWidth.val) memAddr
-          , memReqData = writeAlign (memAccessWidth.val) (s.opB)
+          , memReqData = s.opB
+          , memReqIsUnsigned = memIsUnsignedLoad.val
           }
       else s.retry
 

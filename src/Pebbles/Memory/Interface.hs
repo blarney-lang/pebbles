@@ -10,19 +10,39 @@ import Pebbles.Pipeline.Interface
 -- Processor/memory interface
 -- ==========================
 
+-- | Memory operation
+type MemReqOp = Bit 2
+
+-- | Memory request opcodes
+memNullOp, memLoadOp, memStoreOp :: MemReqOp
+memNullOp = 0
+memLoadOp = 1
+memStoreOp = 2
+
+-- | Memory access width (bytes = 2 ^ AccessWidth)
+type AccessWidth = Bit 2
+
+-- | Byte, half-word, or word access?
+isByteAccess, isHalfAccess, isWordAccess :: AccessWidth -> Bit 1
+isByteAccess = (.==. 0b00)
+isHalfAccess = (.==. 0b01)
+isWordAccess = (.==. 0b10)
+
 -- | Memory requests from the processor
 data MemReq id =
   MemReq {
     -- | Identifier, to support out-of-order responses
     memReqId :: id
-    -- | Is it a store requets
-  , memReqIsStore :: Bit 1
+    -- | Access width of operation
+  , memReqAccessWidth :: AccessWidth
+    -- | Memory operation
+  , memReqOp :: MemReqOp
     -- | Memory address
   , memReqAddr :: Bit 32
-    -- | Byte enable for stores
-  , memReqByteEn :: Bit 4
     -- | Data to store
   , memReqData :: Bit 32
+    -- | Is it an unsigned load?
+  , memReqIsUnsigned :: Bit 1
   } deriving (Generic, Bits)
 
 -- | Memory responses to the processor

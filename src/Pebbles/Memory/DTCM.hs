@@ -7,6 +7,7 @@ import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.Memory.Interface
+import Pebbles.Memory.Alignment
 
 -- Haskell imports
 import Data.Proxy
@@ -40,8 +41,8 @@ makeDTCM conf =
     -- Current request
     reqWire :: Wire (MemReq t_id) <- makeWire dontCare
 
-    -- Original request id
-    reqIdReg :: Reg t_id <- makeReg dontCare
+    -- Original request
+    reqReg :: Reg (MemReq t_id) <- makeReg dontCare
 
     -- Wire pulsed when response is consumed
     doConsume :: Wire (Bit 1) <- makeWire false
@@ -56,13 +57,19 @@ makeDTCM conf =
       -- Handle requests
       let req = reqWire.val
       when (reqWire.active) do
-        reqIdReg <== req.memReqId
+        reqReg <== req
+        -- Formulate BRAM request
+        let aw = req.memReqAccessWidth
         let addr = truncateCast (upper (req.memReqAddr) :: Bit 30)
-        if req.memReqIsStore
-          then storeBE dataMem addr (req.memReqByteEn) (req.memReqData)
-          else loadBE dataMem addr
+        let byteEn = genByteEnable aw (req.memReqAddr)
+        let writeVal = writeAlign aw (req.memReqData)
+        -- Perform BRAM request
+        when (req.memReqOp .==. memLoadOp) do
+          loadBE dataMem addr
+        when (req.memReqOp .==. memStoreOp) do
+          storeBE dataMem addr byteEn writeVal
       -- Update ready register
-      ready <== full .|. (reqWire.active .&. req.memReqIsStore.inv)
+      ready <== full .|. (reqWire.active .&. (req.memReqOp .==. memLoadOp))
 
     return
       MemUnit {
@@ -75,8 +82,11 @@ makeDTCM conf =
           Source {
             peek =
               MemResp {
-                memRespId = reqIdReg.val
-              , memRespData = dataMem.outBE
+                memRespId = reqReg.val.memReqId
+              , memRespData = loadMux (dataMem.outBE)
+                                (reqReg.val.memReqAddr.truncate)
+                                (reqReg.val.memReqAccessWidth)
+                                (reqReg.val.memReqIsUnsigned)
               }
           , canPeek = ready.val
           , consume = doConsume <== true
