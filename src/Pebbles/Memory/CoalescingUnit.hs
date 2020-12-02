@@ -461,7 +461,7 @@ makeCoalescingUnit dramResps = do
         then do
           inflightQueue.deq
           dramResps.consume
-          loadCount <== 1
+          loadCount <== 0
         else do
           loadCount <== loadCount.val + 1
 
