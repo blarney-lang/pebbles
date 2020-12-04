@@ -1,3 +1,5 @@
+-- Data tightly-coupled memory (DTCM)
+
 module Pebbles.Memory.DTCM where
 
 -- Blarney imports
@@ -12,10 +14,8 @@ import Pebbles.Memory.Alignment
 -- Haskell imports
 import Data.Proxy
 
--- Data tightly-coupled memory (DTCM)
--- ==================================
-
--- One possible implementation of MemUnit, using a block RAM
+-- Types
+-- =====
 
 -- | DTCM options
 data DTCMConfig =
@@ -25,6 +25,9 @@ data DTCMConfig =
     -- Size of DTCM in words
   , dtcmLogNumWords :: Int
   }
+
+-- Implementation
+-- ==============
 
 -- | Tightly-coupled data memory with single-cycle read latency
 makeDTCM :: Bits t_id => DTCMConfig -> Module (MemUnit t_id)

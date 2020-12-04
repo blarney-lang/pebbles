@@ -27,3 +27,9 @@ NOTE("==================")
 NOTE("Number of SIMT lanes")
 #define SIMTLanes 32
 #define SIMTLogLanes 5
+
+NOTE("Host CPU simple blocking data cache configuration")
+NOTE("=================================================")
+
+NOTE("Number of cache lines (each line is of DRAM beat size)")
+#define SBDCacheLogLines 7

@@ -1,3 +1,5 @@
+-- Simple coalescing unit connecting SIMT lanes to DRAM
+
 module Pebbles.Memory.CoalescingUnit 
   ( makeCoalescingUnit
   ) where
