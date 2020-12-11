@@ -1,6 +1,8 @@
 #ifndef _PEBBLES_H_
 #define _PEBBLES_H_
 
+#include <stdint.h>
+
 // Control/status registers
 #define CSR_SimEmit        "0x800"
 #define CSR_SimFinish      "0x801"
@@ -8,6 +10,8 @@
 #define CSR_UARTPut        "0x803"
 #define CSR_UARTCanGet     "0x804"
 #define CSR_UARTGet        "0x805"
+#define CSR_InstrAddr      "0x806"
+#define CSR_WriteInstr     "0x807"
 
 #define INLINE inline __attribute__((always_inline))
 
@@ -51,6 +55,13 @@ INLINE int uartGet()
   int x;
   asm volatile ("csrrw %0, " CSR_UARTGet ", zero" : "=r"(x));
   return x;
+}
+
+// Write to instruction memory
+INLINE void writeInstr(uint32_t addr, uint32_t instr)
+{
+  asm volatile("csrw " CSR_InstrAddr ", %0\n" : : "r"(addr));
+  asm volatile("csrw " CSR_WriteInstr ", %0\n" : : "r"(instr));
 }
 
 #endif

@@ -1,7 +1,11 @@
-#include <io.h>
+// Boot loader
+#include <pebbles.h>
+#include <pebbles/io.h>
 
 int main()
 {
-  printf("hello world\n");
+  volatile int x;
+  x = 0xdeadbeef;
+  emit(x);
   return 0;
 }

@@ -1,6 +1,6 @@
-module Pebbles.Core.Scalar where
+-- 32-bit scalar core with 5-stage pipeline and data cache
 
--- 32-bit scalar core with 5-stage pipeline
+module Pebbles.SoC.Core.Scalar where
 
 -- Blarney imports
 import Blarney
@@ -9,42 +9,51 @@ import Blarney.SourceSink
 import Blarney.Interconnect
 
 -- Pebbles imports
-import Pebbles.Memory.DTCM
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Scalar
 import Pebbles.Pipeline.Interface
+import Pebbles.SoC.DRAM.Interface
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.CSRUnit
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
 
+-- Scalar core custom CSRs
+import Pebbles.SoC.Core.Scalar.CSRs
+
 -- | Configuration parameters
 data ScalarCoreConfig =
   ScalarCoreConfig {
     -- | Initialisation file for instruction memory
     scalarCoreInstrMemInitFile :: Maybe String
-    -- | Initialisation file for tightly coupled data memory
-  , scalarCoreDataMemInitFile :: Maybe String
-    -- | Size of tightly coupled data memory
-  , scalarCoreDataMemLogNumWords :: Int
     -- | Size of tightly coupled instruction memory
   , scalarCoreInstrMemLogNumInstrs :: Int
   }
 
 -- | RV32IM core with UART input and output channels
-makeScalarCore :: ScalarCoreConfig -> Stream (Bit 8) -> Module (Stream (Bit 8))
-makeScalarCore config uartIn = mdo
+makeScalarCore ::
+     -- | Configuration parameters
+     ScalarCoreConfig
+     -- | UART input
+  -> Stream (Bit 8)
+     -- | Memory unit
+  -> MemUnit InstrInfo
+     -- | UART output
+  -> Module (Stream (Bit 8))
+makeScalarCore config uartIn memUnit = mdo
+  -- UART CSRs
+  (uartCSRs, uartOut) <- makeCSRs_UART uartIn
+
+  -- Instruction memory CSRs
+  imemCSRs <- makeCSRs_InstrMem pipe
+
   -- CSR unit
-  (uartOut, csrUnit) <- makeCSRUnit uartIn
-
-  -- Tightly-coupled data memory
-  memUnit <- makeDTCM
-    DTCMConfig {
-      dtcmInitFile = config.scalarCoreDataMemInitFile
-    , dtcmLogNumWords = config.scalarCoreDataMemLogNumWords
-    }
-
+  csrUnit <- makeCSRUnit $
+       [csr_SimEmit, csr_SimFinish]
+    ++ uartCSRs
+    ++ imemCSRs
+ 
   -- Multiplier
   mulUnit <- makeHalfMulUnit
 
@@ -52,7 +61,7 @@ makeScalarCore config uartIn = mdo
   divUnit <- makeSeqDivUnit
 
   -- Processor pipeline
-  makeScalarPipeline
+  pipe <- makeScalarPipeline
     ScalarPipelineConfig {
       instrMemInitFile = config.scalarCoreInstrMemInitFile
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
@@ -76,12 +85,3 @@ memRespToResumeReq resp =
     resumeReqInfo = resp.memRespId
   , resumeReqData = resp.memRespData
   }
-
--- | Simulation version
-makeScalarCoreSim :: ScalarCoreConfig -> Module ()
-makeScalarCoreSim config = do
-  uartOut <- makeScalarCore config nullStream
-  always do
-    when (uartOut.canPeek) do
-      display_ "%c" (uartOut.peek)
-      uartOut.consume

@@ -1,6 +1,6 @@
 #include <stdarg.h>
-#include "pebbles.h"
-#include <io.h>
+#include <pebbles.h>
+#include <pebbles/io.h>
 
 int putchar(int c)
 {

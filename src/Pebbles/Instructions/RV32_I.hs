@@ -10,7 +10,6 @@ import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.Memory.Interface
-import Pebbles.Instructions.Trap
 import Pebbles.Instructions.CSRUnit
 import Pebbles.Pipeline.Interface
 
@@ -147,11 +146,12 @@ executeI csrUnit memUnit s = do
     noAction
 
   when (s.opcode `is` ["ECALL"]) do
-    trap s csrUnit (Exception exc_eCallFromU)
+    display "ECALL not implemented"
 
   when (s.opcode `is` ["EBREAK"]) do
-    trap s csrUnit (Exception exc_breakpoint)
+    display "EBREAK not implemented"
 
   when (s.opcode `is` ["CSRRW"]) do
-    readCSR csrUnit (s.opBorImm.truncate) (s.result)
-    writeCSR csrUnit (s.opBorImm.truncate) (s.opA)
+    x <- csrUnitRead csrUnit (s.opBorImm.truncate)
+    csrUnitWrite csrUnit (s.opBorImm.truncate) (s.opA)
+    s.result <== x
