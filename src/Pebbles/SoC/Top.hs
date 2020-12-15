@@ -43,7 +43,7 @@ makeTop socIns = mdo
   -- Scalar core
   let coreConfig =
         ScalarCoreConfig {
-          scalarCoreInstrMemInitFile = Just "prog.mif"
+          scalarCoreInstrMemInitFile = Just "boot.mif"
         , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       }
   toUART <- makeScalarCore coreConfig fromUART memUnit

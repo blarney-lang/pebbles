@@ -13,7 +13,7 @@
 // ==========
 
 // Default socket name to bind to
-#define JTAGUART_SOCKET_NAME "jtaguart"
+#define JTAGUART_SOCKET_NAME "jtaguart1"
 
 // Max size of internal queues
 #define JTAGUART_WQUEUE_SIZE 64
@@ -52,9 +52,6 @@ struct JTAGUART {
   std::queue<uint8_t> writeQueue;
   std::queue<uint32_t> readQueue;
 
-  // Read latch
-  uint32_t readLatch;
-
   // Constructor
   JTAGUART() {
     // Ignore SIGPIPE
@@ -76,7 +73,7 @@ struct JTAGUART {
 
     // Assign output signals
     *ifc.waitrequest = 0;
-    *ifc.readdata = readLatch;
+    *ifc.readdata = 0xffffffff;
 
     // Handle write
     if (*ifc.write) {
@@ -94,17 +91,17 @@ struct JTAGUART {
       if (*ifc.address == 0) {
         // Data read
         if (readQueue.size() > 0) {
-          readLatch = 0x8000 | readQueue.front();
+          *ifc.readdata = 0x8000 | readQueue.front();
           readQueue.pop();
         }
         else {
-          readLatch = 0;
+          *ifc.readdata = 0;
         }
       }
       else if (*ifc.address == 4) {
         // CSR read
         uint32_t wspace = writeQueue.size() < JTAGUART_WQUEUE_SIZE;
-        readLatch = wspace << 16;
+        *ifc.readdata = wspace << 16;
       }
     }
 

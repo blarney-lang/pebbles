@@ -28,8 +28,8 @@ NOTE("Number of SIMT lanes")
 #define SIMTLanes 32
 #define SIMTLogLanes 5
 
-NOTE("Host CPU configuration")
-NOTE("======================")
+NOTE("CPU configuration")
+NOTE("=================")
 
 NOTE("Size of tightly coupled instruction memory")
 #define CPUInstrMemLogWords 13

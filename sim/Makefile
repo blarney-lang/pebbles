@@ -1,7 +1,7 @@
 PEBBLES_ROOT ?= $(realpath ..)
 BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 
-sim: Main.cpp ../src/Pebbles.v prog.hex prog.mif
+sim: Main.cpp ../src/Pebbles.v boot.hex boot.mif
 	verilator -cc ../src/Pebbles.v -exe Main.cpp -o sim \
     -Wno-UNSIGNED -y $(BLARNEY_ROOT)/Verilog \
     --x-assign unique --x-initial unique \
@@ -13,11 +13,11 @@ sim: Main.cpp ../src/Pebbles.v prog.hex prog.mif
 ../src/Pebbles.v:
 	make -C $(PEBBLES_ROOT)/src
 
-prog.hex:
+boot.hex:
 	make -C $(PEBBLES_ROOT)/boot
 
-prog.mif: prog.hex
-	ln -s prog.hex prog.mif
+boot.mif: boot.hex
+	ln -s boot.hex boot.mif
 
 .PHONY: clean 
 clean:

@@ -114,4 +114,33 @@ int socketPutByte(int sock, int* conn, uint8_t byte)
   return 0;
 }
 
+// Open UART socket
+int socketConnect(const char* socketName)
+{
+  // Create socket
+  int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sock == -1) {
+    perror("socket");
+    return -1;
+  }
+
+  // Connect to socket
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(struct sockaddr_un));
+  addr.sun_family = AF_UNIX;
+  snprintf(&addr.sun_path[1], sizeof(addr.sun_path)-2, "%s", socketName);
+  addr.sun_path[0] = '\0';
+  int ret = connect(sock, (struct sockaddr *) &addr,
+              sizeof(struct sockaddr_un));
+  if (ret < 0) {
+    perror("connect");
+    return -1;
+  }
+
+  // Make it non-blocking
+  socketSetNonBlocking(sock);
+
+  return sock;
+}
+
 #endif

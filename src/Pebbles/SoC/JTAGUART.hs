@@ -101,7 +101,7 @@ makeJTAGUART streamIn avlIns = do
               (state.val .==. s_ReadWSpace)
         , avl_jtaguart_write =
             state.val .==. s_WriteData
-        , avl_jtaguart_writedata = zeroExtend (streamIn.canPeek)
+        , avl_jtaguart_writedata = zeroExtend (streamIn.peek)
         , avl_jtaguart_address =
             (state.val .==. s_ReadData) .|.
               (state.val .==. s_WriteData) ? (0, 4)

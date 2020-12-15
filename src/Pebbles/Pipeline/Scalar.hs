@@ -264,5 +264,5 @@ makeScalarPipeline c =
     return
       ScalarPipeline {
         writeInstr = \addr instr -> do
-          store instrMem (addr.truncateCast) instr
+          store instrMem (truncateCast (slice @31 @2 addr)) instr
       }

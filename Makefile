@@ -17,6 +17,8 @@ clean:
 	make -C de5-net clean
 	make -C tests clean
 	make -C sim clean
+	make -C lib clean
+	make -C apps clean
 
 # Fetch blarney repo if it's not there
 blarney/Makefile:

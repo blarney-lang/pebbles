@@ -1,5 +1,5 @@
-#ifndef _IO_H_
-#define _IO_H_
+#ifndef _CPU_IO_H_
+#define _CPU_IO_H_
 
 #ifdef __cplusplus
 extern "C" {

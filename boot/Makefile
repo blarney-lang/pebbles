@@ -2,7 +2,6 @@ PEBBLES_ROOT ?= $(realpath ..)
 
 SIM = $(PEBBLES_ROOT)/sim
 QP = $(PEBBLES_ROOT)/de5-net
-BIN = $(PEBBLES_ROOT)/tests
 
 # Binary utilities
 RV_ARCH    = rv32i
@@ -11,7 +10,7 @@ RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 
 # Compiler and linker flags
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 \
+CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -Os \
           -I $(PEBBLES_ROOT)/inc \
           -static -mcmodel=medany \
           -fvisibility=hidden -nostdlib -nostartfiles \
@@ -20,7 +19,7 @@ CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 \
 LDFLAGS = -melf32lriscv -G 0 
 
 # C files to compile
-CFILES = main.c $(PEBBLES_ROOT)/lib/pebbles/io.c
+CFILES = boot.c
 OFILES = $(patsubst %.c,%.o,$(CFILES))
 
 # Size of instruction memory
@@ -29,18 +28,18 @@ LOG_INSTR_BYTES = $(shell echo -n CPUInstrMemLogWords \
 INSTR_BYTES = $(shell echo "4 * (2 ^ $(LOG_INSTR_BYTES))" | bc)
 
 .PHONY: all
-all: $(SIM)/prog.hex $(QP)/prog.mif
+all: $(SIM)/boot.hex $(QP)/boot.mif
 
 link.ld: link.ld.h
 	cpp -P -I $(PEBBLES_ROOT)/inc link.ld.h > link.ld
 
-$(SIM)/prog.hex: InstrMem.ihex
-	$(BIN)/ihex-to-img.py InstrMem.ihex hex 0 4 $(INSTR_BYTES) 1 \
-    > $(SIM)/prog.hex
+$(SIM)/boot.hex: InstrMem.ihex
+	./ihex-to-img.py InstrMem.ihex hex 0 4 $(INSTR_BYTES) 1 \
+    > $(SIM)/boot.hex
 
-$(QP)/prog.mif: InstrMem.ihex
-	$(BIN)/ihex-to-img.py InstrMem.ihex mif 0 4 $(INSTR_BYTES) 1 \
-    > $(QP)/prog.mif
+$(QP)/boot.mif: InstrMem.ihex
+	./ihex-to-img.py InstrMem.ihex mif 0 4 $(INSTR_BYTES) 1 \
+    > $(QP)/boot.mif
 
 InstrMem.ihex: out.elf
 	$(RV_OBJCOPY) --only-section=.text -O ihex out.elf InstrMem.ihex
