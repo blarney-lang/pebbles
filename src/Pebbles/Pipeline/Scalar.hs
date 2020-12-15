@@ -43,8 +43,15 @@ data ScalarPipelineConfig =
   , resumeStage :: Stream ResumeReq
   }
 
+-- | Scalar pipeline management
+data ScalarPipeline =
+  ScalarPipeline {
+    -- Write to instruction memory
+    writeInstr :: Bit 32 -> Bit 32 -> Action ()
+  }
+
 -- | Scalar pipeline
-makeScalarPipeline :: ScalarPipelineConfig -> Module ()
+makeScalarPipeline :: ScalarPipelineConfig -> Module ScalarPipeline
 makeScalarPipeline c = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
@@ -59,7 +66,7 @@ makeScalarPipeline c =
 
     -- Instruction memory
     instrMem :: RAM (Bit t_instrAddrWidth) Instr <-
-      makeRAMCore (c.instrMemInitFile)
+      makeDualRAMCore (c.instrMemInitFile)
 
     -- Two block RAMs allows two operands to be read,
     -- and one result to be written, on every cycle
@@ -92,22 +99,23 @@ makeScalarPipeline c =
     -- Is there a multi-cycle instruction in progress?
     suspendInProgress :: Reg (Bit 1) <- makeReg false
 
-    -- Did instruction in execute stage request a retry on previous cycle?
-    doRetry :: Reg (Bit 1) <- makeDReg false
+    -- Did instruction in execute stage request a retry?
+    retryWire :: Wire (Bit 1) <- makeWire false
 
     -- Program counters for each pipeline stage
     pc1 :: Reg (Bit 32) <- makeReg 0xfffffffc
     pc2 :: Reg (Bit 32) <- makeReg dontCare
     pc3 :: Reg (Bit 32) <- makeReg dontCare
 
-    -- Instruction registers for pipeline stages 2, 3 and 4
+    -- Instruction registers for each pipeline stage
     instr2 :: Reg Instr <- makeReg 0
     instr3 :: Reg Instr <- makeReg 0
     instr4 :: Reg Instr <- makeReg 0
 
-    -- Stage-active registers for pipeline stages 2, 3, and 4
-    active2 :: Reg (Bit 1) <- makeReg false
-    active3 :: Reg (Bit 1) <- makeReg false
+    -- Triggers for each pipeline stage
+    go1 :: Reg (Bit 1) <- makeDReg false
+    go2 :: Reg (Bit 1) <- makeDReg false
+    go3 :: Reg (Bit 1) <- makeDReg false
 
     always do
       -- Stage 0: Instruction Fetch
@@ -122,25 +130,23 @@ makeScalarPipeline c =
 
       -- Handle stall
       if stallWire.val
-        then instrMem.preserveOut
-        else pc1 <== pcFetch
-
-      -- Stage 1 always active, except on first cycle
-      let active1 :: Bit 1 = reg 0 1
+        then do
+          instrMem.preserveOut
+          go1 <== go1.val
+          go2 <== go2.val
+        else do
+          pc1 <== pcFetch
+          go1 <== true
 
       -- Stage 1: Operand Fetch
       -- ======================
 
-      if pcNext.active
-        then do
-          -- Disable stage 2 on pipeline flush
-          active2 <== false
-        else do
-          -- Move to stage 2 when not stalling
-          when (stallWire.val.inv) do
-            active2 <== active1
-            instr2  <== instrMem.out
-            pc2     <== pc1.val
+      when (go1.val) do
+        -- Trigger stage 2 when not flushing or stalling
+        when (pcNext.active.inv .&. stallWire.val.inv) do
+          go2 <== true
+          instr2 <== instrMem.out
+          pc2 <== pc1.val
 
       -- Fetch operands
       load regFileA (stallWire.val ? (instr2.val.srcA, instrMem.out.srcA))
@@ -173,24 +179,18 @@ makeScalarPipeline c =
                           in imm.valid ? (imm.val, b)
                      else b
 
-      when (stallWire.val.inv) do
-        -- Latch operands
-        regA <== a
-        regB <== b
-        regBorImm <== bOrImm
+      when (go2.val) do
+        -- Trigger stage 3 when not flushing or stalling
+        when (pcNext.active.inv .&. stallWire.val.inv) do
+          -- Latch operands
+          regA <== a
+          regB <== b
+          regBorImm <== bOrImm
 
-        -- Latch instruction and PC for next stage
-        instr3 <== instr2.val
-        pc3 <== pc2.val
-
-      -- Enable execute stage?
-      if pcNext.active
-        then do
-          -- Disable stage 3 on pipeline flush
-          active3 <== false
-        else do
-          -- Enable stage 3 when there's no pipeline stall
-          active3 <== active2.val .&. stallWire.val.inv
+          -- Trigger next stage
+          go3 <== true
+          instr3 <== instr2.val
+          pc3 <== pc2.val
 
       -- Stage 3: Execute
       -- ================
@@ -199,8 +199,8 @@ makeScalarPipeline c =
       let bufferEn = delayEn dontCare
       let bufferField en opt =
             Option (bufferEn en (opt.valid)) (map (bufferEn en) (opt.val))
-      let tagMap3 = Map.map (bufferEn (active2.val)) tagMap
-      let fieldMap3 = Map.map (bufferField (active2.val)) fieldMap
+      let tagMap3 = Map.map (bufferEn (stallWire.val.inv)) tagMap
+      let fieldMap3 = Map.map (bufferField (stallWire.val.inv)) fieldMap
 
       -- State for execute stage
       let state = State {
@@ -209,7 +209,7 @@ makeScalarPipeline c =
             , opB = regB.val
             , opBorImm = regBorImm.val
             , pc = ReadWrite (pc3.val) (pcNext <==)
-            , result = WriteOnly $ \x ->
+            , result = WriteOnly \x ->
                          when (instr3.val.dst .!=. 0) do
                            resultWire <== x
             , suspend = do
@@ -219,17 +219,18 @@ makeScalarPipeline c =
                 stallWire <== true
                 return dontCare
             , retry = do
-                doRetry <== true
+                go3 <== true
+                retryWire <== true
                 stallWire <== true
             , opcode = tagMap3
             , fields = fieldMap3
             }
 
       -- Execute stage
-      when (active3.val .|. doRetry.val) do
+      when (go3.val) do
         executeStage c state
-      when (active3.val) do
-        instr4 <== instr3.val
+        when (retryWire.val.inv) do
+          instr4 <== instr3.val
 
       -- Stage 4: Writeback
       -- ==================
@@ -258,3 +259,10 @@ makeScalarPipeline c =
       when (finalResultWire.active) do
         store regFileA rd (finalResultWire.val)
         store regFileB rd (finalResultWire.val)
+
+    -- Pipeline management interface
+    return
+      ScalarPipeline {
+        writeInstr = \addr instr -> do
+          store instrMem (truncateCast (slice @31 @2 addr)) instr
+      }

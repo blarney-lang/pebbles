@@ -1,51 +1,22 @@
-module Pebbles.SoC.DRAM where
+module Pebbles.SoC.DRAM.Wrapper
+  ( makeDRAM
+  , makeDRAMUnstoppable
+  ) where
 
 -- SoC parameters
 #include <SoC.h>
 
 -- Local imports
 import Pebbles.Util.Counter
+import Pebbles.SoC.DRAM.Interface
 
 -- Blarney imports
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
 
--- DRAM interface
--- ==============
-
-type DRAMAddr   = Bit DRAMAddrWidth
-type DRAMBeat   = Bit DRAMBeatBits
-type DRAMBurst  = Bit DRAMBurstWidth
-type DRAMByteEn = Bit DRAMBeatBytes
-
--- | DRAM request
-data DRAMReq id = 
-  DRAMReq {
-    -- | Request id
-    dramReqId :: id
-    -- | Store operation?
-  , dramReqIsStore :: Bit 1
-    -- | Address
-  , dramReqAddr :: DRAMAddr
-    -- | Data to store
-  , dramReqData :: DRAMBeat
-    -- | Byte enable of store
-  , dramReqByteEn :: DRAMByteEn
-    -- | Burst
-  , dramReqBurst :: DRAMBurst
-  } deriving (Generic, FShow, Bits, Interface)
-
--- | DRAM response
-data DRAMResp id =
-  DRAMResp {
-    -- | Response id
-    dramRespId :: id
-    -- | Beat id for burst
-  , dramRespBurstId :: DRAMBurst
-    -- | Result of load operation
-  , dramRespData :: DRAMBeat
-  } deriving (Generic, FShow, Bits, Interface)
+-- Types
+-- =====
 
 -- Used internally
 data DRAMInFlightReq id =
@@ -54,32 +25,10 @@ data DRAMInFlightReq id =
   , dramInFlightBurst :: DRAMBurst
   } deriving (Generic, Bits)
 
--- Avalon DRAM interface
--- =====================
-
--- | Inputs coming from Avalon
-data AvalonDRAMIns =
-  AvalonDRAMIns {
-    avl_dram_readdata      :: DRAMBeat
-  , avl_dram_readdatavalid :: Bit 1
-  , avl_dram_waitrequest   :: Bit 1
-  } deriving (Generic, Bits, Interface)
-
--- | Outputs going to Avalon
-data AvalonDRAMOuts =
-  AvalonDRAMOuts {
-    avl_dram_read       :: Bit 1
-  , avl_dram_write      :: Bit 1
-  , avl_dram_writedata  :: DRAMBeat
-  , avl_dram_address    :: DRAMAddr
-  , avl_dram_byteen     :: DRAMByteEn
-  , avl_dram_burstcount :: DRAMBurst  
-  } deriving (Generic, Bits, Interface)
-
 -- DRAM wrapper core
 -- =================
 
--- Used internally (not exported)
+-- Used internally
 makeDRAMCore :: Bits t_id =>
      -- Type of queue used to buffer responses
      (forall a. Bits a => Module (Queue a))

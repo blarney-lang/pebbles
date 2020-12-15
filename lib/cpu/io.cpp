@@ -1,11 +1,11 @@
 #include <stdarg.h>
-#include "pebbles.h"
-#include <io.h>
+#include <cpu.h>
+#include <cpu/io.h>
 
 int putchar(int c)
 {
-  while (! uartCanPut());
-  uartPut(c);
+  while (! cpuUartCanPut());
+  cpuUartPut(c);
   return c;
 }
 

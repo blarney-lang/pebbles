@@ -1,79 +1,77 @@
 module Pebbles.Instructions.CSRUnit where
 
+-- Blarney imports
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
 
--- Control/status registers
--- ========================
+-- Haskell imports
+import Control.Monad (forM_)
 
--- +-------------+---------+--------+-------------------------------------+
--- | CSR         | Address | Access | Description                         |
--- +-------------+---------+--------+-------------------------------------+
--- | mstatus     | 0x300   | MRW    | Machine status register             |
--- | mepc        | 0x341   | MRW    | Machine exception program counter   |
--- | mcause      | 0x342   | MRW    | Machine trap cause                  |
--- | SimEmit     | 0x800   | W      | Emit word in simulation             |
--- | SimFinish   | 0x801   | W      | Terminate simulator                 |
--- | UARTCanPut  | 0x802   | R      | Can write to UART?                  |
--- | UARTPut     | 0x803   | W      | Write byte to UART                  |
--- | UARTCanGet  | 0x804   | R      | Can read from UART?                 |
--- | UARTGet     | 0x805   | R      | Read byte from UART                 |
--- +-------------+---------+--------+-------------------------------------+
+-- Control/status registers (CSRs)
+-- ===============================
 
--- CSR address
-type CSRIdx = Bit 12
+-- | CSR identifier / address
+type CSRId = Bit 12
 
--- CSR unit, providing ability to read and write CSRs
+-- | Representing a single CSR
+data CSR =
+  CSR {
+    -- | CSR identifier
+    csrId :: Integer
+    -- | Optional read action
+  , csrRead :: Maybe (Action (Bit 32))
+    -- | Optional write action
+  , csrWrite :: Maybe (Bit 32 -> Action ())
+  }
+
+-- | CSR unit, providing ability to read and write CSRs
 data CSRUnit =
-  CSRUnit { mstatus  :: Reg (Bit 32)
-          , mepc     :: Reg (Bit 32)
-          , mcause   :: Reg (Bit 32)
-          , writeCSR :: CSRIdx -> Bit 32 -> Action ()
-          , readCSR  :: CSRIdx -> WriteOnly (Bit 32) -> Action ()
-          }
+  CSRUnit {
+    csrUnitRead :: CSRId -> Action (Bit 32)
+  , csrUnitWrite :: CSRId -> Bit 32 -> Action ()
+  }
 
-makeCSRUnit :: Stream (Bit 8) -> Module (Stream (Bit 8), CSRUnit)
-makeCSRUnit uartIn = do
-  -- UART output buffer
-  uartOut :: Queue (Bit 8) <- makeShiftQueue 1
+makeCSRUnit :: [CSR] -> Module CSRUnit
+makeCSRUnit csrs = do
+  -- CSR id for read
+  csrIdReadWire :: Wire CSRId <- makeWire dontCare
 
-  -- Cycle counter
-  cycleCount :: Reg (Bit 32) <- makeReg 0
-  always do cycleCount <== cycleCount.val + 1
+  -- CSR id for write
+  csrIdWriteWire :: Wire CSRId <- makeWire dontCare
 
-  -- Standard RISCV CSRs
-  -- TODO: deal with proper types and legal values
-  mstatus :: Reg (Bit 32) <- makeReg 0
-  mepc    :: Reg (Bit 32) <- makeReg 0
-  mcause  :: Reg (Bit 32) <- makeReg 0
+  -- CSR write value
+  csrWriteWire :: Wire (Bit 32) <- makeWire dontCare
 
-  -- Handle CSR writes
-  let writeCSR csridx x =
-        switch csridx [
-          0x300 --> mstatus <== x
-        , 0x341 --> mepc    <== x
-        , 0x342 --> mcause  <== x
-        , 0x800 --> display (cycleCount.val) ": 0x%08x" x
-        , 0x801 --> finish
-        , 0x803 --> enq uartOut (truncate x)
-        ]
+  rds <- always do
+    -- Handle CSR writes
+    forM_ csrs \csr ->
+      case csr.csrWrite of
+        Nothing -> return ()
+        Just wr ->
+          when (csrIdWriteWire.active) do
+            when (csr.csrId.fromInteger .==. csrIdWriteWire.val) do
+              wr (csrWriteWire.val)
 
-  -- Handle CSR writes
-  let readCSR csridx result =
-        switch csridx [
-          0x300 --> result <== mstatus.val
-        , 0x341 --> result <== mepc.val
-        , 0x342 --> result <== mcause.val
-        , 0x802 --> result <== zeroExtend (uartOut.notFull)
-        , 0x804 --> result <== zeroExtend (uartIn.canPeek)
-        , 0x805 --> do result <== zeroExtend (uartIn.peek)
-                       uartIn.consume
-        ]
+    -- Handle CSR reads
+    forM csrs \csr ->
+      case csr.csrRead of
+        Nothing -> return []
+        Just rd -> do
+          let cond = csrIdReadWire.active .&.
+                       (csr.csrId.fromInteger .==. csrIdReadWire.val)
+          x <- whenR cond rd
+          return [(cond, x)]
 
-  return (uartOut.toStream, CSRUnit { mstatus  = mstatus
-                                    , mepc     = mepc
-                                    , mcause   = mcause
-                                    , writeCSR = writeCSR
-                                    , readCSR  = readCSR
-                                    })
+  -- Select read value
+  let readVal = select (concat rds)
+
+  return
+    CSRUnit {
+      csrUnitRead = \id -> do
+        csrIdReadWire <== id
+        return readVal
+    , csrUnitWrite = \id x -> do
+        csrIdWriteWire <== id
+        csrWriteWire <== x
+    }

@@ -1,21 +1,24 @@
 PEBBLES_ROOT ?= $(realpath ..)
 BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 
-SimPebbles: SimPebbles.v data.hex prog.hex SimPebbles.cpp
-	verilator -cc SimPebbles.v -exe SimPebbles.cpp -o SimPebbles -Wno-UNSIGNED -y $(BLARNEY_ROOT)/Verilog --x-assign unique --x-initial unique
-	make -C obj_dir -j -f VSimPebbles.mk SimPebbles
-	cp obj_dir/SimPebbles .
+sim: Main.cpp ../src/Pebbles.v boot.hex boot.mif
+	verilator -cc ../src/Pebbles.v -exe Main.cpp -o sim \
+    -Wno-UNSIGNED -y $(BLARNEY_ROOT)/Verilog \
+    --x-assign unique --x-initial unique \
+    -CFLAGS "-I $(PEBBLES_ROOT)/inc -fmax-errors=1"
+	make -C obj_dir -j -f VPebbles.mk sim
+	cp obj_dir/sim .
 	rm -rf obj_dir
 
-SimPebbles.v:
+../src/Pebbles.v:
 	make -C $(PEBBLES_ROOT)/src
 
-data.hex:
+boot.hex:
 	make -C $(PEBBLES_ROOT)/boot
 
-prog.hex:
-	make -C $(PEBBLES_ROOT)/boot
+boot.mif: boot.hex
+	ln -s boot.hex boot.mif
 
 .PHONY: clean 
 clean:
-	rm -rf SimPebbles *.hex obj_dir SimPebbles.v Pebbles.v
+	rm -rf sim *.hex *.mif obj_dir

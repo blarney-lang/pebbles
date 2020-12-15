@@ -28,8 +28,17 @@ NOTE("Number of SIMT lanes")
 #define SIMTLanes 32
 #define SIMTLogLanes 5
 
-NOTE("Host CPU simple blocking data cache configuration")
-NOTE("=================================================")
+NOTE("CPU configuration")
+NOTE("=================")
 
-NOTE("Number of cache lines (each line is of DRAM beat size)")
+NOTE("Size of tightly coupled instruction memory")
+#define CPUInstrMemLogWords 13
+
+NOTE("Number of cache lines (line size == DRAM beat size)")
 #define SBDCacheLogLines 7
+
+NOTE("Memory map")
+NOTE("==========")
+
+NOTE("Space reserved for boot loader")
+#define MaxBootImageBytes 512

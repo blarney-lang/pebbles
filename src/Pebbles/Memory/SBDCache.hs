@@ -16,9 +16,9 @@ import Blarney.SourceSink
 import qualified Blarney.Vector as V
 
 -- Pebbles imports
-import Pebbles.SoC.DRAM
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
+import Pebbles.SoC.DRAM.Interface
 
 -- Types
 -- =====
@@ -119,8 +119,7 @@ makeSBDCache dramResps = do
               let loadWords :: V.Vec DRAMBeatWords (Bit 32) =
                     unpack (dataMem.outBE)
               -- Loaded word
-              let loadWord = loadWords !
-                    reqWire.val.memReqAddr.getLineWordOffset
+              let loadWord = loadWords ! lineOffset
               -- Check for space in response queue
               if respQueue.notFull 
                 then do
