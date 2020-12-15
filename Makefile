@@ -6,16 +6,11 @@ verilog: blarney/Makefile
 sim: verilog
 	make -C sim
 
-.PHONY: test
-test: sim
-	make -C tests test
-
 .PHONY: clean
 clean:
 	make -C boot clean
 	make -C src clean
 	make -C de5-net clean
-	make -C tests clean
 	make -C sim clean
 	make -C lib clean
 	make -C apps clean

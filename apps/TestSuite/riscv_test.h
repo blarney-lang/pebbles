@@ -41,19 +41,22 @@
 //-----------------------------------------------------------------------
 
 #define TESTNUM x28
-#define CSR_EMIT 0x800
-#define CSR_TERM 0x801
+#define CSR_UARTCanPut 0x802
+#define CSR_UARTPut 0x803
 
 #define RVTEST_PASS                                                     \
         li TESTNUM, 1;                                                  \
-        csrw CSR_EMIT, TESTNUM;                                         \
-        csrw CSR_TERM, TESTNUM;                                         \
-        j .;
+        1: csrrw t0, CSR_UARTCanPut, zero;                              \
+        beq t0, zero, 1b;                                               \
+        csrw CSR_UARTPut, TESTNUM;                                      \
+        jr zero;
 
 #define RVTEST_FAIL                                                     \
         sll TESTNUM, TESTNUM, 1;                                        \
-        csrw CSR_EMIT, TESTNUM;                                      \
-        j .; 
+        1:csrrw t0, CSR_UARTCanPut, zero;                               \
+        beq t0, zero, 1b;                                               \
+        csrw CSR_UARTPut, TESTNUM;                                      \
+        jr zero; 
 
 //-----------------------------------------------------------------------
 // Data Section Macro
