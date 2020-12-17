@@ -1,4 +1,4 @@
--- 32-bit scalar core with 5-stage pipeline and data cache
+-- 32-bit scalar core with 5-stage pipeline
 
 module Pebbles.SoC.Core.Scalar where
 
@@ -9,18 +9,18 @@ import Blarney.SourceSink
 import Blarney.Interconnect
 
 -- Pebbles imports
+import Pebbles.CSRs.Sim
+import Pebbles.CSRs.UART
+import Pebbles.CSRs.InstrMem
+import Pebbles.CSRs.CSRUnit
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Scalar
 import Pebbles.Pipeline.Interface
 import Pebbles.SoC.DRAM.Interface
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
-import Pebbles.Instructions.CSRUnit
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
-
--- Scalar core custom CSRs
-import Pebbles.SoC.Core.Scalar.CSRs
 
 -- | Configuration parameters
 data ScalarCoreConfig =
@@ -46,11 +46,11 @@ makeScalarCore config uartIn memUnit = mdo
   (uartCSRs, uartOut) <- makeCSRs_UART uartIn
 
   -- Instruction memory CSRs
-  imemCSRs <- makeCSRs_InstrMem pipe
+  imemCSRs <- makeCSRs_InstrMem (pipeline.writeInstr)
 
   -- CSR unit
   csrUnit <- makeCSRUnit $
-       [csr_SimEmit, csr_SimFinish]
+       csrs_Sim
     ++ uartCSRs
     ++ imemCSRs
  
@@ -61,7 +61,7 @@ makeScalarCore config uartIn memUnit = mdo
   divUnit <- makeSeqDivUnit
 
   -- Processor pipeline
-  pipe <- makeScalarPipeline
+  pipeline <- makeScalarPipeline
     ScalarPipelineConfig {
       instrMemInitFile = config.scalarCoreInstrMemInitFile
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
@@ -77,11 +77,3 @@ makeScalarCore config uartIn memUnit = mdo
     }
 
   return uartOut
-
--- | Convert memory response to pipeline resume request
-memRespToResumeReq :: MemResp InstrInfo -> ResumeReq
-memRespToResumeReq resp =
-  ResumeReq {
-    resumeReqInfo = resp.memRespId
-  , resumeReqData = resp.memRespData
-  }

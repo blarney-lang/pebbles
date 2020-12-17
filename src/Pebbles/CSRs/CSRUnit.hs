@@ -1,4 +1,4 @@
-module Pebbles.Instructions.CSRUnit where
+module Pebbles.CSRs.CSRUnit where
 
 -- Blarney imports
 import Blarney

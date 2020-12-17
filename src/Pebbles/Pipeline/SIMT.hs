@@ -48,40 +48,42 @@ import qualified Data.Map as Map
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
 
--- SIMT pipeline configuration
+-- | SIMT pipeline configuration
 data SIMTPipelineConfig =
   SIMTPipelineConfig {
-    -- Instruction memory initilaisation file
+    -- | Instruction memory initialisation file
     instrMemInitFile :: Maybe String
-    -- Instuction memory size (in number of instructions)
-  , logMaxInstrs :: Int
-    -- Number of warps
+    -- | Instuction memory size (in number of instructions)
+  , instrMemLogNumInstrs :: Int
+    -- | Number of warps
   , logNumWarps :: Int
-    -- Decode table
+    -- | Decode table
   , decodeStage :: [(String, String)]
-    -- List of execute stages, one per lane
+    -- | List of execute stages, one per lane
     -- The size of this list is the warp size
   , executeStage :: [State -> Action ()]
-    -- List of resumption streams, for multi-cycle instructions
+    -- | List of resumption streams, for multi-cycle instructions
   , resumeStage :: [Stream ResumeReq]
   }
 
--- SIMT pipeline management
+-- | SIMT pipeline management
 data SIMTPipeline =
   SIMTPipeline {
-      -- Write to instruction memory
+      -- | Write to instruction memory
       writeInstr :: Bit 32 -> Bit 32 -> Action ()
-      -- Start all warps with a given PC
+      -- | Start all warps with a given PC
     , startPipeline :: Bit 32 -> Action ()
+      -- | Warp id of instruction currently in execute stage
+    , currentWarpId :: Bit 32
   }
 
--- SIMT pipeline
+-- | SIMT pipeline
 makeSIMTPipeline :: SIMTPipelineConfig -> Module SIMTPipeline
 makeSIMTPipeline c =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
-  liftNat (c.logMaxInstrs) \(_ :: Proxy t_logInstrs) ->
-  liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) -> do
+  liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) ->
+  liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) -> do
 
     -- Sanity check
     staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
@@ -367,4 +369,5 @@ makeSIMTPipeline c =
           store instrMem (addr.truncateCast) instr
       , startPipeline = \pc -> do
           startReg <== some (pc.truncateCast)
+      , currentWarpId = warpId5.val.zeroExtendCast
       }

@@ -15,10 +15,10 @@ import Blarney.SourceSink
 import qualified Blarney.Vector as V
 
 -- Pebbles imports
-import Pebbles.SoC.DRAM
 import Pebbles.Util.List
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
+import Pebbles.SoC.DRAM.Interface
 
 -- Haskell imports
 import Data.List
@@ -70,7 +70,7 @@ data CoalescingInfo t_id =
 --   5. Consume DRAM responses and issue load responses
 --
 -- Notes:
---   * The number of SIMT lanes is assumed equal to be equal to the
+--   * The number of SIMT lanes is assumed to be equal to the
 --     number of half-words in a DRAM Beat.
 --   * We assume that DRAM responses come back in order.
 --   * Backpressure on memory responses currently propagates to
@@ -148,7 +148,7 @@ makeCoalescingUnit dramResps = do
         [ q.canDeq .&. (q.first.memReqOp .!=. memNullOp)
         | q <- memReqQueues ]
       -- Trigger pipeline
-      go1 <== true
+      go1 <== orList [q.canDeq | q <- memReqQueues]
 
     -- Preserve go signals on stall
     when (stallWire.val) do

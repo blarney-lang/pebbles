@@ -9,8 +9,8 @@ import Blarney.BitScan
 import Blarney.SourceSink
 
 -- Pebbles imports
+import Pebbles.CSRs.CSRUnit
 import Pebbles.Memory.Interface
-import Pebbles.Instructions.CSRUnit
 import Pebbles.Pipeline.Interface
 
 -- Decode stage

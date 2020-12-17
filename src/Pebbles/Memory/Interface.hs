@@ -62,3 +62,14 @@ data MemUnit id =
     -- | Response source
   , memResps :: Source (MemResp id)
   }
+
+-- Helper functions
+-- ================
+
+-- | Convert memory response to pipeline resume request
+memRespToResumeReq :: MemResp InstrInfo -> ResumeReq
+memRespToResumeReq resp =
+  ResumeReq {
+    resumeReqInfo = resp.memRespId
+  , resumeReqData = resp.memRespData
+  }

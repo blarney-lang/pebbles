@@ -17,14 +17,14 @@ import Pebbles.Memory.Interface
 -- inserting "null" requests from the SIMT lanes than do not make a
 -- request on the same cycle as those that do.
 makeWarpPreserver :: Bits t_id =>
-     -- | A memory request sink for each SIMT lane
-     [Sink (MemReq t_id)]
-     -- | A memory request sink for each SIMT lane, with null requests
+     -- | Memory unit interface for each SIMT lane
+     [MemUnit t_id]
+     -- | A new memory unit interface for each SIMT lane, with null requests
      -- inserted to keep the requests of the same warp in lock-step
-  -> Module [Sink (MemReq t_id)]
+  -> Module [MemUnit t_id]
 makeWarpPreserver inps = do
   -- Determine if all sinks allow put
-  let allCanPut = tree (.&.) true [inp.canPut | inp <- inps]
+  let allCanPut = andList [inp.memReqs.canPut | inp <- inps]
 
   -- Null request
   let nullReq = dontCare { memReqOp = memNullOp }
@@ -33,22 +33,25 @@ makeWarpPreserver inps = do
   putWires :: [Wire (Bit 1)] <- replicateM (length inps) (makeWire false)
 
   -- Catch case when a request is being made to any sink
-  let anyPut = tree (.|.) false (map val putWires)
+  let anyPut = orList (map val putWires)
 
   always do
     -- Insert null requests
     forM_ (zip inps putWires) \(inp, putWire) ->
       when (anyPut .&. putWire.val.inv) do
-        put inp nullReq
+        put (inp.memReqs) nullReq
 
   return
-    [ Sink {
-        -- Can only put if all sinks can put
-        canPut = allCanPut
-        -- Observe when put is called
-      , put = \x -> do
-          put inp x
-          putWire <== true
+    [ inp {
+        memReqs =
+          Sink {
+            -- Can only put if all sinks can put
+            canPut = allCanPut
+            -- Observe when put is called
+          , put = \x -> do
+              put (inp.memReqs) x
+              putWire <== true
+          }
       }
-      | (inp, putWire) <- zip inps putWires
+    | (inp, putWire) <- zip inps putWires
     ]

@@ -24,9 +24,12 @@ NOTE("Maximum number of inflight requests supported by DRAM wrapper")
 NOTE("SIMT configuration")
 NOTE("==================")
 
-NOTE("Number of SIMT lanes")
+NOTE("Number of lanes per SIMT core")
 #define SIMTLanes 32
 #define SIMTLogLanes 5
+
+NOTE("Number of warps per SIMT core")
+#define SIMTLogWarps 6
 
 NOTE("CPU configuration")
 NOTE("=================")

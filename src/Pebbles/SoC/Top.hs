@@ -11,11 +11,14 @@ import Blarney.Stream
 
 -- Pebbles imports
 import Pebbles.SoC.JTAGUART
+import Pebbles.SoC.Core.SIMT
 import Pebbles.SoC.Core.Scalar
-import Pebbles.SoC.DRAM.Wrapper
+import Pebbles.SoC.DRAM.DualPort
 import Pebbles.SoC.DRAM.Interface
 import Pebbles.Memory.SBDCache
 import Pebbles.Memory.Interface
+import Pebbles.Memory.WarpPreserver
+import Pebbles.Memory.CoalescingUnit
 
 -- | SoC inputs
 data SoCIns =
@@ -41,18 +44,33 @@ data SoCOuts =
 makeTop :: SoCIns -> Module SoCOuts
 makeTop socIns = mdo
   -- Scalar core
-  let coreConfig =
+  let cpuConfig =
         ScalarCoreConfig {
           scalarCoreInstrMemInitFile = Just "boot.mif"
         , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       }
-  toUART <- makeScalarCore coreConfig fromUART memUnit
+  toUART <- makeScalarCore cpuConfig fromUART cpuMemUnit
 
   -- Data cache
-  (memUnit, dramReqs) <- makeSBDCache dramResps
+  (cpuMemUnit, dramReqs0) <- makeSBDCache dramResps0
 
-  -- DRAM Avalon wrapper module
-  (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
+  -- SIMT core
+  let simtConfig =
+        SIMTCoreConfig {
+          simtCoreInstrMemInitFile = Nothing
+        , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+        }
+  simtPipeline <- makeSIMTCore simtConfig simtMemUnits'
+
+  -- Coalescing unit
+  (simtMemUnits, dramReqs1) <- makeCoalescingUnit dramResps1
+
+  -- Warp preserver
+  simtMemUnits' <- makeWarpPreserver simtMemUnits
+
+  -- DRAM instance
+  ((dramResps0, dramResps1), avlDRAMOuts) <-
+    makeDRAMDualPort (dramReqs0, dramReqs1) (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
   (fromUART, avlUARTOuts) <- makeJTAGUART toUART (socIns.socUARTIns)

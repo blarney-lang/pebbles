@@ -1,5 +1,5 @@
--- Custom CSRs
-module Pebbles.SoC.Core.Scalar.CSRs where
+-- Custom CSRs for a built-in UART
+module Pebbles.CSRs.UART where
 
 -- Blarney imports
 import Blarney
@@ -7,39 +7,16 @@ import Blarney.Queue
 import Blarney.Stream
 
 -- Pebbles imports
-import Pebbles.Pipeline.Scalar
-import Pebbles.Instructions.CSRUnit
+import Pebbles.CSRs.CSRUnit
 
 -- +-------------+---------+--------+-------------------------------------+
 -- | CSR         | Address | Access | Description                         |
 -- +-------------+---------+--------+-------------------------------------+
--- | SimEmit     | 0x800   | W      | Emit word in simulation             |
--- | SimFinish   | 0x801   | W      | Terminate simulator                 |
 -- | UARTCanPut  | 0x802   | R      | Can write to UART?                  |
 -- | UARTPut     | 0x803   | W      | Write byte to UART                  |
 -- | UARTCanGet  | 0x804   | R      | Can read from UART?                 |
 -- | UARTGet     | 0x805   | R      | Read byte from UART                 |
--- | InstrAddr   | 0x806   | W      | Set instruction mem address         |
--- | WriteInstr  | 0x807   | W      | Write to instruction mem            |
 -- +-------------+---------+--------+-------------------------------------+
-
--- | Writing the this CSR emits a word during simulation
-csr_SimEmit :: CSR
-csr_SimEmit =
-  CSR {
-    csrId = 0x800
-  , csrRead = Nothing
-  , csrWrite = Just \x -> display "0x%08x" x
-  }
-
--- | Writing to this CSR terminates the simulator
-csr_SimFinish :: CSR
-csr_SimFinish =
-  CSR {
-    csrId = 0x801
-  , csrRead = Nothing
-  , csrWrite = Just \x -> finish
-  }
 
 -- | CSRs for built-in UART
 makeCSRs_UART :: Stream (Bit 8) -> Module ([CSR], Stream (Bit 8))
@@ -89,29 +66,3 @@ makeCSRs_UART uartIn = do
         ]
 
   return (csrs, uartOut.toStream)
-
--- | CSRs for instruction memory access
-makeCSRs_InstrMem :: ScalarPipeline -> Module [CSR]
-makeCSRs_InstrMem pipe = do
-  -- Address for instruction memory write
-  addrReg :: Reg (Bit 32) <- makeReg dontCare
-
-  -- Set address for instruction memory write
-  let csr_InstrAddr =
-        CSR {
-          csrId = 0x806
-        , csrRead = Nothing
-        , csrWrite = Just \x -> do
-            addrReg <== x
-        }
-
-  -- Write to instruction memory
-  let csr_WriteInstr =
-        CSR {
-          csrId = 0x807
-        , csrRead = Nothing
-        , csrWrite = Just \x -> do
-            writeInstr pipe (addrReg.val) x
-        }
-
-  return [csr_InstrAddr, csr_WriteInstr]
