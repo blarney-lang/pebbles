@@ -60,7 +60,7 @@ makeTop socIns = mdo
           simtCoreInstrMemInitFile = Nothing
         , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
         }
-  simtPipeline <- makeSIMTCore simtConfig simtMemUnits'
+  simtMgmtResps <- makeSIMTCore simtConfig nullStream simtMemUnits'
 
   -- Coalescing unit
   (simtMemUnits, dramReqs1) <- makeCoalescingUnit dramResps1

@@ -1,6 +1,16 @@
 module Pebbles.Pipeline.SIMT
-  ( SIMTPipelineConfig(..)
-  , SIMTPipeline(..)
+  ( -- Pipeline configuration
+    SIMTPipelineConfig(..)
+    -- Pipeline commands, requests, and responses
+  , SIMTCmd
+  , simtCmd_WriteInstr
+  , simtCmd_StartPipeline
+  , SIMTReq(..)
+  , SIMTResp
+    -- Pipeline inputs and outputs
+  , SIMTPipelineIns(..)
+  , SIMTPipelineOuts(..)
+    -- Pipeline module
   , makeSIMTPipeline
   ) where
 
@@ -66,20 +76,57 @@ data SIMTPipelineConfig =
   , resumeStage :: [Stream ResumeReq]
   }
 
--- | SIMT pipeline management
-data SIMTPipeline =
-  SIMTPipeline {
-      -- | Write to instruction memory
-      writeInstr :: Bit 32 -> Bit 32 -> Action ()
-      -- | Start all warps with a given PC
-    , startPipeline :: Bit 32 -> Action ()
-      -- | Warp id of instruction currently in execute stage
-    , currentWarpId :: Bit 32
+-- | SIMT pipeline inputs
+data SIMTPipelineIns =
+  SIMTPipelineIns {
+      -- | Stream of pipeline management requests
+      simtMgmtReqs :: Stream SIMTReq
+      -- | When this bit is high, the warp currently in the execute
+      -- stage (assumed to be converged) is terminated
+    , simtTerminateWarpBit :: Bit 1
   }
 
--- | SIMT pipeline
-makeSIMTPipeline :: SIMTPipelineConfig -> Module SIMTPipeline
-makeSIMTPipeline c =
+-- | SIMT pipeline outputs
+data SIMTPipelineOuts =
+  SIMTPipelineOuts {
+      -- | Stream of pipeline management responses
+      simtMgmtResps :: Stream SIMTResp
+      -- | Warp id of instruction currently in execute stage
+    , simtCurrentWarpId :: Bit 32
+  }
+
+-- | SIMT pipeline management commands
+type SIMTCmd = Bit 1
+
+-- | Write to tightly-coupled instruction memory
+simtCmd_WriteInstr :: SIMTCmd = 0
+
+-- | Start all warps with a given PC
+simtCmd_StartPipeline :: SIMTCmd = 1
+
+-- | SIMT pipeline management request (from CPU)
+data SIMTReq =
+  SIMTReq {
+    simtReqCmd :: SIMTCmd
+  , simtReqAddr :: Bit 32
+  , simtReqData :: Bit 32
+  } deriving (Generic, Bits)
+
+-- | SIMT pipeline management response (to CPU)
+type SIMTResp = SIMTReturnCode
+
+-- True on success, false otherwise
+type SIMTReturnCode = Bit 1
+
+-- | SIMT pipeline module
+makeSIMTPipeline ::
+     -- | SIMT configuration options
+     SIMTPipelineConfig
+     -- | SIMT pipeline inputs
+  -> SIMTPipelineIns
+     -- | SIMT pipeline outputs
+  -> Module SIMTPipelineOuts
+makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
   liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) ->
@@ -154,6 +201,9 @@ makeSIMTPipeline c =
     -- Is any thread in the current warp suspended?
     isSusp5 :: Reg (Bit 1) <- makeReg dontCare
 
+    -- Kernel response queue (indicates to CPU when kernel has finished)
+    kernelRespQueue :: Queue SIMTResp <- makeShiftQueue 1
+
     -- Pipeline Initialisation
     -- =======================
 
@@ -168,7 +218,7 @@ makeSIMTPipeline c =
 
     always do
       -- When start register is valid, perform initialisation
-      when (startReg.val.isSome) do
+      when (startReg.val.isSome .&. kernelRespQueue.notFull) do
         -- Write PC to each thread of warp
         let pc = startReg.val.val
         sequence_ [store pcMem (warpIdCounter.val) pc | pcMem <- pcMems]
@@ -277,6 +327,9 @@ makeSIMTPipeline c =
     -- Stages 5 and 6: Execute and Writeback
     -- =====================================
 
+    -- Track how many warps have terminated
+    completedWarps :: Reg (Bit t_logWarps) <- makeReg 0
+
     -- Functions to convert between 32-bit PC and instruction address
     let fromPC :: Bit 32 -> Bit t_logInstrs =
           \pc -> truncateCast (slice @31 @2 pc)
@@ -288,11 +341,26 @@ makeSIMTPipeline c =
     let tagMap5 = Map.map buffer tagMap4
     let fieldMap5 = Map.map bufferField fieldMap4
 
-    -- Insert warp id back into warp queue
+    -- Insert warp id back into warp queue, except on warp termination
     always do
       when (go5.val) do
-        dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
-        enq warpQueue (warpId5.val)
+        if inputs.simtTerminateWarpBit
+          then do
+            -- We assume that a warp only terminates when it has converged
+            dynamicAssert (activeMask5.val .==. ones)
+              "SIMT pipeline: terminating warp that hasn't converged"
+            completedWarps <== completedWarps.val + 1
+            -- Have all warps have terminated?
+            when (completedWarps.val .==. ones) do
+              -- Issue kernel response to CPU
+              dynamicAssert (kernelRespQueue.notFull)
+                "SIMT pipeline: can't issue kernel response"
+              enq kernelRespQueue true
+              -- Re-enter initial state
+              pipelineActive <== false
+          else do
+            dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
+            enq warpQueue (warpId5.val)
 
     -- For each lane
     let lanes = zip7 (c.executeStage)
@@ -362,12 +430,29 @@ makeSIMTPipeline c =
               suspMask!(req.resumeReqInfo.instrId) <== false
               resume.consume
 
-    -- Pipeline management interface
+    -- Handle management requests
+    -- ==========================
+
+    always do
+      when (inputs.simtMgmtReqs.canPeek) do
+        let req = inputs.simtMgmtReqs.peek
+        -- Is pipeline busy?
+        let busy = startReg.val.isSome .|. pipelineActive.val
+        -- Write instruction
+        when (req.simtReqCmd .==. simtCmd_WriteInstr) do
+          dynamicAssert (busy.inv)
+            "SIMT pipeline: writing instruction while pipeline busy"
+          store instrMem (req.simtReqAddr.truncateCast) (req.simtReqData)
+          inputs.simtMgmtReqs.consume
+        -- Start pipeline
+        when (req.simtReqCmd .==. simtCmd_StartPipeline) do
+          when (busy.inv) do
+            startReg <== some (req.simtReqAddr.truncateCast)
+            inputs.simtMgmtReqs.consume
+
+    -- Pipeline outputs
     return
-      SIMTPipeline {
-        writeInstr = \addr instr -> do
-          store instrMem (addr.truncateCast) instr
-      , startPipeline = \pc -> do
-          startReg <== some (pc.truncateCast)
-      , currentWarpId = warpId5.val.zeroExtendCast
+      SIMTPipelineOuts {
+        simtMgmtResps = kernelRespQueue.toStream
+      , simtCurrentWarpId = warpId5.val.zeroExtendCast
       }
