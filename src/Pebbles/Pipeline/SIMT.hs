@@ -1,12 +1,6 @@
 module Pebbles.Pipeline.SIMT
   ( -- Pipeline configuration
     SIMTPipelineConfig(..)
-    -- Pipeline commands, requests, and responses
-  , SIMTCmd
-  , simtCmd_WriteInstr
-  , simtCmd_StartPipeline
-  , SIMTReq(..)
-  , SIMTResp
     -- Pipeline inputs and outputs
   , SIMTPipelineIns(..)
   , SIMTPipelineOuts(..)
@@ -57,6 +51,7 @@ import qualified Data.Map as Map
 
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
+import Pebbles.Pipeline.SIMT.Management
 
 -- | SIMT pipeline configuration
 data SIMTPipelineConfig =
@@ -94,29 +89,6 @@ data SIMTPipelineOuts =
       -- | Warp id of instruction currently in execute stage
     , simtCurrentWarpId :: Bit 32
   }
-
--- | SIMT pipeline management commands
-type SIMTCmd = Bit 1
-
--- | Write to tightly-coupled instruction memory
-simtCmd_WriteInstr :: SIMTCmd = 0
-
--- | Start all warps with a given PC
-simtCmd_StartPipeline :: SIMTCmd = 1
-
--- | SIMT pipeline management request (from CPU)
-data SIMTReq =
-  SIMTReq {
-    simtReqCmd :: SIMTCmd
-  , simtReqAddr :: Bit 32
-  , simtReqData :: Bit 32
-  } deriving (Generic, Bits)
-
--- | SIMT pipeline management response (to CPU)
-type SIMTResp = SIMTReturnCode
-
--- True on success, false otherwise
-type SIMTReturnCode = Bit 1
 
 -- | SIMT pipeline module
 makeSIMTPipeline ::

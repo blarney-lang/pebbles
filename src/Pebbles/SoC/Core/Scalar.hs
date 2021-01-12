@@ -11,16 +11,18 @@ import Blarney.Interconnect
 -- Pebbles imports
 import Pebbles.CSRs.Sim
 import Pebbles.CSRs.UART
-import Pebbles.CSRs.InstrMem
 import Pebbles.CSRs.CSRUnit
-import Pebbles.Memory.Interface
+import Pebbles.CSRs.InstrMem
+import Pebbles.CSRs.SIMTManagement
 import Pebbles.Pipeline.Scalar
 import Pebbles.Pipeline.Interface
-import Pebbles.SoC.DRAM.Interface
+import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
+import Pebbles.Memory.Interface
+import Pebbles.SoC.DRAM.Interface
 
 -- | Configuration parameters
 data ScalarCoreConfig =
@@ -31,28 +33,50 @@ data ScalarCoreConfig =
   , scalarCoreInstrMemLogNumInstrs :: Int
   }
 
+-- | Scalar core inputs
+data ScalarCoreIns =
+  ScalarCoreIns {
+    -- | UART input
+    scalarUartIn :: Stream (Bit 8)
+    -- | Memory unit
+  , scalarMemUnit :: MemUnit InstrInfo
+    -- | Management responses from SIMT core
+  , scalarSIMTResps :: Stream SIMTResp
+  }
+
+-- | Scalar core outputs
+data ScalarCoreOuts =
+  ScalarCoreOuts {
+    -- | UART output
+    scalarUartOut :: Stream (Bit 8)
+    -- | Management requests to SIMT core
+  , scalarSIMTReqs :: Stream SIMTReq
+  }
+
 -- | RV32IM core with UART input and output channels
 makeScalarCore ::
      -- | Configuration parameters
      ScalarCoreConfig
-     -- | UART input
-  -> Stream (Bit 8)
-     -- | Memory unit
-  -> MemUnit InstrInfo
-     -- | UART output
-  -> Module (Stream (Bit 8))
-makeScalarCore config uartIn memUnit = mdo
+     -- | Scalar core inputs
+  -> ScalarCoreIns
+     -- | Scalar core outputs
+  -> Module ScalarCoreOuts
+makeScalarCore config inputs = mdo
   -- UART CSRs
-  (uartCSRs, uartOut) <- makeCSRs_UART uartIn
+  (uartCSRs, uartOut) <- makeCSRs_UART (inputs.scalarUartIn)
 
   -- Instruction memory CSRs
   imemCSRs <- makeCSRs_InstrMem (pipeline.writeInstr)
+
+  -- SIMT management CSRs
+  (simtReqs, simtCSRs) <- makeCSRs_SIMTManagement (inputs.scalarSIMTResps)
 
   -- CSR unit
   csrUnit <- makeCSRUnit $
        csrs_Sim
     ++ uartCSRs
     ++ imemCSRs
+    ++ simtCSRs
  
   -- Multiplier
   mulUnit <- makeHalfMulUnit
@@ -67,13 +91,17 @@ makeScalarCore config uartIn memUnit = mdo
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
     , decodeStage = decodeI ++ decodeM
     , executeStage = \s -> do
-        executeI csrUnit memUnit s
+        executeI csrUnit (inputs.scalarMemUnit) s
         executeM mulUnit divUnit s
     , resumeStage = mergeTree
-        [ fmap memRespToResumeReq (memUnit.memResps)
+        [ fmap memRespToResumeReq (inputs.scalarMemUnit.memResps)
         , mulUnit.mulResps
         , divUnit.divResps
         ]
     }
 
-  return uartOut
+  return
+    ScalarCoreOuts {
+      scalarUartOut = uartOut
+    , scalarSIMTReqs = simtReqs
+    }

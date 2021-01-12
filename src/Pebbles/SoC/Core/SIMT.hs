@@ -15,8 +15,10 @@ import Blarney.Interconnect
 import Pebbles.CSRs.Sim
 import Pebbles.CSRs.Hart
 import Pebbles.CSRs.CSRUnit
+import Pebbles.CSRs.WarpControl
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.SIMT
+import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Pipeline.Interface
 import Pebbles.SoC.DRAM.Interface
 import Pebbles.Instructions.RV32_I
@@ -51,12 +53,16 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   staticAssert (length memUnits == SIMTLanes)
     "makeSIMTCore: number of memory units doesn't match number of lanes"
 
+  -- SIMT warp control CSRs
+  (termWarp, csrs_WarpControl) <- makeCSRs_WarpControl
+
   -- CSR unit per vector lane
   csrUnits <- sequence
     [ do let laneId :: Bit SIMTLogLanes = fromInteger i
          let hartId = truncate (pipelineOuts.simtCurrentWarpId # laneId)
          makeCSRUnit $
               csrs_Sim
+           ++ csrs_WarpControl
            ++ [csr_HartId hartId]
     | i <- [0..SIMTLanes-1] ]
  
@@ -93,7 +99,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   pipelineOuts <- makeSIMTPipeline pipelineConfig
     SIMTPipelineIns {
       simtMgmtReqs = mgmtReqs
-    , simtTerminateWarpBit = false
+    , simtTerminateWarpBit = termWarp
     }
 
   return (pipelineOuts.simtMgmtResps)

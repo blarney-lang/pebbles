@@ -1,4 +1,4 @@
--- Custom CSRs for managing tightly-coupled instruction memory
+-- Custom CSRs for initialising CPU tightly-coupled instruction memory
 module Pebbles.CSRs.InstrMem where
 
 -- Blarney imports

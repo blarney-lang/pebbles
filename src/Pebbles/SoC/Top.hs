@@ -49,7 +49,12 @@ makeTop socIns = mdo
           scalarCoreInstrMemInitFile = Just "boot.mif"
         , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       }
-  toUART <- makeScalarCore cpuConfig fromUART cpuMemUnit
+  cpuOuts <- makeScalarCore cpuConfig
+    ScalarCoreIns {
+      scalarUartIn = fromUART
+    , scalarMemUnit = cpuMemUnit
+    , scalarSIMTResps = simtMgmtResps
+    }
 
   -- Data cache
   (cpuMemUnit, dramReqs0) <- makeSBDCache dramResps0
@@ -60,7 +65,9 @@ makeTop socIns = mdo
           simtCoreInstrMemInitFile = Nothing
         , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
         }
-  simtMgmtResps <- makeSIMTCore simtConfig nullStream simtMemUnits'
+  simtMgmtResps <- makeSIMTCore simtConfig
+    (cpuOuts.scalarSIMTReqs)
+    simtMemUnits'
 
   -- Coalescing unit
   (simtMemUnits, dramReqs1) <- makeCoalescingUnit dramResps1
@@ -73,7 +80,9 @@ makeTop socIns = mdo
     makeDRAMDualPort (dramReqs0, dramReqs1) (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
-  (fromUART, avlUARTOuts) <- makeJTAGUART toUART (socIns.socUARTIns)
+  (fromUART, avlUARTOuts) <- makeJTAGUART
+    (cpuOuts.scalarUartOut)
+    (socIns.socUARTIns)
 
   return
     SoCOuts {
