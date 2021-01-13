@@ -115,8 +115,14 @@ makeSBDCache dramResps = do
 
     -- Respond on hit, writeback on miss
     when (state.val .==. 1) do
-      -- Does tag match?
-      if tagMem.out.lineValid .&. (tag .==. tagMem.out.lineTag)
+      -- Is it a cache flush request?
+      let isFlush = reqReg.val.memReqOp .==. memCacheFlushOp
+      -- Is it a cache hit?
+      let isHit = tagMem.out.lineValid .&.
+            (tag .==. tagMem.out.lineTag) .&.
+              isFlush.inv
+      -- Separate behaviours for hit and miss
+      if isHit
         then do
           -- Handle hit
           -- ==========
@@ -168,12 +174,13 @@ makeSBDCache dramResps = do
               -- Perform store
               storeBE dataMem lineNum lineBE (pack storeWords)
               -- Set dirty bit
-              let line = 
+              let line =
                     LineState {
                       lineTag = tag
                     , lineValid = true
                     , lineDirty = true
                     }
+              store tagMem lineNum line
               -- Move back to initial state
               state <== 0
         else do
@@ -196,8 +203,17 @@ makeSBDCache dramResps = do
               -- Issue writeback
               when (tagMem.out.lineValid .&. tagMem.out.lineDirty) do
                 enq dramReqQueue dramReq
-              -- Move to fetch state
-              state <== 2
+              -- On flush, invalidate line
+              when isFlush do
+                let line =
+                      LineState {
+                        lineTag = dontCare
+                      , lineValid = false
+                      , lineDirty = false
+                      }
+                store tagMem lineNum line
+              -- Move to fetch state (if not flushing)
+              state <== isFlush ? (0, 2)
             else do
               -- Preserve RAM outputs until writeback possible
               tagMem.preserveOut

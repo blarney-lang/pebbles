@@ -14,10 +14,10 @@ import Pebbles.Pipeline.Interface
 type MemReqOp = Bit 2
 
 -- | Memory request opcodes
-memNullOp, memLoadOp, memStoreOp :: MemReqOp
-memNullOp = 0
-memLoadOp = 1
-memStoreOp = 2
+memNullOp       :: MemReqOp = 0
+memLoadOp       :: MemReqOp = 1
+memStoreOp      :: MemReqOp = 2
+memCacheFlushOp :: MemReqOp = 3
 
 -- | Memory access width (bytes = 2 ^ AccessWidth)
 type AccessWidth = Bit 2
