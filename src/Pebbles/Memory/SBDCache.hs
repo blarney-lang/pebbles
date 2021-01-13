@@ -29,11 +29,22 @@ type DRAMReqId = ()
 -- | Cache line tag width
 type TagWidth = 32 - (SBDCacheLogLines + DRAMBeatLogBytes)
 
--- | Cache line tag
+-- | Cache line tag (upper bits of address)
 type Tag = Bit TagWidth
 
--- | Cache line number
+-- | Cache line number (lower bits of address)
 type LineNum = Bit SBDCacheLogLines
+
+-- | Cache line state
+data LineState =
+  LineState {
+    -- | Tag
+    lineTag :: Tag
+    -- | Valid bit
+  , lineValid :: Bit 1
+    -- | Dirty bit (true if line has been modified)
+  , lineDirty :: Bit 1
+  } deriving (Generic, Bits)
 
 -- Helper functions
 -- ================
@@ -58,8 +69,7 @@ getLineWordOffset addr = truncate (slice @31 @2 addr)
 -- | Create a simple blocking data cache (SBDCache).  It's a
 -- direct-mapped writeback cache.  Latency: two cycles for a cache
 -- hit.  Throughput: 50%, i.e. a request that hits can be consumed
--- every other cycle.  No dirty bit, i.e. a miss always leads to a
--- writeback.
+-- every other cycle.
 makeSBDCache :: forall t_id. Bits t_id =>
      -- | Inputs: responses from DRAM
      Stream (DRAMResp DRAMReqId)
@@ -70,7 +80,7 @@ makeSBDCache dramResps = do
   dataMem :: RAMBE SBDCacheLogLines DRAMBeatBytes <- makeDualRAMBE
 
   -- Tag memory
-  tagMem :: RAM LineNum (Option Tag) <- makeDualRAM
+  tagMem :: RAM LineNum LineState <- makeDualRAM
 
   -- Request wire
   reqWire :: Wire (MemReq t_id) <- makeWire dontCare
@@ -106,7 +116,7 @@ makeSBDCache dramResps = do
     -- Respond on hit, writeback on miss
     when (state.val .==. 1) do
       -- Does tag match?
-      if tagMem.out.valid .&. (tag .==. tagMem.out.val)
+      if tagMem.out.lineValid .&. (tag .==. tagMem.out.lineTag)
         then do
           -- Handle hit
           -- ==========
@@ -157,6 +167,13 @@ makeSBDCache dramResps = do
                     pack (V.zipWith maskBE wordsBE V.genVec)
               -- Perform store
               storeBE dataMem lineNum lineBE (pack storeWords)
+              -- Set dirty bit
+              let line = 
+                    LineState {
+                      lineTag = tag
+                    , lineValid = true
+                    , lineDirty = true
+                    }
               -- Move back to initial state
               state <== 0
         else do
@@ -171,13 +188,13 @@ makeSBDCache dramResps = do
                     DRAMReq {
                       dramReqId = ()
                     , dramReqIsStore = true
-                    , dramReqAddr = tagMem.out.val # lineNum
+                    , dramReqAddr = tagMem.out.lineTag # lineNum
                     , dramReqData = dataMem.outBE
                     , dramReqByteEn = ones
                     , dramReqBurst = 1
                     }
               -- Issue writeback
-              when (tagMem.out.valid) do
+              when (tagMem.out.lineValid .&. tagMem.out.lineDirty) do
                 enq dramReqQueue dramReq
               -- Move to fetch state
               state <== 2
@@ -212,7 +229,13 @@ makeSBDCache dramResps = do
       when (dramResps.canPeek) do
         dramResps.consume
         -- Update cache
-        store tagMem lineNum (some tag)
+        let line =
+              LineState {
+                lineTag = tag
+              , lineValid = true
+              , lineDirty = false
+              }
+        store tagMem lineNum line
         storeBE dataMem lineNum ones (dramResps.peek.dramRespData)
         -- Move to loopback state
         state <== 4
