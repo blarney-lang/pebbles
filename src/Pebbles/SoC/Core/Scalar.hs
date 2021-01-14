@@ -21,6 +21,7 @@ import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
+import Pebbles.Instructions.Custom.CacheManagement
 import Pebbles.Memory.Interface
 import Pebbles.SoC.DRAM.Interface
 
@@ -89,10 +90,11 @@ makeScalarCore config inputs = mdo
     ScalarPipelineConfig {
       instrMemInitFile = config.scalarCoreInstrMemInitFile
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
-    , decodeStage = decodeI ++ decodeM
+    , decodeStage = decodeI ++ decodeM ++ decodeCacheMgmt
     , executeStage = \s -> do
         executeI csrUnit (inputs.scalarMemUnit) s
         executeM mulUnit divUnit s
+        executeCacheMgmt (inputs.scalarMemUnit) s
     , resumeStage = mergeTree
         [ fmap memRespToResumeReq (inputs.scalarMemUnit.memResps)
         , mulUnit.mulResps

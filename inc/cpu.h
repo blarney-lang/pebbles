@@ -2,6 +2,7 @@
 #define _CPU_H_
 
 #include <stdint.h>
+#include <SoC.h>
 
 // Control/status registers
 #define CSR_SimEmit         "0x800"
@@ -107,6 +108,31 @@ INLINE int cpuSIMTGet()
   asm volatile("csrrw %0, " CSR_SIMTGet ", zero" : "=r"(x));
   return x;
 
+}
+
+// Cache line flush
+INLINE void cpuCacheFlushLine(void* addr)
+{
+  // Custom instruction
+  // Opcode: 0000000 rs2 rs1 000 rd 0001000, with rd=0, rs1=x10, rs2=0
+  asm volatile(
+    "mv x10, %0\n"
+    ".word 0x00050008\n" : : "r"(addr) : "x10");
+}
+
+// Full cache flush
+INLINE void cpuCacheFlushFull()
+{
+  // Flush each line
+  uint32_t numLines = 1 << SBDCacheLogLines;
+  for (uint32_t i = 0; i < numLines; i++) {
+    uint32_t addr = i * DRAMBeatBytes;
+    cpuCacheFlushLine((void*) addr);
+  }
+  // Issue a load to ensure flush is complete
+  uint8_t slot = 0; volatile uint8_t* addr = &slot; *addr;
+  // Invalidate loaded data
+  cpuCacheFlushLine((void*) addr);
 }
 
 #endif
