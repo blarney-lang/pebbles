@@ -18,7 +18,7 @@ import Pebbles.CSRs.CSRUnit
 -- indicates that the warp should be terminated.
 
 -- | CSRs for management of SIMT core from CPU
-makeCSRs_WarpControl :: Module (Bit 1, [CSR])
+makeCSRs_WarpControl :: Module (Wire (Bit 1), [CSR])
 makeCSRs_WarpControl = do
   -- A pulse on this wire indicates termination
   termWire :: Wire (Bit 1) <- makeWire 0
@@ -29,7 +29,7 @@ makeCSRs_WarpControl = do
           csrId = 0x830
         , csrRead = Nothing
         , csrWrite = Just \x -> do
-            termWire <== true
+            termWire <== x.truncate
         }
 
-  return (termWire.val, [csr_WarpTerminate])
+  return (termWire, [csr_WarpTerminate])

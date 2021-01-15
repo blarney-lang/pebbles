@@ -76,9 +76,9 @@ data SIMTPipelineIns =
   SIMTPipelineIns {
       -- | Stream of pipeline management requests
       simtMgmtReqs :: Stream SIMTReq
-      -- | When this bit is high, the warp currently in the execute
+      -- | When this wire is active, the warp currently in the execute
       -- stage (assumed to be converged) is terminated
-    , simtTerminateWarpBit :: Bit 1
+    , simtWarpTerminatedWire :: Wire (Bit 1)
   }
 
 -- | SIMT pipeline outputs
@@ -302,6 +302,9 @@ makeSIMTPipeline c inputs =
     -- Track how many warps have terminated
     completedWarps :: Reg (Bit t_logWarps) <- makeReg 0
 
+    -- Track kernel success/failure
+    kernelSuccess :: Reg (Bit 1) <- makeReg true
+
     -- Functions to convert between 32-bit PC and instruction address
     let fromPC :: Bit 32 -> Bit t_logInstrs =
           \pc -> truncateCast (slice @31 @2 pc)
@@ -316,20 +319,25 @@ makeSIMTPipeline c inputs =
     -- Insert warp id back into warp queue, except on warp termination
     always do
       when (go5.val) do
-        if inputs.simtTerminateWarpBit
+        if inputs.simtWarpTerminatedWire.active
           then do
             -- We assume that a warp only terminates when it has converged
             dynamicAssert (activeMask5.val .==. ones)
               "SIMT pipeline: terminating warp that hasn't converged"
             completedWarps <== completedWarps.val + 1
             -- Have all warps have terminated?
-            when (completedWarps.val .==. ones) do
-              -- Issue kernel response to CPU
-              dynamicAssert (kernelRespQueue.notFull)
-                "SIMT pipeline: can't issue kernel response"
-              enq kernelRespQueue true
-              -- Re-enter initial state
-              pipelineActive <== false
+            if completedWarps.val .==. ones
+              then do
+                -- Issue kernel response to CPU
+                dynamicAssert (kernelRespQueue.notFull)
+                  "SIMT pipeline: can't issue kernel response"
+                enq kernelRespQueue (kernelSuccess.val)
+                -- Re-enter initial state
+                pipelineActive <== false
+                kernelSuccess <== true
+              else do
+                kernelSuccess <== kernelSuccess.val .&.
+                  inputs.simtWarpTerminatedWire.val
           else do
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             enq warpQueue (warpId5.val)
@@ -419,7 +427,7 @@ makeSIMTPipeline c inputs =
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
           when (busy.inv) do
-            startReg <== some (req.simtReqAddr.truncateCast)
+            startReg <== some (req.simtReqAddr.fromPC)
             inputs.simtMgmtReqs.consume
 
     -- Pipeline outputs

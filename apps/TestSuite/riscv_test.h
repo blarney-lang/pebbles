@@ -41,6 +41,9 @@
 //-----------------------------------------------------------------------
 
 #define TESTNUM x28
+
+#ifndef _TEST_SIMT_
+
 #define CSR_UARTCanPut 0x802
 #define CSR_UARTPut 0x803
 
@@ -57,6 +60,22 @@
         beq t0, zero, 1b;                                               \
         csrw CSR_UARTPut, TESTNUM;                                      \
         jr zero; 
+
+#else
+
+#define CSR_WarpTerminate 0x830
+
+#define RVTEST_PASS                                                     \
+        li TESTNUM, 1;                                                  \
+        csrw CSR_WarpTerminate, TESTNUM;                                \
+        jr zero;
+
+#define RVTEST_FAIL                                                     \
+        li TESTNUM, 0;                                                  \
+        csrw CSR_WarpTerminate, TESTNUM;                                \
+        jr zero; 
+
+#endif
 
 //-----------------------------------------------------------------------
 // Data Section Macro

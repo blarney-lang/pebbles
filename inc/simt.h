@@ -30,7 +30,7 @@ INLINE void simtWarpTerminate()
 }
 
 // Get id of calling thread
-INLINE void simtThreadId()
+INLINE int simtThreadId()
 {
   int x;
   asm volatile("csrrw %0, " CSR_HartId ", zero" : "=r"(x));

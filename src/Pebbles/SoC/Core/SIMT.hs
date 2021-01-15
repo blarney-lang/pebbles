@@ -54,7 +54,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
     "makeSIMTCore: number of memory units doesn't match number of lanes"
 
   -- SIMT warp control CSRs
-  (termWarp, csrs_WarpControl) <- makeCSRs_WarpControl
+  (warpTermWire, csrs_WarpControl) <- makeCSRs_WarpControl
 
   -- CSR unit per vector lane
   csrUnits <- sequence
@@ -62,8 +62,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
          let hartId = truncate (pipelineOuts.simtCurrentWarpId # laneId)
          makeCSRUnit $
               csrs_Sim
-           ++ csrs_WarpControl
            ++ [csr_HartId hartId]
+           ++ (if i == 0 then csrs_WarpControl else [])
     | i <- [0..SIMTLanes-1] ]
  
   -- Multiplier per vector lane
@@ -99,7 +99,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   pipelineOuts <- makeSIMTPipeline pipelineConfig
     SIMTPipelineIns {
       simtMgmtReqs = mgmtReqs
-    , simtTerminateWarpBit = termWarp
+    , simtWarpTerminatedWire = warpTermWire
     }
 
   return (pipelineOuts.simtMgmtResps)

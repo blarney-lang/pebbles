@@ -51,6 +51,16 @@ class HostLink {
     uart->flush();
   }
 
+  // Start running application on CPU
+  void startCPU() {
+    uart->putByte(0);
+  }
+
+  // Start running application on SIMT core
+  void startSIMT() {
+    uart->putByte(1);
+  }
+
   // Dumping data from the UART
   // --------------------------
 
