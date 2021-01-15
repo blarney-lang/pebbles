@@ -41,7 +41,7 @@ executeM mulUnit divUnit s = do
       else s.retry
 
   when (s.opcode `is` ["DIV"]) do
-    if mulUnit.mulReqs.canPut
+    if divUnit.divReqs.canPut
       then do
         info <- s.suspend
         let divInfo :: Option (Bit 2) = getField (s.fields) "div"
