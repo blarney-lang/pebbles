@@ -422,7 +422,7 @@ makeSIMTPipeline c inputs =
         when (req.simtReqCmd .==. simtCmd_WriteInstr) do
           dynamicAssert (busy.inv)
             "SIMT pipeline: writing instruction while pipeline busy"
-          store instrMem (req.simtReqAddr.truncateCast) (req.simtReqData)
+          store instrMem (req.simtReqAddr.fromPC) (req.simtReqData)
           inputs.simtMgmtReqs.consume
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do

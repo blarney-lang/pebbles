@@ -67,13 +67,11 @@
 
 #define RVTEST_PASS                                                     \
         li TESTNUM, 1;                                                  \
-        csrw CSR_WarpTerminate, TESTNUM;                                \
-        jr zero;
+        csrw CSR_WarpTerminate, TESTNUM;
 
 #define RVTEST_FAIL                                                     \
         li TESTNUM, 0;                                                  \
-        csrw CSR_WarpTerminate, TESTNUM;                                \
-        jr zero; 
+        csrw CSR_WarpTerminate, TESTNUM;
 
 #endif
 
