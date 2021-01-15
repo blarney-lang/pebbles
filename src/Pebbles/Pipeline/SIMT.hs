@@ -405,8 +405,9 @@ makeSIMTPipeline c inputs =
               let req = resume.peek :: ResumeReq
               let idx = (req.resumeReqInfo.instrId.truncateCast,
                          req.resumeReqInfo.instrDest)
-              store regFileA idx (req.resumeReqData)
-              store regFileB idx (req.resumeReqData)
+              when (req.resumeReqInfo.instrDest .!=. 0) do
+                store regFileA idx (req.resumeReqData)
+                store regFileB idx (req.resumeReqData)
               suspMask!(req.resumeReqInfo.instrId) <== false
               resume.consume
 
