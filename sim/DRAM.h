@@ -152,7 +152,7 @@ struct DRAM {
       }
       // Write data
       for (uint32_t i = 0; i < DRAMBeatBytes; i++) {
-        if (ifc.byteen & (1 << i))
+        if (ifc.byteen & (1ul << i))
           pages[page][byteOffset+i] =
             getByte(ifc.writedata[i/4], (i%4));
       }

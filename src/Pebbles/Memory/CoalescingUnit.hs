@@ -111,6 +111,10 @@ makeCoalescingUnit dramResps = do
   leaderReq3 :: Reg (MemReq t_id) <- makeReg dontCare
   leaderReq4 :: Reg (MemReq t_id) <- makeReg dontCare
 
+  -- Bit vector identifying the chosen leader
+  leader2 :: Reg (Bit SIMTLanes) <- makeReg 0
+  leader3 :: Reg (Bit SIMTLanes) <- makeReg 0
+
   -- DRAM request queue
   dramReqQueue :: Queue (DRAMReq DRAMReqId) <- makePipelineQueue 1
 
@@ -159,13 +163,10 @@ makeCoalescingUnit dramResps = do
   -- Stage 1: Pick a leader
   -- ======================
 
-  -- Bit vector identifying the chosen leader
-  leader2 :: Reg (Bit SIMTLanes) <- makeReg 0
-
   always do
     when (go1.val .&. stallWire.val.inv) do
       -- Select first pending request as leader
-      leader2 <== pending1.val + (pending1.val.inv + 1)
+      leader2 <== pending1.val .&. (pending1.val.inv + 1)
       -- Trigger stage 2
       go2 <== true
       zipWithM_ (<==) memReqs2 (map val memReqs1)
@@ -186,6 +187,7 @@ makeCoalescingUnit dramResps = do
       go3 <== true
       zipWithM_ (<==) memReqs3 (map val memReqs2)
       pending3 <== pending2.val
+      leader3 <== leader2.val
 
   -- Stage 3: Select coalescing strategy
   -- ===================================
@@ -256,7 +258,12 @@ makeCoalescingUnit dramResps = do
     -- ------------------------------
 
     -- Choose strategy
-    let useSameBlock = sameBlockMask .!=. 0
+    -- Use SameBlock strategy if it satisfies leader's request and at
+    -- least one other requets thread.  Otherwise use SameAddr
+    -- strategy, which will always satisfy at least one request.
+    let useSameBlock =
+          ((sameBlockMask .&. leader3.val) .==. leader3.val) .&.
+            ((sameBlockMask .&. leader3.val.inv) .!=. 0)
 
     -- Requests participating in strategy
     let mask = useSameBlock ? (sameBlockMask, sameAddrMask)
@@ -285,6 +292,7 @@ makeCoalescingUnit dramResps = do
           let remaining = pending3.val .&. inv mask
           -- If there are any, feed them back
           when (remaining .!=. 0) do
+            go1 <== true
             feedbackWire <== true
             zipWithM_ (<==) memReqs1 (map val memReqs3)
             pending1 <== remaining
@@ -459,10 +467,10 @@ makeCoalescingUnit dramResps = do
                       respQueuesReady
     -- Consume DRAM response
     when consumeResp do
+      dramResps.consume
       if loadCount.val .==. info.coalInfoBurstLen
         then do
           inflightQueue.deq
-          dramResps.consume
           loadCount <== 0
         else do
           loadCount <== loadCount.val + 1
