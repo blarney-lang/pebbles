@@ -12,10 +12,10 @@ import Blarney.SourceSink
 import Blarney.Interconnect
 
 -- Pebbles imports
-import Pebbles.CSRs.Sim
 import Pebbles.CSRs.Hart
 import Pebbles.CSRs.CSRUnit
-import Pebbles.CSRs.WarpControl
+import Pebbles.CSRs.Custom.Simulate
+import Pebbles.CSRs.Custom.WarpControl
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.SIMT
 import Pebbles.Pipeline.SIMT.Management

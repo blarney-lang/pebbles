@@ -1,5 +1,5 @@
 -- Custom CSRs for initialising CPU tightly-coupled instruction memory
-module Pebbles.CSRs.InstrMem where
+module Pebbles.CSRs.Custom.InstrMem where
 
 -- Blarney imports
 import Blarney

@@ -1,5 +1,5 @@
 -- Custom CSRs for controlling simulation
-module Pebbles.CSRs.Sim where
+module Pebbles.CSRs.Custom.Simulate where
 
 -- Blarney imports
 import Blarney

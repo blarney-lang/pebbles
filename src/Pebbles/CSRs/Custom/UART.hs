@@ -1,5 +1,5 @@
 -- Custom CSRs for a built-in UART
-module Pebbles.CSRs.UART where
+module Pebbles.CSRs.Custom.UART where
 
 -- Blarney imports
 import Blarney

@@ -1,5 +1,5 @@
 -- Custom CSRs for managing the SIMT core from the CPU
-module Pebbles.CSRs.SIMTManagement where
+module Pebbles.CSRs.Custom.SIMTManagement where
 
 -- Blarney imports
 import Blarney

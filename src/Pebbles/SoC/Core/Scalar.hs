@@ -9,11 +9,11 @@ import Blarney.SourceSink
 import Blarney.Interconnect
 
 -- Pebbles imports
-import Pebbles.CSRs.Sim
-import Pebbles.CSRs.UART
 import Pebbles.CSRs.CSRUnit
-import Pebbles.CSRs.InstrMem
-import Pebbles.CSRs.SIMTManagement
+import Pebbles.CSRs.Custom.Simulate
+import Pebbles.CSRs.Custom.UART
+import Pebbles.CSRs.Custom.InstrMem
+import Pebbles.CSRs.Custom.SIMTManagement
 import Pebbles.Pipeline.Scalar
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
