@@ -38,7 +38,7 @@ data ScalarPipelineConfig =
     -- | Decode table
   , decodeStage :: [(String, String)]
     -- | Action for execute stage
-  , executeStage :: State -> Action ()
+  , executeStage :: DecodeInfo -> State -> Action ()
     -- | Resumption for multi-cycle instructions
   , resumeStage :: Stream ResumeReq
   }
@@ -202,6 +202,13 @@ makeScalarPipeline c =
       let tagMap3 = Map.map (bufferEn (stallWire.val.inv)) tagMap
       let fieldMap3 = Map.map (bufferField (stallWire.val.inv)) fieldMap
 
+      -- Information from decode stage
+      let decodeInfo =
+            DecodeInfo {
+              opcode = tagMap3
+            , fields = fieldMap3
+            }
+
       -- State for execute stage
       let state = State {
               instr = instr3.val
@@ -222,13 +229,11 @@ makeScalarPipeline c =
                 go3 <== true
                 retryWire <== true
                 stallWire <== true
-            , opcode = tagMap3
-            , fields = fieldMap3
             }
 
       -- Execute stage
       when (go3.val) do
-        executeStage c state
+        executeStage c decodeInfo state
         when (retryWire.val.inv) do
           instr4 <== instr3.val
 

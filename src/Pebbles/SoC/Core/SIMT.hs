@@ -80,9 +80,9 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , logNumWarps = SIMTLogWarps
         , decodeStage = decodeI ++ decodeM
         , executeStage =
-            [ \s -> do
-                executeI csrUnit memUnit s
-                executeM mulUnit divUnit s
+            [ \d s -> do
+                executeI csrUnit memUnit d s
+                executeM mulUnit divUnit d s
             | (memUnit, mulUnit, divUnit, csrUnit) <-
                 zip4 memUnits mulUnits divUnits csrUnits ]
        , resumeStage =

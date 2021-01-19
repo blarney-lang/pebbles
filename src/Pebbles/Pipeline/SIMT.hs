@@ -66,7 +66,7 @@ data SIMTPipelineConfig =
   , decodeStage :: [(String, String)]
     -- | List of execute stages, one per lane
     -- The size of this list is the warp size
-  , executeStage :: [State -> Action ()]
+  , executeStage :: [DecodeInfo -> State -> Action ()]
     -- | List of resumption streams, for multi-cycle instructions
   , resumeStage :: [Stream ResumeReq]
   }
@@ -316,6 +316,13 @@ makeSIMTPipeline c inputs =
     let tagMap5 = Map.map buffer tagMap4
     let fieldMap5 = Map.map bufferField fieldMap4
 
+    -- Information from decode stage
+    let decodeInfo =
+          DecodeInfo {
+            opcode = tagMap5
+          , fields = fieldMap5
+          }
+
     -- Insert warp id back into warp queue, except on warp termination
     always do
       when (go5.val) do
@@ -362,7 +369,7 @@ makeSIMTPipeline c inputs =
       always do
         -- Execute stage
         when (go5.val .&. threadActive .&. isSusp5.val.inv) do
-          exec State {
+          exec decodeInfo State {
               instr = instr5.val
             , opA = regFileA.out.old
             , opB = regFileB.out.old
@@ -380,8 +387,6 @@ makeSIMTPipeline c inputs =
                   , instrDest = instr5.val.dst
                   }
             , retry = retryWire <== true
-            , opcode = tagMap5
-            , fields = fieldMap5
             }
 
           -- Only update PC if not retrying

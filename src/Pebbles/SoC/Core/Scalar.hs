@@ -91,10 +91,10 @@ makeScalarCore config inputs = mdo
       instrMemInitFile = config.scalarCoreInstrMemInitFile
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
     , decodeStage = decodeI ++ decodeM ++ decodeCacheMgmt
-    , executeStage = \s -> do
-        executeI csrUnit (inputs.scalarMemUnit) s
-        executeM mulUnit divUnit s
-        executeCacheMgmt (inputs.scalarMemUnit) s
+    , executeStage = \d s -> do
+        executeI csrUnit (inputs.scalarMemUnit) d s
+        executeM mulUnit divUnit d s
+        executeCacheMgmt (inputs.scalarMemUnit) d s
     , resumeStage = mergeTree
         [ fmap memRespToResumeReq (inputs.scalarMemUnit.memResps)
         , mulUnit.mulResps

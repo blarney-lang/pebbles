@@ -57,76 +57,76 @@ decodeI =
 -- Execute stage
 -- =============
 
-executeI :: CSRUnit -> MemUnit InstrInfo -> State -> Action ()
-executeI csrUnit memUnit s = do
+executeI :: CSRUnit -> MemUnit InstrInfo -> DecodeInfo -> State -> Action ()
+executeI csrUnit memUnit d s = do
   -- 33-bit add/sub/compare
-  let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
+  let uns = d.opcode `is` ["SLTU", "BLTU", "BGEU"]
   let addA = (uns ? (0, at @31 (s.opA))) # s.opA
   let addB = (uns ? (0, at @31 (s.opBorImm))) # s.opBorImm
-  let isAdd = s.opcode `is` ["ADD"]
+  let isAdd = d.opcode `is` ["ADD"]
   let sum = addA + (isAdd ? (addB, inv addB))
                  + (isAdd ? (0, 1))
   let less = at @32 sum
   let equal = s.opA .==. s.opBorImm
 
-  when (s.opcode `is` ["ADD", "SUB"]) do
+  when (d.opcode `is` ["ADD", "SUB"]) do
     s.result <== truncate sum
 
-  when (s.opcode `is` ["SLT", "SLTU"]) do
+  when (d.opcode `is` ["SLT", "SLTU"]) do
     s.result <== zeroExtend less
 
-  when (s.opcode `is` ["AND"]) do
+  when (d.opcode `is` ["AND"]) do
     s.result <== s.opA .&. s.opBorImm
 
-  when (s.opcode `is` ["OR"]) do
+  when (d.opcode `is` ["OR"]) do
     s.result <== s.opA .|. s.opBorImm
 
-  when (s.opcode `is` ["XOR"]) do
+  when (d.opcode `is` ["XOR"]) do
     s.result <== s.opA .^. s.opBorImm
 
-  when (s.opcode `is` ["LUI"]) do
+  when (d.opcode `is` ["LUI"]) do
     s.result <== s.opBorImm
 
-  when (s.opcode `is` ["AUIPC"]) do
+  when (d.opcode `is` ["AUIPC"]) do
     s.result <== s.pc.val + s.opBorImm
 
-  when (s.opcode `is` ["SLL"]) do
+  when (d.opcode `is` ["SLL"]) do
     s.result <== s.opA .<<. slice @4 @0 (s.opBorImm)
 
-  when (s.opcode `is` ["SRL", "SRA"]) do
-    let ext = s.opcode `is` ["SRA"] ? (at @31 (s.opA), 0)
+  when (d.opcode `is` ["SRL", "SRA"]) do
+    let ext = d.opcode `is` ["SRA"] ? (at @31 (s.opA), 0)
     let opAExt = ext # (s.opA)
     s.result <== truncate (opAExt .>>>. slice @4 @0 (s.opBorImm))
 
   let branch =
         orList [
-          s.opcode `is` ["BEQ"] .&. equal
-        , s.opcode `is` ["BNE"] .&. inv equal
-        , s.opcode `is` ["BLT", "BLTU"] .&. less
-        , s.opcode `is` ["BGE", "BGEU"] .&. inv less
+          d.opcode `is` ["BEQ"] .&. equal
+        , d.opcode `is` ["BNE"] .&. inv equal
+        , d.opcode `is` ["BLT", "BLTU"] .&. less
+        , d.opcode `is` ["BGE", "BGEU"] .&. inv less
         ]
 
   when branch do
-    let offset = getField (s.fields) "off"
+    let offset = getField (d.fields) "off"
     s.pc <== s.pc.val + offset.val
 
-  when (s.opcode `is` ["JAL"]) do
+  when (d.opcode `is` ["JAL"]) do
     s.pc <== s.pc.val + s.opBorImm
 
-  when (s.opcode `is` ["JALR"]) do
+  when (d.opcode `is` ["JALR"]) do
     s.pc <== truncateLSB (s.opA + s.opBorImm) # (0 :: Bit 1)
 
-  when (s.opcode `is` ["JAL", "JALR"]) do
+  when (d.opcode `is` ["JAL", "JALR"]) do
     s.result <== s.pc.val + 4
 
   -- Memory access
-  when (s.opcode `is` ["LOAD", "STORE"]) do
+  when (d.opcode `is` ["LOAD", "STORE"]) do
     let memAddr = s.opA + s.opBorImm
-    let memAccessWidth = getField (s.fields) "aw"
-    let memIsUnsignedLoad = getField (s.fields) "ul"
+    let memAccessWidth = getField (d.fields) "aw"
+    let memIsUnsignedLoad = getField (d.fields) "ul"
     if memUnit.memReqs.canPut
       then do
-        let isLoad = s.opcode `is` ["LOAD"]
+        let isLoad = d.opcode `is` ["LOAD"]
         -- Currently the memory subsystem doesn't issue store responses
         -- so we make sure to only suspend on a load
         info <- whenR isLoad (s.suspend)
@@ -142,16 +142,16 @@ executeI csrUnit memUnit s = do
           }
       else s.retry
 
-  when (s.opcode `is` ["FENCE"]) do
+  when (d.opcode `is` ["FENCE"]) do
     noAction
 
-  when (s.opcode `is` ["ECALL"]) do
+  when (d.opcode `is` ["ECALL"]) do
     display "ECALL not implemented"
 
-  when (s.opcode `is` ["EBREAK"]) do
+  when (d.opcode `is` ["EBREAK"]) do
     display "EBREAK not implemented"
 
-  when (s.opcode `is` ["CSRRW"]) do
+  when (d.opcode `is` ["CSRRW"]) do
     x <- csrUnitRead csrUnit (s.opBorImm.truncate)
     csrUnitWrite csrUnit (s.opBorImm.truncate) (s.opA)
     s.result <== x

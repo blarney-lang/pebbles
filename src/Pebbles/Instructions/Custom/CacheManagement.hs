@@ -21,10 +21,10 @@ decodeCacheMgmt =
 -- Execute stage
 -- =============
 
-executeCacheMgmt :: MemUnit InstrInfo -> State -> Action ()
-executeCacheMgmt memUnit s = do
+executeCacheMgmt :: MemUnit InstrInfo -> DecodeInfo -> State -> Action ()
+executeCacheMgmt memUnit d s = do
   -- Cache line flush
-  when (s.opcode `is` ["CACHE_FLUSH_LINE"]) do
+  when (d.opcode `is` ["CACHE_FLUSH_LINE"]) do
     if memUnit.memReqs.canPut
       then do
         -- Send request to memory unit

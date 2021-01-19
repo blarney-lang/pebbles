@@ -28,7 +28,7 @@ data InstrInfo =
     instrId :: InstrId
     -- | Destination register of suspended instruction
   , instrDest :: RegId
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | Resume request to pipeline for multi-cycle instructions
 data ResumeReq =
@@ -66,10 +66,15 @@ data State =
     -- | Call this if the instruction cannot currently be executed
     -- (perhaps resources are not currently available).
   , retry :: Action ()
+  } deriving (Generic, Interface)
 
-    -- | Result of instruction decode.  Idenfities the opcode which the
-    -- instruction decoded to, and contains any fields of the
-    -- instruction identified by the decoder.
-  , opcode :: TagMap String
+-- | Information from decode stage. Idenfities the opcode which the
+-- instruction decoded to, and contains any fields of the instruction
+-- identified by the decoder.
+data DecodeInfo =
+  DecodeInfo {
+    -- | Instruction classifiers
+    opcode :: TagMap String
+    -- | Instruction fields
   , fields :: FieldMap
   }

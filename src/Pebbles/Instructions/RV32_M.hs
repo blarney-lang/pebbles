@@ -22,13 +22,13 @@ decodeM =
 -- Execute stage
 -- =============
 
-executeM :: MulUnit -> DivUnit -> State -> Action ()
-executeM mulUnit divUnit s = do
-  when (s.opcode `is` ["MUL"]) do
+executeM :: MulUnit -> DivUnit -> DecodeInfo -> State -> Action ()
+executeM mulUnit divUnit d s = do
+  when (d.opcode `is` ["MUL"]) do
     if mulUnit.mulReqs.canPut
       then do
         info <- s.suspend
-        let mulInfo :: Option (Bit 2) = getField (s.fields) "mul"
+        let mulInfo :: Option (Bit 2) = getField (d.fields) "mul"
         put (mulUnit.mulReqs)
           MulReq {
             mulReqInfo = info
@@ -40,11 +40,11 @@ executeM mulUnit divUnit s = do
           }
       else s.retry
 
-  when (s.opcode `is` ["DIV"]) do
+  when (d.opcode `is` ["DIV"]) do
     if divUnit.divReqs.canPut
       then do
         info <- s.suspend
-        let divInfo :: Option (Bit 2) = getField (s.fields) "div"
+        let divInfo :: Option (Bit 2) = getField (d.fields) "div"
         put (divUnit.divReqs)
           DivReq {
             divReqInfo = info
