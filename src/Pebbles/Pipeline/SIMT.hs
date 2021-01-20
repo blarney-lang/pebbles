@@ -171,6 +171,7 @@ makeSIMTPipeline c inputs =
     instr5 :: Reg (Bit 32) <- makeReg dontCare
 
     -- Is any thread in the current warp suspended?
+    isSusp4 :: Reg (Bit 1) <- makeReg dontCare
     isSusp5 :: Reg (Bit 1) <- makeReg dontCare
 
     -- Kernel response queue (indicates to CPU when kernel has finished)
@@ -264,6 +265,10 @@ makeSIMTPipeline c inputs =
         load rfA (warpId3.val, instrMem.out.srcA)
         load rfB (warpId3.val, instrMem.out.srcB)
 
+      -- Is any thread in warp suspended?
+      -- (In future, consider only suspension bits of active threads)
+      isSusp4 <== orList [map val regs ! warpId3.val | regs <- suspBits]
+
       -- Trigger stage 4
       warpId4 <== warpId3.val
       activeMask4 <== activeMask3.val
@@ -285,11 +290,8 @@ makeSIMTPipeline c inputs =
             else regB
 
     always do
-      -- Is any thread in warp suspended?
-      -- (In future, consider only suspension bits of active threads)
-      isSusp5 <== orList [map val regs ! warpId4.val | regs <- suspBits]
-
       -- Trigger stage 5
+      isSusp5 <== isSusp4.val
       warpId5 <== warpId4.val
       activeMask5 <== activeMask4.val
       instr5 <== instr4.val
