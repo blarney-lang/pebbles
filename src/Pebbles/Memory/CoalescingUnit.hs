@@ -40,6 +40,8 @@ data CoalescingInfo t_id =
   , coalInfoMask :: Bit SIMTLanes
     -- | Request id for each lane
   , coalInfoReqIds :: V.Vec SIMTLanes t_id
+    -- | Mode for SameBlock strategy
+  , coalInfoSameBlockMode :: Bit 2
     -- | Is unsigned load?
   , coalInfoIsUnsigned :: Bit 1
     -- | Access width
@@ -56,7 +58,7 @@ data CoalescingInfo t_id =
 -- | The coalescing unit takes memory requests from multiple SIMT
 -- lanes and coalesces them where possible into a single DRAM request
 -- using two strategies: (1) SameBlock: multiple accesses to the same
--- DRAM block, where the lower bits of the address equal the SIMT
+-- DRAM block, where the lower bits of each address equal the SIMT
 -- lane id, are satisfied by a single DRAM burst; (2) SameAddress:
 -- mutliple accesses to the same address are satisifed by a single
 -- DRAM access. The second strategy (which always makes progress)
@@ -121,14 +123,6 @@ makeCoalescingUnit dramResps = do
   leader3 :: Reg (Bit SIMTLanes) <- makeReg 0
   leader4 :: Reg (Bit SIMTLanes) <- makeReg 0
 
-  -- Choice of strategy
-  coalSameBlockStrategy4 :: Reg (Bit 1) <- makeReg dontCare
-  coalSameBlockStrategy5 :: Reg (Bit 1) <- makeReg dontCare
-
-  -- Which lanes are participating in the strategy
-  coalMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
-  coalMask5 :: Reg (Bit SIMTLanes) <- makeReg dontCare
-
   -- DRAM request queue
   dramReqQueue :: Queue (DRAMReq DRAMReqId) <- makePipelineQueue 1
 
@@ -137,6 +131,8 @@ makeCoalescingUnit dramResps = do
     makeSizedQueue DRAMLogMaxInFlight
 
   -- Response queues
+  -- There's a lot of logic feeding these queues, so let's use a
+  -- multi-level shift queue
   respQueues :: [Queue (MemResp t_id)] <-
     replicateM SIMTLanes (makeShiftQueue 2)
 
@@ -207,91 +203,122 @@ makeCoalescingUnit dramResps = do
   -- Stage 3: Evaluate coalescing strategies
   -- =======================================
 
+  -- Outcome of stage 3
+  sameBlockMode4 :: Reg (Bit 2) <- makeReg dontCare
+  sameBlockMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
+  sameAddrMask4  :: Reg (Bit SIMTLanes) <- makeReg dontCare
+
   always do
     -- Which requests can be satisfied by SameBlock strategy?
     -- ------------------------------------------------------
 
-    -- Check if the lane alignment requirement is met for SameBlock
-    let checkLane req (laneId :: Bit SIMTLogLanes) =
-          select
-            [ aw.isByteAccess --> slice @(SIMTLogLanes-1) @0 a .==. laneId
-            , aw.isHalfAccess --> slice @SIMTLogLanes @1 a .==. laneId
-            , aw.isWordAccess --> slice @(SIMTLogLanes+1) @2 a .==. laneId
-            ]
-          where
-            a = req.memReqAddr
-            aw = leaderReq3.val.memReqAccessWidth
-
-    -- Check if the same block requirement is met for SameBlock
-    let checkBlock req = sameBlockCommon .&.
-          select
-            [ aw .==. 0 --> slice @(SIMTLogLanes+1) @SIMTLogLanes a1 .==.
-                            slice @(SIMTLogLanes+1) @SIMTLogLanes a2
-            , aw .==. 1 --> at @(SIMTLogLanes+1) a1 .==.
-                            at @(SIMTLogLanes+1) a2
-            , aw .==. 2 --> true
-            ]
+    -- There are three ways to satisfy the SameBlock Strategy: either
+    -- the requests access a contiguous array of bytes (ByteMode=0),
+    -- half words (HalfMode=1), or words (WordMode=2).  In ByteMode,
+    -- the access width of each request must be a byte; in HalfMode,
+    -- it must be a half word; in WordMode, it can be anything
+    -- (as long as it is consistent).  This feature of WordMode
+    -- allows efficient sub-word stack access, where stacks are
+    -- interleaved at the word level.
+    let sameBlockMatch req (laneId :: Bit SIMTLogLanes) =
+            [ sameOpAndBlock .&. byteMatch
+            , sameOpAndBlock .&. halfMatch
+            , sameOpAndBlock .&. wordMatch ]
           where
             a1 = req.memReqAddr
             a2 = leaderReq3.val.memReqAddr
-            aw = leaderReq3.val.memReqAccessWidth
-            sameBlockCommon =
-              slice @31 @(SIMTLogLanes+2) a1 .==.
-              slice @31 @(SIMTLogLanes+2) a2
-        
-    -- Requests satisfied by SameBlock strategy
-    let sameBlockMask :: Bit SIMTLanes = fromBitList
-          [ p .&. (r.memReqOp .==. leaderReq3.val.memReqOp)
-              .&. (r.memReqAccessWidth .==. leaderReq3.val.memReqAccessWidth)
-              .&. checkLane r (fromInteger i) .&. checkBlock r
-          | (p, r, i) <- zip3 (pending3.val.toBitList)
-                              (map val memReqs3)
-                              [0..] ]
+            aw1 = req.memReqAccessWidth
+            aw2 = leaderReq3.val.memReqAccessWidth
+            sameOpAndBlock =
+                  (req.memReqOp .==. leaderReq3.val.memReqOp)
+              .&. (slice @31 @(SIMTLogLanes+2) a1 .==.
+                     slice @31 @(SIMTLogLanes+2) a2)
+            byteMatch = aw1.isByteAccess .&. aw2.isByteAccess
+                    .&. (slice @(SIMTLogLanes-1) @0 a1 .==. laneId)
+                    .&. (slice @(SIMTLogLanes+1) @SIMTLogLanes a1 .==.
+                           slice @(SIMTLogLanes+1) @SIMTLogLanes a2)
+            halfMatch = aw1.isHalfAccess .&. aw2.isHalfAccess
+                    .&. (slice @SIMTLogLanes @1 a1 .==. laneId)
+                    .&. (at @(SIMTLogLanes+1) a1 .==. at @(SIMTLogLanes+1) a2)
+            wordMatch = (aw1 .==. aw2)
+                    .&. (slice @1 @0 a1 .==. slice @1 @0 a2)
+                    .&. (slice @(SIMTLogLanes+1) @2 a1 .==. laneId)
+
+    -- Which requests satisfy each SameBlock mode?
+    let sameBlockMasks :: [Bit SIMTLanes] =
+          map fromBitList $ transpose
+            [ sameBlockMatch r (fromInteger i)
+            | (r, i) <- zip (map val memReqs3) [0..] ]
+
+    -- Take into account which requests are valid
+    let [byteModeMask, halfModeMask, wordModeMask] =
+          map (pending3.val .&.) sameBlockMasks
 
     -- Which requests can be satisfied by SameAddress strategy?
     -- --------------------------------------------------------
 
     -- Requests satisfied by SameAddress strategy
-    let sameAddrMask :: Bit SIMTLanes = fromBitList
+    let sameAddrMaskVal :: Bit SIMTLanes = fromBitList
           [ p .&. (r.memReqOp .==. leaderReq3.val.memReqOp)
               .&. (r.memReqAddr .==. leaderReq3.val.memReqAddr)
               .&. (r.memReqAccessWidth .==. leaderReq3.val.memReqAccessWidth)
           | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
 
-    -- Feed back unsatisfied requests
-    -- ------------------------------
-
-    -- Choose strategy
-    -- Use SameBlock strategy if it satisfies leader's request and at
-    -- least one other requets thread.  Otherwise use SameAddr
-    -- strategy, which will always satisfy at least one request.
-    let useSameBlock =
-          ((sameBlockMask .&. leader3.val) .==. leader3.val) .&.
-            ((sameBlockMask .&. leader3.val.inv) .!=. 0)
-
-    -- Requests participating in strategy
-    let mask = useSameBlock ? (sameBlockMask, sameAddrMask)
-
+    -- State update
     when (go3.val .&. stallWire.val.inv) do
-      -- SameAddr should at least allow the leader to make progress
-      dynamicAssert (sameAddrMask .!=. 0)
+      -- SameAddress strategy should at least allow the leader to progress
+      dynamicAssert (sameAddrMaskVal .!=. 0)
         "Coalescing Unit: SameAddr strategy does not make progress!"
-      -- Trigger next stage
+      -- Requests satisifed by SameAddress strategy
+      sameAddrMask4 <== sameAddrMaskVal
+      -- For SameBlock strategy, choose WordMode if it satisfies leader
+      -- and at least one other request
+      let useWordMode = (wordModeMask .&. leader3.val .!=. 0) .&.
+                          (wordModeMask .&. leader3.val.inv .!=. 0)
+      if useWordMode
+        then do
+          sameBlockMode4 <== 2
+          sameBlockMask4 <== wordModeMask
+        else do
+          -- Otherwise, use access width to determine mode
+          if leaderReq3.val.memReqAccessWidth.isHalfAccess
+            then do
+              sameBlockMode4 <== 1
+              sameBlockMask4 <== halfModeMask
+            else do
+              sameBlockMode4 <== 0
+              sameBlockMask4 <== byteModeMask
+      -- Trigger stage 4
       go4 <== true
-      coalSameBlockStrategy4 <== useSameBlock
-      coalMask4 <== mask
       zipWithM_ (<==) memReqs4 (map val memReqs3)
       pending4 <== pending3.val
-      leaderReq4 <== leaderReq3.val
       leader4 <== leader3.val
+      leaderReq4 <== leaderReq3.val
 
   -- Stage 4: Choose coalescing strategy
   -- ===================================
 
+  -- Choice of strategy
+  coalSameBlockStrategy :: Reg (Bit 1) <- makeReg dontCare
+
+  -- Mode for SameBlock strategy
+  coalSameBlockMode :: Reg (Bit 2) <- makeReg dontCare
+
+  -- Which lanes are participating in the strategy
+  coalMask :: Reg (Bit SIMTLanes) <- makeReg dontCare
+
   always do
+    -- Use SameBlock strategy if it satisfies leader's request and at
+    -- least one other request.  Otherwise use SameAddr strategy,
+    -- which will always satisfy at least one request.
+    let useSameBlock =
+          ((sameBlockMask4.val .&. leader3.val) .==. leader3.val) .&.
+            ((sameBlockMask4.val .&. leader3.val.inv) .!=. 0)
+    -- Requests participating in strategy
+    let mask = useSameBlock ? (sameBlockMask4.val, sameAddrMask4.val)
     -- Try to trigger next stage
     when (go4.val) do
-      -- Check if stage 4 is currently busy
+      -- Check if stage 5 is currently busy
       if go5.val
         then do
           -- If so, stall pipeline
@@ -299,18 +326,27 @@ makeCoalescingUnit dramResps = do
         else do
           -- Otherwise, setup and trigger next stage
           go5 <== true
+          coalSameBlockStrategy <== useSameBlock
+          coalSameBlockMode <== sameBlockMode4.val
+          coalMask <== mask
+          -- Align data field of leader request
           leaderReq5 <==
             (leaderReq4.val) {
               memReqData =
-                -- Align data field of leader request
                 writeAlign (leaderReq4.val.memReqAccessWidth)
                            (leaderReq4.val.memReqData)
             }
-          zipWithM_ (<==) memReqs5 (map val memReqs4)
-          coalSameBlockStrategy5 <== coalSameBlockStrategy4.val
-          coalMask5 <== coalMask4.val
+          -- In WordMode, align data field of each request
+          forM_ (zip memReqs4 memReqs5) \(r4, r5) -> do
+            if sameBlockMode4.val .==. 2
+              then do
+                r5 <== (r4.val) {
+                  memReqData = writeAlign (r4.val.memReqAccessWidth)
+                                          (r4.val.memReqData) }
+              else do
+                r5 <== r4.val
           -- Determine any remaining pending requests
-          let remaining = pending4.val .&. inv (coalMask4.val)
+          let remaining = pending4.val .&. inv mask
           -- If there are any, feed them back
           when (remaining .!=. 0) do
             go1 <== true
@@ -326,18 +362,17 @@ makeCoalescingUnit dramResps = do
 
   always do
     -- Shorthands for chosen strategy
-    let useSameBlock = coalSameBlockStrategy5.val
-    let mask = coalMask5.val
-    -- Shorthand for access width
-    let aw = leaderReq5.val.memReqAccessWidth
+    let useSameBlock = coalSameBlockStrategy.val
+    let sameBlockMode = coalSameBlockMode.val
+    let mask = coalMask.val
     -- Determine burst length and address mask (to align the burst)
     let (burstLen, addrMask) :: (DRAMBurst, Bit 1) =
           if useSameBlock
             then
               select [
-                aw.isByteAccess --> (1, 0b0)
-              , aw.isHalfAccess --> (1, 0b0)
-              , aw.isWordAccess --> (2, 0b1)
+                sameBlockMode.isByteAccess --> (1, 0b0)
+              , sameBlockMode.isHalfAccess --> (1, 0b0)
+              , sameBlockMode.isWordAccess --> (2, 0b1)
               ]
             else (1, 0b0)
     -- The DRAM address is derived from the top bits of the memory address
@@ -354,7 +389,7 @@ makeCoalescingUnit dramResps = do
     let sameBlockData :: DRAMBeat =
           [pack sameBlockData8,
              pack sameBlockData16,
-               pack sameBlockData32] ! aw
+               pack sameBlockData32] ! sameBlockMode
     -- DRAM data field for SameAddress strategy
     let sameAddrDataVec :: V.Vec DRAMBeatWords (Bit 32) =
           V.replicate (leaderReq5.val.memReqData)
@@ -363,16 +398,20 @@ makeCoalescingUnit dramResps = do
     let useUpper = at @(DRAMBeatLogBytes-1) (leaderReq5.val.memReqAddr)
     let sameBlockBE8 :: Bit DRAMBeatBytes =
           fromBitList $
-            [en .&. aw.isByteAccess .&. useUpper | en <- mask.toBitList] ++
-            [en .&. aw.isByteAccess .&. inv useUpper | en <- mask.toBitList]
+            [en .&. inv useUpper | en <- mask.toBitList] ++
+            [en .&. useUpper | en <- mask.toBitList]
     let sameBlockBE16 :: Bit DRAMBeatBytes =
-          fromBitList $ concatMap (replicate 2)
-            [en .&. aw.isHalfAccess | en <- mask.toBitList]
+          fromBitList $ concatMap (replicate 2) (mask.toBitList)
     let sameBlockBE32 :: Bit DRAMBeatBytes =
-          fromBitList $ concatMap (replicate 4) $
+          fromBitList $ concatMap toBitList $
             selectHalf (storeCount.val.truncate)
-              [en .&. aw.isWordAccess | en <- mask.toBitList]
-    let sameBlockBE = orList [sameBlockBE8, sameBlockBE16, sameBlockBE32]
+              [ rep en .&.
+                  genByteEnable
+                    (r.val.memReqAccessWidth)
+                    (r.val.memReqAddr)
+              | (en, r) <- zip (mask.toBitList) memReqs5 ]
+    let sameBlockBE = [sameBlockBE8, sameBlockBE16, sameBlockBE32] !
+           sameBlockMode
     -- DRAM byte enable field for SameAddress strategy
     let leaderBE = genByteEnable (leaderReq5.val.memReqAccessWidth)
                     (leaderReq5.val.memReqAddr)
@@ -403,6 +442,7 @@ makeCoalescingUnit dramResps = do
                 coalInfoUseSameBlock = useSameBlock
               , coalInfoMask = mask
               , coalInfoReqIds = V.fromList [r.val.memReqId | r <- memReqs5]
+              , coalInfoSameBlockMode = sameBlockMode
               , coalInfoIsUnsigned = leaderReq5.val.memReqIsUnsigned
               , coalInfoAccessWidth = leaderReq5.val.memReqAccessWidth
               , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
@@ -417,10 +457,10 @@ makeCoalescingUnit dramResps = do
           let newStoreCount = storeCount.val + 1
           if newStoreCount .==. burstLen
             then do
-              storeCount <== newStoreCount
-            else do
               storeCount <== 0
               go5 <== false
+            else do
+              storeCount <== newStoreCount
 
   -- Stage 6: Handle DRAM responses
   -- ==============================
@@ -436,15 +476,16 @@ makeCoalescingUnit dramResps = do
     let useSameBlock = info.coalInfoUseSameBlock
     let mask = info.coalInfoMask
     -- Shorthand for access info
-    let aw = info.coalInfoAccessWidth
+    let sameBlockMode = info.coalInfoSameBlockMode
     let isUnsigned = info.coalInfoIsUnsigned
     -- Which lanes may deliver a response under SameBlock strategy?
     let deliverSameBlock =
           [ loadCount.val .==. 
               select [
-                aw.isByteAccess --> 0
-              , aw.isHalfAccess --> 0
-              , aw.isWordAccess --> fromInteger (i `div` DRAMBeatWords)
+                sameBlockMode.isByteAccess --> 0
+              , sameBlockMode.isHalfAccess --> 0
+              , sameBlockMode.isWordAccess -->
+                  fromInteger (i `div` DRAMBeatWords)
               ]
           | i <- [0..SIMTLanes-1] ]
     -- Which lanes may deliver a response under any strategy?
@@ -459,16 +500,18 @@ makeCoalescingUnit dramResps = do
     -- Determine items of data response
     let beatBytes :: V.Vec DRAMBeatBytes (Bit 8) = unpack (resp.dramRespData)
     let beatHalfs :: V.Vec DRAMBeatHalfs (Bit 16) = unpack (resp.dramRespData)
-    let beatWords :: V.Vec DRAMBeatWords (Bit 32) = unpack (resp.dramRespData)
+    let beatWordsRaw :: V.Vec DRAMBeatWords (Bit 32) =
+          unpack (resp.dramRespData)
+    let beatWords :: V.Vec DRAMBeatWords (Bit 32) = V.fromList
+          [ loadMux w
+              (info.coalInfoAddr.truncate)
+              (info.coalInfoAccessWidth)
+              (info.coalInfoIsUnsigned)
+          | w <- V.toList beatWordsRaw ]
     -- Response data for SameAddress strategy
     let sameAddrWordIndex :: Bit (DRAMBeatLogBytes-2) =
           info.coalInfoAddr.upper
-    let sameAddrWord = beatWords ! sameAddrWordIndex
-    let sameAddrData =
-          loadMux sameAddrWord
-            (info.coalInfoAddr.truncate)
-            (info.coalInfoAccessWidth)
-            (info.coalInfoIsUnsigned)
+    let sameAddrData = beatWords ! sameAddrWordIndex
     -- Response data for SameBlock strategy
     let sameBlockBytes :: V.Vec SIMTLanes (Bit 32) =
           V.fromList $
@@ -481,7 +524,7 @@ makeCoalescingUnit dramResps = do
           [ sameBlockBytes
           , sameBlockHalfs
           , beatWords `V.append` beatWords
-          ] ! aw
+          ] ! sameBlockMode
     -- Condition for consuming DRAM response
     let consumeResp = dramResps.canPeek .&.
                       inflightQueue.canDeq .&.

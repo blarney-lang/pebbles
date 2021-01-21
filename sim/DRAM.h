@@ -112,9 +112,6 @@ struct DRAM {
     // Can't read and write at same time
     assert(!(ifc.read && ifc.write));
 
-    // Write should never happen during read burst
-    assert(ifc.write ? readBurstCount == 1 : true);
-
     // Read should never happen during write burst
     assert(ifc.read ? writeBurstCount == 1 : true);
 

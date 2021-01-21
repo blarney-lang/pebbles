@@ -13,6 +13,12 @@
 RVTEST_RV32U
 RVTEST_CODE_BEGIN
 
+# Use only a single thread for this test
+#ifdef _TEST_SIMT_
+  csrrw t3, 0xf14, zero
+  bnez t3, pass
+#endif
+
   #-------------------------------------------------------------
   # Basic tests
   #-------------------------------------------------------------
