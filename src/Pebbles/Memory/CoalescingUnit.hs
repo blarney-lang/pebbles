@@ -342,8 +342,8 @@ makeCoalescingUnit dramResps = do
     let useUpper = at @(DRAMBeatLogBytes-1) (leaderReq4.val.memReqAddr)
     let sameBlockBE8 :: Bit DRAMBeatBytes =
           fromBitList $
-            [en .&. aw.isByteAccess .&. useUpper | en <- mask.toBitList] ++
-            [en .&. aw.isByteAccess .&. inv useUpper | en <- mask.toBitList]
+            [en .&. aw.isByteAccess .&. inv useUpper | en <- mask.toBitList] ++
+            [en .&. aw.isByteAccess .&. useUpper | en <- mask.toBitList]
     let sameBlockBE16 :: Bit DRAMBeatBytes =
           fromBitList $ concatMap (replicate 2)
             [en .&. aw.isHalfAccess | en <- mask.toBitList]
@@ -396,10 +396,10 @@ makeCoalescingUnit dramResps = do
           let newStoreCount = storeCount.val + 1
           if newStoreCount .==. burstLen
             then do
-              storeCount <== newStoreCount
-            else do
               storeCount <== 0
               go4 <== false
+            else do
+              storeCount <== newStoreCount
 
   -- Stage 5: Handle DRAM responses
   -- ==============================
