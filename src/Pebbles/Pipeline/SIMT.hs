@@ -62,6 +62,8 @@ data SIMTPipelineConfig =
   , instrMemLogNumInstrs :: Int
     -- | Number of warps
   , logNumWarps :: Int
+    -- | Number of bits used to track function call depth
+  , logMaxCallDepth :: Int
     -- | Decode table
   , decodeStage :: [(String, String)]
     -- | List of execute stages, one per lane
@@ -79,6 +81,10 @@ data SIMTPipelineIns =
       -- | When this wire is active, the warp currently in the execute
       -- stage (assumed to be converged) is terminated
     , simtWarpTerminatedWire :: Wire (Bit 1)
+      -- | A pulse on these wires indicates that current instruction (in
+      -- execute) is incrementing/decrementing the function call depth
+    , simtIncCallDepth :: Bit 1
+    , simtDecCallDepth :: Bit 1
   }
 
 -- | SIMT pipeline outputs
@@ -89,6 +95,16 @@ data SIMTPipelineOuts =
       -- | Warp id of instruction currently in execute stage
     , simtCurrentWarpId :: Bit 32
   }
+
+-- | Per-thread state
+data SIMTThreadState t_logInstrs t_logMaxCallDepth =
+  SIMTThreadState {
+    -- | Program counter
+    simtPC :: Bit t_logInstrs
+    -- | Function call depth (smaller is deeper)
+  , simtCallDepth :: Bit t_logMaxCallDepth
+  }
+  deriving (Generic, Bits)
 
 -- | SIMT pipeline module
 makeSIMTPipeline ::
@@ -102,6 +118,7 @@ makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
   liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) ->
+  liftNat (c.logMaxCallDepth) \(_ :: Proxy t_logMaxCallDepth) ->
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) -> do
 
     -- Sanity check
@@ -123,8 +140,9 @@ makeSIMTPipeline c inputs =
     -- Queue of active warps
     warpQueue :: Queue (Bit t_logWarps) <- makeSizedQueue (c.logNumWarps)
 
-    -- One block RAM of warp PCs per lane
-    pcMems :: [RAM (Bit t_logWarps) (Bit t_logInstrs)] <-
+    -- One block RAM of thread states per lane
+    stateMems ::  [RAM (Bit t_logWarps)
+                       (SIMTThreadState t_logInstrs t_logMaxCallDepth) ] <-
       replicateM warpSize makeDualRAM
 
     -- Instruction memory
@@ -155,11 +173,15 @@ makeSIMTPipeline c inputs =
     warpId4 :: Reg (Bit t_logWarps) <- makeReg dontCare
     warpId5 :: Reg (Bit t_logWarps) <- makeReg dontCare
 
-    -- PC register, for each stage
-    pc2 :: Reg (Bit t_logInstrs) <- makeReg dontCare
-    pc3 :: Reg (Bit t_logInstrs) <- makeReg dontCare
-    pc4 :: Reg (Bit t_logInstrs) <- makeReg dontCare
-    pc5 :: Reg (Bit t_logInstrs) <- makeReg dontCare
+    -- Call depth register, for each stage
+    state2 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+      makeReg dontCare
+    state3 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+      makeReg dontCare
+    state4 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+      makeReg dontCare
+    state5 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+      makeReg dontCare
 
     -- Active thread mask
     activeMask3 :: Reg (Bit t_warpSize) <- makeReg dontCare
@@ -193,8 +215,13 @@ makeSIMTPipeline c inputs =
       -- When start register is valid, perform initialisation
       when (startReg.val.isSome .&. kernelRespQueue.notFull) do
         -- Write PC to each thread of warp
-        let pc = startReg.val.val
-        sequence_ [store pcMem (warpIdCounter.val) pc | pcMem <- pcMems]
+        let initState =
+              SIMTThreadState {
+                simtPC = startReg.val.val
+              , simtCallDepth = ones
+              }
+        sequence_ [ store stateMem (warpIdCounter.val) initState
+                  | stateMem <- stateMems ]
         warpIdCounter <== warpIdCounter.val + 1
 
         -- Insert into warp queue
@@ -211,9 +238,9 @@ makeSIMTPipeline c inputs =
     -- ========================
 
     always do
-      -- Load PC for next warp on each lane
-      forM_ pcMems \pcMem -> do
-        load pcMem (warpQueue.first)
+      -- Load state for next warp on each lane
+      forM_ stateMems \stateMem -> do
+        load stateMem (warpQueue.first)
 
       -- Buffer warp id for stage 1
       warpId1 <== warpQueue.first
@@ -227,9 +254,10 @@ makeSIMTPipeline c inputs =
     -- ================================
 
     always do
-      -- Compute the min PC
-      let minOf a b = if a .<. b then a else b
-      pc2 <== tree1 minOf [mem.out | mem <- pcMems]
+      -- Active threads are those with the max call depth, and on a
+      -- tie, the min PC
+      let minOf a b = if pack a .<. pack b then a else b
+      state2 <== tree1 minOf [mem.out | mem <- stateMems]
 
       -- Trigger stage 2
       warpId2 <== warpId1.val
@@ -240,7 +268,7 @@ makeSIMTPipeline c inputs =
 
     always do
       -- Compute active thread mask
-      let activeList = [m.out.old .==. pc2.val | m <- pcMems]
+      let activeList = [m.out.old === state2.val | m <- stateMems]
       let activeMask :: Bit t_warpSize = fromBitList activeList
       activeMask3 <== activeMask
 
@@ -249,11 +277,11 @@ makeSIMTPipeline c inputs =
         "SIMT pipeline error: no active threads in warp"
 
       -- Issue load to instruction memory
-      load instrMem (pc2.val)
+      load instrMem (state2.val.simtPC)
 
       -- Trigger stage 3
       warpId3 <== warpId2.val
-      pc3 <== pc2.val
+      state3 <== state2.val
       go3 <== go2.val
 
     -- Stage 3: Operand Fetch
@@ -273,7 +301,7 @@ makeSIMTPipeline c inputs =
       warpId4 <== warpId3.val
       activeMask4 <== activeMask3.val
       instr4 <== instrMem.out
-      pc4 <== pc3.val
+      state4 <== state3.val
       go4 <== go3.val
 
     -- Stage 4: Operand Latch
@@ -295,7 +323,7 @@ makeSIMTPipeline c inputs =
       warpId5 <== warpId4.val
       activeMask5 <== activeMask4.val
       instr5 <== instr4.val
-      pc5 <== pc4.val
+      state5 <== state4.val
       go5 <== go4.val
 
     -- Stages 5 and 6: Execute and Writeback
@@ -358,12 +386,12 @@ makeSIMTPipeline c inputs =
                      suspBits
                      regFilesA
                      regFilesB
-                     pcMems
+                     stateMems
     forM_ lanes \(exec, resume, threadActive, suspMask,
-                  regFileA, regFileB, pcMem) -> do
+                  regFileA, regFileB, stateMem) -> do
 
       -- Per lane interfacing
-      pcNextWire :: Wire (Bit t_logInstrs) <- makeWire (pc5.val + 1)
+      pcNextWire :: Wire (Bit t_logInstrs) <- makeWire (state5.val.simtPC + 1)
       retryWire  :: Wire (Bit 1) <- makeWire false
       suspWire   :: Wire (Bit 1) <- makeWire false
       resultWire :: Wire (Bit 32) <- makeWire dontCare
@@ -376,7 +404,7 @@ makeSIMTPipeline c inputs =
             , opA = regFileA.out.old
             , opB = regFileB.out.old
             , opBorImm = regFileB.out.getRegBOrImm.old
-            , pc = ReadWrite (pc5.val.toPC) \writeVal -> do
+            , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
                      pcNextWire <== writeVal.fromPC
             , result = WriteOnly \writeVal ->
                          when (instr5.val.dst .!=. 0) do
@@ -393,7 +421,16 @@ makeSIMTPipeline c inputs =
 
           -- Only update PC if not retrying
           when (retryWire.val.inv) do
-            store pcMem (warpId5.val) (pcNextWire.val)
+            -- Compute new call depth increment
+            let inc = inputs.simtIncCallDepth.zeroExtendCast
+            let dec = inputs.simtDecCallDepth.zeroExtendCast
+            -- Compute new thread state
+            let s = SIMTThreadState {
+                      simtPC = pcNextWire.val
+                      -- Remember, lower is deeper
+                    , simtCallDepth = (state5.val.simtCallDepth - inc) + dec
+                    }
+            store stateMem (warpId5.val) s
 
           -- Update suspension bits
           when (suspWire.val) do

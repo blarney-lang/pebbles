@@ -8,6 +8,7 @@ module Pebbles.SoC.Core.SIMT where
 -- Blarney imports
 import Blarney
 import Blarney.Stream
+import Blarney.PulseWire
 import Blarney.SourceSink
 import Blarney.Interconnect
 
@@ -16,6 +17,7 @@ import Pebbles.CSRs.Hart
 import Pebbles.CSRs.CSRUnit
 import Pebbles.CSRs.Custom.Simulate
 import Pebbles.CSRs.Custom.WarpControl
+import Pebbles.Util.Counter
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.SIMT
 import Pebbles.Pipeline.SIMT.Management
@@ -25,6 +27,7 @@ import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
+import Pebbles.Instructions.Custom.CallDepth
 
 -- Haskell imports
 import Data.List
@@ -72,17 +75,23 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   -- Divider per vector lane
   divUnits <- replicateM SIMTLanes makeSeqDivUnit
 
+  -- Wires for tracking function call depth
+  incCallDepth <- makePulseWire
+  decCallDepth <- makePulseWire
+
   -- Pipeline configuration
   let pipelineConfig =
         SIMTPipelineConfig {
           instrMemInitFile = config.simtCoreInstrMemInitFile
         , instrMemLogNumInstrs = config.simtCoreInstrMemLogNumInstrs
         , logNumWarps = SIMTLogWarps
-        , decodeStage = decodeI ++ decodeM
+        , logMaxCallDepth = SIMTLogMaxCallDepth
+        , decodeStage = decodeI ++ decodeM ++ decodeCallDepth
         , executeStage =
             [ \d s -> do
                 executeI csrUnit memUnit d s
                 executeM mulUnit divUnit d s
+                executeCallDepth incCallDepth decCallDepth d s
             | (memUnit, mulUnit, divUnit, csrUnit) <-
                 zip4 memUnits mulUnits divUnits csrUnits ]
        , resumeStage =
@@ -100,6 +109,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
     SIMTPipelineIns {
       simtMgmtReqs = mgmtReqs
     , simtWarpTerminatedWire = warpTermWire
+    , simtIncCallDepth = incCallDepth.val
+    , simtDecCallDepth = decCallDepth.val
     }
 
   return (pipelineOuts.simtMgmtResps)
