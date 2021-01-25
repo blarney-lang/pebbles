@@ -256,7 +256,8 @@ makeSIMTPipeline c inputs =
     always do
       -- Active threads are those with the max call depth, and on a
       -- tie, the min PC
-      let minOf a b = if pack a .<. pack b then a else b
+      let packState s = s.simtCallDepth # s.simtPC
+      let minOf a b = if packState a .<. packState b then a else b
       state2 <== tree1 minOf [mem.out | mem <- stateMems]
 
       -- Trigger stage 2
@@ -424,6 +425,8 @@ makeSIMTPipeline c inputs =
             -- Compute new call depth increment
             let inc = inputs.simtIncCallDepth.zeroExtendCast
             let dec = inputs.simtDecCallDepth.zeroExtendCast
+            dynamicAssert (state5.val.simtCallDepth .!=. 0)
+              "SIMT pipeliene: call depth overflow"
             -- Compute new thread state
             let s = SIMTThreadState {
                       simtPC = pcNextWire.val
