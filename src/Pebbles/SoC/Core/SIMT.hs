@@ -80,8 +80,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   divUnits <- replicateM SIMTLanes makeSeqDivUnit
 
   -- Wires for tracking function call depth
-  incCallDepth <- makePulseWire
-  decCallDepth <- makePulseWire
+  incCallDepths <- replicateM SIMTLanes makePulseWire
+  decCallDepths <- replicateM SIMTLanes makePulseWire
 
   -- Pipeline configuration
   let pipelineConfig =
@@ -95,9 +95,10 @@ makeSIMTCore config mgmtReqs memUnits = mdo
             [ \d s -> do
                 executeI csrUnit memUnit d s
                 executeM mulUnit divUnit d s
-                executeCallDepth incCallDepth decCallDepth d s
-            | (memUnit, mulUnit, divUnit, csrUnit) <-
-                zip4 memUnits' mulUnits divUnits csrUnits ]
+                executeCallDepth incCD decCD d s
+            | (memUnit, mulUnit, divUnit, csrUnit, incCD, decCD) <-
+                zip6 memUnits' mulUnits divUnits csrUnits
+                 incCallDepths decCallDepths ]
        , resumeStage =
             [ mergeTree
                 [ fmap memRespToResumeReq (memUnit.memResps)
@@ -113,8 +114,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
     SIMTPipelineIns {
       simtMgmtReqs = mgmtReqs
     , simtWarpTerminatedWire = warpTermWire
-    , simtIncCallDepth = incCallDepth.val
-    , simtDecCallDepth = decCallDepth.val
+    , simtIncCallDepth = map val incCallDepths
+    , simtDecCallDepth = map val decCallDepths
     }
 
   return (pipelineOuts.simtMgmtResps)

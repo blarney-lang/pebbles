@@ -48,6 +48,7 @@ import Blarney.BitScan
 import Data.List
 import Data.Proxy
 import qualified Data.Map as Map
+import Control.Applicative hiding (some)
 
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
@@ -82,9 +83,10 @@ data SIMTPipelineIns =
       -- stage (assumed to be converged) is terminated
     , simtWarpTerminatedWire :: Wire (Bit 1)
       -- | A pulse on these wires indicates that current instruction (in
-      -- execute) is incrementing/decrementing the function call depth
-    , simtIncCallDepth :: Bit 1
-    , simtDecCallDepth :: Bit 1
+      -- execute) is incrementing/decrementing the function call
+      -- depth; one bit per lane
+    , simtIncCallDepth :: [Bit 1]
+    , simtDecCallDepth :: [Bit 1]
   }
 
 -- | SIMT pipeline outputs
@@ -382,83 +384,89 @@ makeSIMTPipeline c inputs =
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             enq warpQueue (warpId5.val)
 
-    -- For each lane
-    let lanes = zip7 (c.executeStage)
-                     (c.resumeStage)
-                     (activeMask5.val.toBitList)
-                     suspBits
-                     regFilesA
-                     regFilesB
-                     stateMems
-    forM_ lanes \(exec, resume, threadActive, suspMask,
-                  regFileA, regFileB, stateMem) -> do
+    -- Vector lane definition
+    let makeLane exec resume threadActive suspMask regFileA
+                 regFileB stateMem incCallDepth decCallDepth = do
 
-      -- Per lane interfacing
-      pcNextWire :: Wire (Bit t_logInstrs) <- makeWire (state5.val.simtPC + 1)
-      retryWire  :: Wire (Bit 1) <- makeWire false
-      suspWire   :: Wire (Bit 1) <- makeWire false
-      resultWire :: Wire (Bit 32) <- makeWire dontCare
+          -- Per lane interfacing
+          pcNextWire :: Wire (Bit t_logInstrs) <-
+            makeWire (state5.val.simtPC + 1)
+          retryWire  :: Wire (Bit 1) <- makeWire false
+          suspWire   :: Wire (Bit 1) <- makeWire false
+          resultWire :: Wire (Bit 32) <- makeWire dontCare
 
-      always do
-        -- Execute stage
-        when (go5.val .&. threadActive .&. isSusp5.val.inv) do
-          exec decodeInfo State {
-              instr = instr5.val
-            , opA = regFileA.out.old
-            , opB = regFileB.out.old
-            , opBorImm = regFileB.out.getRegBOrImm.old
-            , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
-                     pcNextWire <== writeVal.fromPC
-            , result = WriteOnly \writeVal ->
-                         when (instr5.val.dst .!=. 0) do
-                           resultWire <== writeVal
-            , suspend = do
-                suspWire <== true
-                return
-                  InstrInfo {
-                    instrId = warpId5.val.zeroExtendCast
-                  , instrDest = instr5.val.dst
-                  }
-            , retry = retryWire <== true
-            }
+          always do
+            -- Execute stage
+            when (go5.val .&. threadActive .&. isSusp5.val.inv) do
+              exec decodeInfo State {
+                  instr = instr5.val
+                , opA = regFileA.out.old
+                , opB = regFileB.out.old
+                , opBorImm = regFileB.out.getRegBOrImm.old
+                , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
+                         pcNextWire <== writeVal.fromPC
+                , result = WriteOnly \writeVal ->
+                             when (instr5.val.dst .!=. 0) do
+                               resultWire <== writeVal
+                , suspend = do
+                    suspWire <== true
+                    return
+                      InstrInfo {
+                        instrId = warpId5.val.zeroExtendCast
+                      , instrDest = instr5.val.dst
+                      }
+                , retry = retryWire <== true
+                }
 
-          -- Only update PC if not retrying
-          when (retryWire.val.inv) do
-            -- Compute new call depth increment
-            let inc = inputs.simtIncCallDepth.zeroExtendCast
-            let dec = inputs.simtDecCallDepth.zeroExtendCast
-            dynamicAssert (state5.val.simtCallDepth .!=. 0)
-              "SIMT pipeliene: call depth overflow"
-            -- Compute new thread state
-            let s = SIMTThreadState {
+              -- Only update PC if not retrying
+              when (retryWire.val.inv) do
+                -- Compute new call depth increment
+                let inc = incCallDepth.zeroExtendCast
+                let dec = decCallDepth.zeroExtendCast
+                dynamicAssert (state5.val.simtCallDepth .!=. 0)
+                  "SIMT pipeliene: call depth overflow"
+                -- Update thread state
+                store stateMem (warpId5.val)
+                  SIMTThreadState {
                       simtPC = pcNextWire.val
                       -- Remember, lower is deeper
                     , simtCallDepth = (state5.val.simtCallDepth - inc) + dec
                     }
-            store stateMem (warpId5.val) s
 
-          -- Update suspension bits
-          when (suspWire.val) do
-            suspMask!(warpId5.val) <== true
+              -- Update suspension bits
+              when (suspWire.val) do
+                suspMask!(warpId5.val) <== true
 
-        -- Writeback stage
-        if resultWire.active.old
-          then do
-            let idx = (warpId5.val.old, instr5.val.dst.old)
-            let value = resultWire.val.old
-            store regFileA idx value
-            store regFileB idx value
-          else do
-            -- Thread resumption
-            when (resume.canPeek) do
-              let req = resume.peek :: ResumeReq
-              let idx = (req.resumeReqInfo.instrId.truncateCast,
-                         req.resumeReqInfo.instrDest)
-              when (req.resumeReqInfo.instrDest .!=. 0) do
-                store regFileA idx (req.resumeReqData)
-                store regFileB idx (req.resumeReqData)
-              suspMask!(req.resumeReqInfo.instrId) <== false
-              resume.consume
+            -- Writeback stage
+            if resultWire.active.old
+              then do
+                let idx = (warpId5.val.old, instr5.val.dst.old)
+                let value = resultWire.val.old
+                store regFileA idx value
+                store regFileB idx value
+              else do
+                -- Thread resumption
+                when (resume.canPeek) do
+                  let req = resume.peek :: ResumeReq
+                  let idx = (req.resumeReqInfo.instrId.truncateCast,
+                             req.resumeReqInfo.instrDest)
+                  when (req.resumeReqInfo.instrDest .!=. 0) do
+                    store regFileA idx (req.resumeReqData)
+                    store regFileB idx (req.resumeReqData)
+                  suspMask!(req.resumeReqInfo.instrId) <== false
+                  resume.consume
+
+    -- Create vector lanes
+    sequence $ getZipList $
+      makeLane <$> ZipList (c.executeStage)
+               <*> ZipList (c.resumeStage) 
+               <*> ZipList (activeMask5.val.toBitList)
+               <*> ZipList suspBits
+               <*> ZipList regFilesA
+               <*> ZipList regFilesB
+               <*> ZipList stateMems
+               <*> ZipList (inputs.simtIncCallDepth)
+               <*> ZipList (inputs.simtDecCallDepth)
 
     -- Handle management requests
     -- ==========================
