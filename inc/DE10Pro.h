@@ -34,6 +34,9 @@ NOTE("Number of warps per SIMT core")
 NOTE("Number of bits used to track function call depth")
 #define SIMTLogMaxCallDepth 5
 
+NOTE("Stack size (in bytes) for each SIMT thread")
+#define SIMTLogBytesPerStack 19
+
 NOTE("CPU configuration")
 NOTE("=================")
 
