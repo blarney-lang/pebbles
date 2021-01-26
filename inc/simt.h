@@ -7,6 +7,7 @@
 #define CSR_SimEmit         "0x800"
 #define CSR_SimFinish       "0x801"
 #define CSR_WrapTerminate   "0x830"
+#define CSR_WrapGetKernel   "0x831"
 #define CSR_HartId          "0xf14"
 
 #define INLINE inline __attribute__((always_inline))
@@ -36,5 +37,14 @@ INLINE int simtThreadId()
   asm volatile("csrrw %0, " CSR_HartId ", zero" : "=r"(x));
   return x;
 }
+
+// Get address of kernel closure (where kernel code ptr and args reside)
+INLINE int simtGetKernelClosureAddr()
+{
+  int x;
+  asm volatile("csrrw %0, " CSR_WrapGetKernel ", zero" : "=r"(x));
+  return x;
+}
+
 
 #endif

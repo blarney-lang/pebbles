@@ -19,6 +19,7 @@ import Pebbles.Pipeline.SIMT.Management
 -- | SIMTStartKernel  |   0x823 | W      | Start all warps with given PC     |
 -- | SIMTCanGet       |   0x824 | R      | Can get SIMT response?            |
 -- | SIMTGet          |   0x825 | R      | Get SIMT response                 |
+-- | SIMTSetKernel    |   0x826 | W      | Set address of kernel closure     |
 -- +------------------+---------+--------+-----------------------------------+
 
 -- Notes: SIMTWriteInstr and SIMTStartKernel must only be accessed if
@@ -37,6 +38,9 @@ makeCSRs_SIMTManagement resps = do
 
   -- Address for instruction memory write
   addrReg :: Reg (Bit 32) <- makeReg dontCare
+
+  -- Address of kernel closure (where kernel code and arguments reside)
+  kernelAddrReg :: Reg (Bit 32) <- makeReg dontCare
 
   -- Check if command can be issued to SIMT core
   let csr_SIMTCanPut =
@@ -84,7 +88,7 @@ makeCSRs_SIMTManagement resps = do
               SIMTReq {
                 simtReqCmd  = simtCmd_StartPipeline
               , simtReqAddr = x
-              , simtReqData = dontCare
+              , simtReqData = kernelAddrReg.val
               }
         }
 
@@ -108,6 +112,15 @@ makeCSRs_SIMTManagement resps = do
         , csrWrite = Nothing
         }
 
+  -- Set address of kernel closure
+  let csr_SIMTSetKernel =
+        CSR {
+          csrId = 0x826
+        , csrRead = Nothing
+        , csrWrite = Just \x -> do
+            kernelAddrReg <== x
+        }
+
 
   let csrs =
         [ csr_SIMTCanPut
@@ -116,6 +129,7 @@ makeCSRs_SIMTManagement resps = do
         , csr_SIMTStartKernel
         , csr_SIMTCanGet
         , csr_SIMTGet
+        , csr_SIMTSetKernel
         ]
 
   return (reqs.toStream, csrs)

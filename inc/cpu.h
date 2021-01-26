@@ -19,6 +19,7 @@
 #define CSR_SIMTStartKernel "0x823"
 #define CSR_SIMTCanGet      "0x824"
 #define CSR_SIMTGet         "0x825"
+#define CSR_SIMTSetKernel   "0x826"
 
 #define INLINE inline __attribute__((always_inline))
 
@@ -84,6 +85,12 @@ INLINE void cpuSIMTWriteInstr(uint32_t addr, uint32_t instr)
 {
   asm volatile("csrw " CSR_SIMTInstrAddr ", %0\n" : : "r"(addr));
   asm volatile("csrw " CSR_SIMTWriteInstr ", %0\n" : : "r"(instr));
+}
+
+// Set address of kernel closure (where kernel code ptr and args reside)
+INLINE void cpuSIMTSetKernel(uint32_t addr)
+{
+  asm volatile("csrw " CSR_SIMTSetKernel ", %0\n" : : "r"(addr));
 }
 
 // Start a kernel on the SIMT core; assumes cpuSIMTCanPut() is true

@@ -94,6 +94,8 @@ data SIMTPipelineOuts =
       simtMgmtResps :: Stream SIMTResp
       -- | Warp id of instruction currently in execute stage
     , simtCurrentWarpId :: Bit 32
+      -- | Address of kernel closure as set by CPU
+    , simtKernelAddr :: Bit 32
   }
 
 -- | Per-thread state
@@ -461,6 +463,9 @@ makeSIMTPipeline c inputs =
     -- Handle management requests
     -- ==========================
 
+    -- Address of kernel code ptr and args, as set by CPU
+    kernelAddrReg :: Reg (Bit 32) <- makeReg dontCare
+
     always do
       when (inputs.simtMgmtReqs.canPeek) do
         let req = inputs.simtMgmtReqs.peek
@@ -476,6 +481,7 @@ makeSIMTPipeline c inputs =
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
           when (busy.inv) do
             startReg <== some (req.simtReqAddr.fromPC)
+            kernelAddrReg <== req.simtReqData
             inputs.simtMgmtReqs.consume
 
     -- Pipeline outputs
@@ -483,4 +489,5 @@ makeSIMTPipeline c inputs =
       SIMTPipelineOuts {
         simtMgmtResps = kernelRespQueue.toStream
       , simtCurrentWarpId = warpId5.val.zeroExtendCast
+      , simtKernelAddr = kernelAddrReg.val
       }
