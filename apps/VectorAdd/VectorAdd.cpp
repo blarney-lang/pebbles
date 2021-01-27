@@ -34,8 +34,9 @@ int main()
   noclRunKernel(&k);
 
   // Display result
-  for (int i = 0; i < N; i++) printf("%x ", result[i]);
-  printf("\n");
+  int sum = 0;
+  for (int i = 0; i < N; i++) sum += result[i];
+  printf("%x\n", sum);
 
   return 0;
 }
