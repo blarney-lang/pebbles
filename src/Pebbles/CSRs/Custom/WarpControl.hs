@@ -19,9 +19,9 @@ import Pebbles.CSRs.CSRUnit
 -- write assumes that all threads in the warp have converged and
 -- indicates that the warp should be terminated.
 
--- | CSRs for management of SIMT core from CPU
-makeCSRs_WarpControl :: Bit 32 -> Module (Wire (Bit 1), [CSR])
-makeCSRs_WarpControl kernelAddr = do
+-- | CSR for warp termination
+makeCSR_WarpTerminate :: Module (Wire (Bit 1), CSR)
+makeCSR_WarpTerminate = do
   -- A pulse on this wire indicates termination
   termWire :: Wire (Bit 1) <- makeWire 0
 
@@ -34,6 +34,11 @@ makeCSRs_WarpControl kernelAddr = do
             termWire <== x.truncate
         }
 
+  return (termWire, csr_WarpTerminate)
+
+-- | CSR for accessing kernel closure address
+makeCSR_WarpGetKernel :: Bit 32 -> Module CSR
+makeCSR_WarpGetKernel kernelAddr = do
   -- Get kernel closure
   let csr_WarpGetKernel =
         CSR {
@@ -42,4 +47,4 @@ makeCSRs_WarpControl kernelAddr = do
         , csrWrite = Nothing
         }
 
-  return (termWire, [csr_WarpTerminate, csr_WarpGetKernel])
+  return csr_WarpGetKernel

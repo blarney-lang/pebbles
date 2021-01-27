@@ -60,8 +60,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   let memUnits' = interleaveStacks memUnits
 
   -- SIMT warp control CSRs
-  (warpTermWire, csrs_WarpControl) <-
-    makeCSRs_WarpControl (pipelineOuts.simtKernelAddr)
+  (warpTermWire, csr_WarpTerminate) <- makeCSR_WarpTerminate
+  csr_WarpGetKernel <- makeCSR_WarpGetKernel (pipelineOuts.simtKernelAddr)
 
   -- CSR unit per vector lane
   csrUnits <- sequence
@@ -70,7 +70,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
          makeCSRUnit $
               csrs_Sim
            ++ [csr_HartId hartId]
-           ++ (if i == 0 then csrs_WarpControl else [])
+           ++ (if i == 0 then [csr_WarpTerminate] else [])
+           ++ [csr_WarpGetKernel]
     | i <- [0..SIMTLanes-1] ]
  
   -- Multiplier per vector lane

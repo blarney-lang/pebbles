@@ -39,9 +39,9 @@ INLINE int simtThreadId()
 }
 
 // Get address of kernel closure (where kernel code ptr and args reside)
-INLINE int simtGetKernelClosureAddr()
+INLINE uint32_t simtGetKernelClosureAddr()
 {
-  int x;
+  uint32_t x;
   asm volatile("csrrw %0, " CSR_WrapGetKernel ", zero" : "=r"(x));
   return x;
 }

@@ -2,8 +2,10 @@
 
 OUTPUT_ARCH( "riscv" )
 
-/* Base of stack is at the end of DRAM */
-__stackBase = ((1 << DRAMAddrWidth) * DRAMBeatBytes) - 4;
+/* Base of stack is toward the end of DRAM, before the SIMT thread stacks */
+__stackBase =
+  (1 << (DRAMAddrWidth + DRAMBeatLogBytes)) -
+    (1 << (SIMTLogLanes + SIMTLogWarps + SIMTLogBytesPerStack)) - 4;
 
 MEMORY
 {

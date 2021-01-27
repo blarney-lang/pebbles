@@ -12,7 +12,8 @@ CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -Os \
           -static -mcmodel=medany \
           -fvisibility=hidden -nostdlib -nostartfiles \
           -fsingle-precision-constant -fno-builtin-printf \
-          -ffp-contract=off -fno-builtin -ffreestanding
+          -ffp-contract=off -fno-builtin -ffreestanding \
+          -fno-reorder-blocks
 LDFLAGS = -melf32lriscv -G 0 
 
 # C files to compile

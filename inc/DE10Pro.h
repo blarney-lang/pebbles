@@ -29,6 +29,7 @@ NOTE("Number of lanes per SIMT core")
 #define SIMTLogLanes 5
 
 NOTE("Number of warps per SIMT core")
+#define SIMTWarps 64
 #define SIMTLogWarps 6
 
 NOTE("Number of bits used to track function call depth")
