@@ -21,7 +21,7 @@ OFILES = $(patsubst %.cpp,%.o,$(APP_CPP)) \
          $(PEBBLES_ROOT)/lib/cpu/io.o
 
 .PHONY: all
-all: run
+all: Run
 
 code.v: app.elf
 	$(RV_OBJCOPY) -O verilog --only-section=.text app.elf code.v
@@ -39,13 +39,13 @@ app.elf: $(OFILES) link.ld
 link.ld: $(PEBBLES_ROOT)/apps/Common/link.ld.h
 	cpp -P -I $(PEBBLES_ROOT)/inc $< > link.ld
 
-run: checkenv code.v data.v $(RUN_CPP) $(RUN_H)
-	g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o run $(RUN_CPP) \
+Run: checkenv code.v data.v $(RUN_CPP) $(RUN_H)
+	g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o Run $(RUN_CPP) \
     -fno-exceptions -ljtag_atlantic -ljtag_client \
     -L $(QUARTUS_ROOTDIR)/linux64/ -Wl,-rpath,$(QUARTUS_ROOTDIR)/linux64
 
-sim: code.v data.v $(RUN_CPP) $(RUN_H)
-	g++ -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc -o sim $(RUN_CPP)
+RunSim: code.v data.v $(RUN_CPP) $(RUN_H)
+	g++ -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc -o RunSim $(RUN_CPP)
 
 # Raise error if QUARTUS_ROOTDIR not set
 .PHONY: checkenv
@@ -54,4 +54,4 @@ checkenv:
 
 .PHONY: clean
 clean:
-	rm -f *.o *.elf link.ld code.v data.v run sim
+	rm -f *.o *.elf link.ld code.v data.v Run RunSim
