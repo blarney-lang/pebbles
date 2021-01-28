@@ -10,7 +10,11 @@
 #define CSR_WrapGetKernel   "0x831"
 #define CSR_HartId          "0xf14"
 
+// Force inlining for some functions
 #define INLINE inline __attribute__((always_inline))
+
+// Arrays should be aligned to support coalescing unit
+#define simt_aligned __attribute__ ((aligned (SIMTLanes * 4)))
 
 // Emit word to console (simulation only)
 INLINE void simtEmit(unsigned int x)

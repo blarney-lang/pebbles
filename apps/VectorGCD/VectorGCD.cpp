@@ -29,7 +29,7 @@ struct VectorGCD : Kernel {
 int main()
 {
   // Input and output vectors
-  aligned int a[N], b[N], result[N];
+  simt_aligned int a[N], b[N], result[N];
 
   // Initialise inputs
   uint32_t seed = 100;

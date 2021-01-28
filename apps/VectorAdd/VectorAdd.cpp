@@ -19,7 +19,7 @@ struct VectorAdd : Kernel {
 int main()
 {
   // Input and output vectors
-  aligned int a[N], b[N], result[N];
+  simt_aligned int a[N], b[N], result[N];
 
   // Initialise inputs
   for (int i = 0; i < N; i++) {

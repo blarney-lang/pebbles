@@ -6,9 +6,6 @@
 #include <cpu.h>
 #include <stdint.h>
 
-// Arrays should be aligned to support coalescing unit
-#define aligned __attribute__ ((aligned (SIMTLanes * 4)))
-
 // Parameters that are available to any kernel
 struct Kernel {
   // Work item id
