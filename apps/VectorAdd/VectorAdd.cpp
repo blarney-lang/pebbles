@@ -2,6 +2,7 @@
 #include <cpu/io.h>
 #include <nocl.h>
 
+// Kernel for adding vectors
 struct VectorAdd : Kernel {
   int* a;
   int* b;
@@ -12,12 +13,13 @@ struct VectorAdd : Kernel {
   }
 };
 
+// Vector size for benchmarking
 #define N 3000
 
 int main()
 {
   // Input and output vectors
-  shared int a[N], b[N], result[N];
+  aligned int a[N], b[N], result[N];
 
   // Initialise inputs
   for (int i = 0; i < N; i++) {

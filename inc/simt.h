@@ -46,5 +46,10 @@ INLINE uint32_t simtGetKernelClosureAddr()
   return x;
 }
 
+// Explicit mark a point the the program that must be executed;
+// useful for marking convergence points at the end of a loop body
+INLINE void simtConverge() {
+  asm volatile("");
+}
 
 #endif
