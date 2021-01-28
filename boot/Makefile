@@ -24,7 +24,7 @@ OFILES = $(patsubst %.c,%.o,$(CFILES))
 
 # Size of instruction memory
 LOG_INSTR_BYTES = $(shell echo -n CPUInstrMemLogWords \
-  | cpp -P -I. -imacros $(PEBBLES_ROOT)/inc/SoC.h | xargs)
+  | cpp -P -imacros $(PEBBLES_ROOT)/inc/SoC.h - | xargs)
 INSTR_BYTES = $(shell echo "4 * (2 ^ $(LOG_INSTR_BYTES))" | bc)
 
 .PHONY: all
