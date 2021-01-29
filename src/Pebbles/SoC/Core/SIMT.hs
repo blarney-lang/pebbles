@@ -93,10 +93,10 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , logMaxCallDepth = SIMTLogMaxCallDepth
         , decodeStage = decodeI ++ decodeM ++ decodeCallDepth
         , executeStage =
-            [ \d s -> do
-                executeI csrUnit memUnit d s
-                executeM mulUnit divUnit d s
-                executeCallDepth incCD decCD d s
+            [ \s -> do
+                executeI csrUnit memUnit s
+                executeM mulUnit divUnit s
+                executeCallDepth incCD decCD s
             | (memUnit, mulUnit, divUnit, csrUnit, incCD, decCD) <-
                 zip6 memUnits' mulUnits divUnits csrUnits
                  incCallDepths decCallDepths ]

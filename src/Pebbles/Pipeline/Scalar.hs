@@ -29,16 +29,16 @@ import qualified Data.Map as Map
 import Pebbles.Pipeline.Interface
 
 -- | Scalar pipeline configuration
-data ScalarPipelineConfig =
+data ScalarPipelineConfig tag =
   ScalarPipelineConfig {
     -- | Instruction memory initilaisation file
     instrMemInitFile :: Maybe String
     -- | Instruciton memory size
   , instrMemLogNumInstrs :: Int
     -- | Decode table
-  , decodeStage :: [(String, String)]
+  , decodeStage :: [(String, tag)]
     -- | Action for execute stage
-  , executeStage :: DecodeInfo -> State -> Action ()
+  , executeStage :: State -> Action ()
     -- | Resumption for multi-cycle instructions
   , resumeStage :: Stream ResumeReq
   }
@@ -51,7 +51,11 @@ data ScalarPipeline =
   }
 
 -- | Scalar pipeline
-makeScalarPipeline :: ScalarPipelineConfig -> Module ScalarPipeline
+makeScalarPipeline :: Ord tag =>
+     -- | Inputs: pipeline configuration
+     ScalarPipelineConfig tag
+     -- | Outpus: pipeline management interface
+  -> Module ScalarPipeline
 makeScalarPipeline c = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
@@ -197,17 +201,7 @@ makeScalarPipeline c =
 
       -- Buffer the decode tables
       let bufferEn = delayEn dontCare
-      let bufferField en opt =
-            Option (bufferEn en (opt.valid)) (map (bufferEn en) (opt.val))
       let tagMap3 = Map.map (bufferEn (stallWire.val.inv)) tagMap
-      let fieldMap3 = Map.map (bufferField (stallWire.val.inv)) fieldMap
-
-      -- Information from decode stage
-      let decodeInfo =
-            DecodeInfo {
-              opcode = tagMap3
-            , fields = fieldMap3
-            }
 
       -- State for execute stage
       let state = State {
@@ -229,11 +223,12 @@ makeScalarPipeline c =
                 go3 <== true
                 retryWire <== true
                 stallWire <== true
+            , opcode = packTagMap tagMap3
             }
 
       -- Execute stage
       when (go3.val) do
-        executeStage c decodeInfo state
+        executeStage c state
         when (retryWire.val.inv) do
           instr4 <== instr3.val
 

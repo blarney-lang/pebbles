@@ -55,7 +55,7 @@ import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 
 -- | SIMT pipeline configuration
-data SIMTPipelineConfig =
+data SIMTPipelineConfig tag =
   SIMTPipelineConfig {
     -- | Instruction memory initialisation file
     instrMemInitFile :: Maybe String
@@ -66,10 +66,10 @@ data SIMTPipelineConfig =
     -- | Number of bits used to track function call depth
   , logMaxCallDepth :: Int
     -- | Decode table
-  , decodeStage :: [(String, String)]
+  , decodeStage :: [(String, tag)]
     -- | List of execute stages, one per lane
     -- The size of this list is the warp size
-  , executeStage :: [DecodeInfo -> State -> Action ()]
+  , executeStage :: [State -> Action ()]
     -- | List of resumption streams, for multi-cycle instructions
   , resumeStage :: [Stream ResumeReq]
   }
@@ -111,9 +111,9 @@ data SIMTThreadState t_logInstrs t_logMaxCallDepth =
   deriving (Generic, Bits)
 
 -- | SIMT pipeline module
-makeSIMTPipeline ::
+makeSIMTPipeline :: Ord tag =>
      -- | SIMT configuration options
-     SIMTPipelineConfig
+     SIMTPipelineConfig tag
      -- | SIMT pipeline inputs
   -> SIMTPipelineIns
      -- | SIMT pipeline outputs
@@ -347,16 +347,7 @@ makeSIMTPipeline c inputs =
           \addr -> zeroExtendCast addr # (0 :: Bit 2)
 
     -- Buffer the decode tables
-    let bufferField opt = Option (opt.valid.buffer) (map buffer (opt.val))
     let tagMap5 = Map.map buffer tagMap4
-    let fieldMap5 = Map.map bufferField fieldMap4
-
-    -- Information from decode stage
-    let decodeInfo =
-          DecodeInfo {
-            opcode = tagMap5
-          , fields = fieldMap5
-          }
 
     -- Insert warp id back into warp queue, except on warp termination
     always do
@@ -398,7 +389,7 @@ makeSIMTPipeline c inputs =
           always do
             -- Execute stage
             when (go5.val .&. threadActive .&. isSusp5.val.inv) do
-              exec decodeInfo State {
+              exec State {
                   instr = instr5.val
                 , opA = regFileA.out.old
                 , opB = regFileB.out.old
@@ -416,6 +407,7 @@ makeSIMTPipeline c inputs =
                       , instrDest = instr5.val.dst
                       }
                 , retry = retryWire <== true
+                , opcode = packTagMap tagMap5
                 }
 
               -- Only update PC if not retrying

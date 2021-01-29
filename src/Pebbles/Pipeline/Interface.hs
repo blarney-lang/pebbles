@@ -66,15 +66,12 @@ data State =
     -- | Call this if the instruction cannot currently be executed
     -- (perhaps resources are not currently available).
   , retry :: Action ()
+    -- Mnemonic(s) for current instruction identified by the decoder
+  , opcode :: MnemonicVec
   } deriving (Generic, Interface)
 
--- | Information from decode stage. Idenfities the opcode which the
--- instruction decoded to, and contains any fields of the instruction
--- identified by the decoder.
-data DecodeInfo =
-  DecodeInfo {
-    -- | Instruction classifiers
-    opcode :: TagMap String
-    -- | Instruction fields
-  , fields :: FieldMap
-  }
+-- | Upper bound on number of instruction mnemonics used by the decoder
+type MaxMnemonics = 64
+
+-- | Bit vector indentifying one or more active mnemonics
+type MnemonicVec = Bit MaxMnemonics

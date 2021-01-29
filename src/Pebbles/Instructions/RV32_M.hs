@@ -10,47 +10,57 @@ import Blarney.SourceSink
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
+import Pebbles.Instructions.Mnemonics
 
 -- Decode stage
 -- ============
 
 decodeM =
-  [ "0000001 rs2<5> rs1<5> 0 mul<2> rd<5> 0110011" --> "MUL"
-  , "0000001 rs2<5> rs1<5> 1 div<2> rd<5> 0110011" --> "DIV"
+  [ "0000001 rs2<5> rs1<5> 0 mul<2> rd<5> 0110011" --> MUL
+  , "0000001 rs2<5> rs1<5> 1 div<2> rd<5> 0110011" --> DIV
   ]
+
+-- Selector functions
+-- ==================
+
+getMulInfo :: Bit 32 -> Bit 2
+getMulInfo = makeFieldSelector decodeM "mul"
+
+getDivInfo :: Bit 32 -> Bit 2
+getDivInfo = makeFieldSelector decodeM "div"
 
 -- Execute stage
 -- =============
 
-executeM :: MulUnit -> DivUnit -> DecodeInfo -> State -> Action ()
-executeM mulUnit divUnit d s = do
-  when (d.opcode `is` ["MUL"]) do
+executeM :: MulUnit -> DivUnit -> State -> Action ()
+executeM mulUnit divUnit s = do
+  when (s.opcode `is` [MUL]) do
     if mulUnit.mulReqs.canPut
       then do
         info <- s.suspend
-        let mulInfo :: Option (Bit 2) = getField (d.fields) "mul"
+        let mulInfo = s.instr.getMulInfo
         put (mulUnit.mulReqs)
           MulReq {
             mulReqInfo = info
           , mulReqA = s.opA
           , mulReqB = s.opB
-          , mulReqLower = mulInfo.val .==. 0b00
-          , mulReqUnsignedA = mulInfo.val .==. 0b11
-          , mulReqUnsignedB = at @1 (mulInfo.val)
+          , mulReqLower = mulInfo .==. 0b00
+          , mulReqUnsignedA = mulInfo .==. 0b11
+          , mulReqUnsignedB = at @1 mulInfo
           }
       else s.retry
 
-  when (d.opcode `is` ["DIV"]) do
+  when (s.opcode `is` [DIV]) do
     if divUnit.divReqs.canPut
       then do
         info <- s.suspend
-        let divInfo :: Option (Bit 2) = getField (d.fields) "div"
+        let divInfo = s.instr.getDivInfo
         put (divUnit.divReqs)
           DivReq {
             divReqInfo = info
           , divReqNum = s.opA
           , divReqDenom = s.opB
-          , divReqIsSigned = at @0 (divInfo.val.inv)
-          , divReqGetRemainder = at @1 (divInfo.val)
+          , divReqIsSigned = at @0 (divInfo.inv)
+          , divReqGetRemainder = at @1 divInfo
           }
       else s.retry
