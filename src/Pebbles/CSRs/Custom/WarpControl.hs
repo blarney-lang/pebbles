@@ -20,21 +20,20 @@ import Pebbles.CSRs.CSRUnit
 -- indicates that the warp should be terminated.
 
 -- | CSR for warp termination
-makeCSR_WarpTerminate :: Module (Wire (Bit 1), CSR)
-makeCSR_WarpTerminate = do
-  -- A pulse on this wire indicates termination
-  termWire :: Wire (Bit 1) <- makeWire 0
-
+makeCSR_WarpTerminate :: KnownNat n =>
+  Bit n -> Wire (Bit 1) -> Module CSR
+makeCSR_WarpTerminate laneId termWire = do
   -- Terminate warp
   let csr_WarpTerminate =
         CSR {
           csrId = 0x830
         , csrRead = Nothing
         , csrWrite = Just \x -> do
-            termWire <== x.truncate
+            when (laneId .==. 0) do
+              termWire <== x.truncate
         }
 
-  return (termWire, csr_WarpTerminate)
+  return csr_WarpTerminate
 
 -- | CSR for accessing kernel closure address
 makeCSR_WarpGetKernel :: Bit 32 -> Module CSR

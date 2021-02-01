@@ -69,9 +69,7 @@ data SIMTPipelineConfig tag =
   , decodeStage :: [(String, tag)]
     -- | List of execute stages, one per lane
     -- The size of this list is the warp size
-  , executeStage :: [State -> Action ()]
-    -- | List of resumption streams, for multi-cycle instructions
-  , resumeStage :: [Stream ResumeReq]
+  , executeStage :: [State -> Module ExecuteStage]
   }
 
 -- | SIMT pipeline inputs
@@ -376,7 +374,7 @@ makeSIMTPipeline c inputs =
             enq warpQueue (warpId5.val)
 
     -- Vector lane definition
-    let makeLane exec resume threadActive suspMask regFileA
+    let makeLane makeExecStage threadActive suspMask regFileA
                  regFileB stateMem incCallDepth decCallDepth = do
 
           -- Per lane interfacing
@@ -386,29 +384,34 @@ makeSIMTPipeline c inputs =
           suspWire   :: Wire (Bit 1) <- makeWire false
           resultWire :: Wire (Bit 32) <- makeWire dontCare
 
+          -- Instantiate execute stage
+          execStage <- makeExecStage
+            State {
+              instr = instr5.val
+            , opA = regFileA.out.old
+            , opB = regFileB.out.old
+            , opBorImm = regFileB.out.getRegBOrImm.old
+            , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
+                     pcNextWire <== writeVal.fromPC
+            , result = WriteOnly \writeVal ->
+                         when (instr5.val.dst .!=. 0) do
+                           resultWire <== writeVal
+            , suspend = do
+                suspWire <== true
+                return
+                  InstrInfo {
+                    instrId = warpId5.val.zeroExtendCast
+                  , instrDest = instr5.val.dst
+                  }
+            , retry = retryWire <== true
+            , opcode = packTagMap tagMap5
+            }
+
           always do
             -- Execute stage
             when (go5.val .&. threadActive .&. isSusp5.val.inv) do
-              exec State {
-                  instr = instr5.val
-                , opA = regFileA.out.old
-                , opB = regFileB.out.old
-                , opBorImm = regFileB.out.getRegBOrImm.old
-                , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
-                         pcNextWire <== writeVal.fromPC
-                , result = WriteOnly \writeVal ->
-                             when (instr5.val.dst .!=. 0) do
-                               resultWire <== writeVal
-                , suspend = do
-                    suspWire <== true
-                    return
-                      InstrInfo {
-                        instrId = warpId5.val.zeroExtendCast
-                      , instrDest = instr5.val.dst
-                      }
-                , retry = retryWire <== true
-                , opcode = packTagMap tagMap5
-                }
+              -- Trigger execute stage
+              execStage.execute
 
               -- Only update PC if not retrying
               when (retryWire.val.inv) do
@@ -438,20 +441,19 @@ makeSIMTPipeline c inputs =
                 store regFileB idx value
               else do
                 -- Thread resumption
-                when (resume.canPeek) do
-                  let req = resume.peek :: ResumeReq
+                when (execStage.resumeReqs.canPeek) do
+                  let req = execStage.resumeReqs.peek
                   let idx = (req.resumeReqInfo.instrId.truncateCast,
                              req.resumeReqInfo.instrDest)
                   when (req.resumeReqInfo.instrDest .!=. 0) do
                     store regFileA idx (req.resumeReqData)
                     store regFileB idx (req.resumeReqData)
                   suspMask!(req.resumeReqInfo.instrId) <== false
-                  resume.consume
+                  execStage.resumeReqs.consume
 
     -- Create vector lanes
     sequence $ getZipList $
       makeLane <$> ZipList (c.executeStage)
-               <*> ZipList (c.resumeStage) 
                <*> ZipList (activeMask5.val.toBitList)
                <*> ZipList suspBits
                <*> ZipList regFilesA

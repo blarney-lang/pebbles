@@ -12,4 +12,4 @@ clean:
 	rm -rf *.o *.hi
 	rm -f $(shell find Pebbles -regex ".*\.\(hi\|o\)$$")
 	rm -f Main
-	rm -f Pebbles.v
+	rm -f Pebbles.v SIMTExecuteStage.v
