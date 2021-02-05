@@ -5,14 +5,12 @@ import Blarney
 import Blarney.Stmt
 import Blarney.Queue
 import Blarney.Stream
-import Blarney.Option
 import Blarney.BitScan
 import Blarney.SourceSink
 
 -- Pebbles imports
+import Pebbles.CSRs.CSRUnit
 import Pebbles.Memory.Interface
-import Pebbles.Instructions.Trap
-import Pebbles.Instructions.CSRUnit
 import Pebbles.Pipeline.Interface
 
 -- Decode stage
@@ -59,172 +57,101 @@ decodeI =
 -- Execute stage
 -- =============
 
-executeI :: CSRUnit -> MemUnit -> State -> Action ()
-executeI csrUnit memUnit s = do
+executeI :: CSRUnit -> MemUnit InstrInfo -> DecodeInfo -> State -> Action ()
+executeI csrUnit memUnit d s = do
   -- 33-bit add/sub/compare
-  let uns = s.opcode `is` ["SLTU", "BLTU", "BGEU"]
+  let uns = d.opcode `is` ["SLTU", "BLTU", "BGEU"]
   let addA = (uns ? (0, at @31 (s.opA))) # s.opA
   let addB = (uns ? (0, at @31 (s.opBorImm))) # s.opBorImm
-  let isAdd = s.opcode `is` ["ADD"]
+  let isAdd = d.opcode `is` ["ADD"]
   let sum = addA + (isAdd ? (addB, inv addB))
                  + (isAdd ? (0, 1))
   let less = at @32 sum
   let equal = s.opA .==. s.opBorImm
 
-  when (s.opcode `is` ["ADD", "SUB"]) do
+  when (d.opcode `is` ["ADD", "SUB"]) do
     s.result <== truncate sum
 
-  when (s.opcode `is` ["SLT", "SLTU"]) do
+  when (d.opcode `is` ["SLT", "SLTU"]) do
     s.result <== zeroExtend less
 
-  when (s.opcode `is` ["AND"]) do
+  when (d.opcode `is` ["AND"]) do
     s.result <== s.opA .&. s.opBorImm
 
-  when (s.opcode `is` ["OR"]) do
+  when (d.opcode `is` ["OR"]) do
     s.result <== s.opA .|. s.opBorImm
 
-  when (s.opcode `is` ["XOR"]) do
+  when (d.opcode `is` ["XOR"]) do
     s.result <== s.opA .^. s.opBorImm
 
-  when (s.opcode `is` ["LUI"]) do
+  when (d.opcode `is` ["LUI"]) do
     s.result <== s.opBorImm
 
-  when (s.opcode `is` ["AUIPC"]) do
+  when (d.opcode `is` ["AUIPC"]) do
     s.result <== s.pc.val + s.opBorImm
 
-  when (s.opcode `is` ["SLL"]) do
+  when (d.opcode `is` ["SLL"]) do
     s.result <== s.opA .<<. slice @4 @0 (s.opBorImm)
 
-  when (s.opcode `is` ["SRL", "SRA"]) do
-    let ext = s.opcode `is` ["SRA"] ? (at @31 (s.opA), 0)
+  when (d.opcode `is` ["SRL", "SRA"]) do
+    let ext = d.opcode `is` ["SRA"] ? (at @31 (s.opA), 0)
     let opAExt = ext # (s.opA)
     s.result <== truncate (opAExt .>>>. slice @4 @0 (s.opBorImm))
 
   let branch =
         orList [
-          s.opcode `is` ["BEQ"] .&. equal
-        , s.opcode `is` ["BNE"] .&. inv equal
-        , s.opcode `is` ["BLT", "BLTU"] .&. less
-        , s.opcode `is` ["BGE", "BGEU"] .&. inv less
+          d.opcode `is` ["BEQ"] .&. equal
+        , d.opcode `is` ["BNE"] .&. inv equal
+        , d.opcode `is` ["BLT", "BLTU"] .&. less
+        , d.opcode `is` ["BGE", "BGEU"] .&. inv less
         ]
 
   when branch do
-    let offset = getField (s.fields) "off"
+    let offset = getField (d.fields) "off"
     s.pc <== s.pc.val + offset.val
 
-  when (s.opcode `is` ["JAL"]) do
+  when (d.opcode `is` ["JAL"]) do
     s.pc <== s.pc.val + s.opBorImm
 
-  when (s.opcode `is` ["JALR"]) do
+  when (d.opcode `is` ["JALR"]) do
     s.pc <== truncateLSB (s.opA + s.opBorImm) # (0 :: Bit 1)
 
-  when (s.opcode `is` ["JAL", "JALR"]) do
+  when (d.opcode `is` ["JAL", "JALR"]) do
     s.result <== s.pc.val + 4
 
   -- Memory access
-  when (s.opcode `is` ["LOAD", "STORE"]) do
+  when (d.opcode `is` ["LOAD", "STORE"]) do
     let memAddr = s.opA + s.opBorImm
-    let memAccessWidth = getField (s.fields) "aw"
-    let memIsUnsignedLoad = getField (s.fields) "ul"
+    let memAccessWidth = getField (d.fields) "aw"
+    let memIsUnsignedLoad = getField (d.fields) "ul"
     if memUnit.memReqs.canPut
       then do
-        let isStore = s.opcode `is` ["STORE"]
+        let isLoad = d.opcode `is` ["LOAD"]
         -- Currently the memory subsystem doesn't issue store responses
         -- so we make sure to only suspend on a load
-        id <- whenR (isStore.inv) (s.suspend)
+        info <- whenR isLoad (s.suspend)
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
-            memReqId          = id
-          , memReqIsStore     = isStore
-          , memReqAddr        = memAddr
-          , memReqByteEn      = genByteEnable (memAccessWidth.val) memAddr
-          , memReqData        = writeAlign (memAccessWidth.val) (s.opB)
+            memReqId = info
           , memReqAccessWidth = memAccessWidth.val
-          , memReqIsUnsigned  = memIsUnsignedLoad.val
+          , memReqOp = isLoad ? (memLoadOp, memStoreOp)
+          , memReqAddr = memAddr
+          , memReqData = s.opB
+          , memReqIsUnsigned = memIsUnsignedLoad.val
           }
       else s.retry
 
-  when (s.opcode `is` ["FENCE"]) do
+  when (d.opcode `is` ["FENCE"]) do
     noAction
 
-  when (s.opcode `is` ["ECALL"]) do
-    trap s csrUnit (Exception exc_eCallFromU)
+  when (d.opcode `is` ["ECALL"]) do
+    display "ECALL not implemented"
 
-  when (s.opcode `is` ["EBREAK"]) do
-    trap s csrUnit (Exception exc_breakpoint)
+  when (d.opcode `is` ["EBREAK"]) do
+    display "EBREAK not implemented"
 
-  when (s.opcode `is` ["CSRRW"]) do
-    readCSR csrUnit (s.opBorImm.truncate) (s.result)
-    writeCSR csrUnit (s.opBorImm.truncate) (s.opA)
-
--- Memory access helpers
--- =====================
-
--- RV32I memory access width
-type AccessWidth = Bit 2
-
--- Byte, half-word, or word access?
-isByteAccess, isHalfAccess, isWordAccess :: AccessWidth -> Bit 1
-isByteAccess = (.==. 0b00)
-isHalfAccess = (.==. 0b01)
-isWordAccess = (.==. 0b10)
-
--- Determine byte enables given access-width and address
-genByteEnable :: AccessWidth -> Bit 32 -> Bit 4
-genByteEnable w addr =
-  select [
-    isWordAccess w --> 0b1111
-  , isHalfAccess w --> (a.==.2) # (a.==.2) # (a.==.0) # (a.==.0)
-  , isByteAccess w --> (a.==.3) # (a.==.2) # (a.==.1) # (a.==.0)
-  ]
-  where a :: Bit 2 = truncate addr
-
--- Align write-data using access-width
-writeAlign :: AccessWidth -> Bit 32 -> Bit 32
-writeAlign w d =
-  select [
-    isWordAccess w --> b3 # b2 # b1 # b0
-  , isHalfAccess w --> b1 # b0 # b1 # b0
-  , isByteAccess w --> b0 # b0 # b0 # b0
-  ]
-  where
-    b0 = slice @7 @0 d
-    b1 = slice @15 @8 d
-    b2 = slice @23 @16 d
-    b3 = slice @31 @24 d
-
--- Determine result of load from memory response
-loadMux :: Bit 32 -> Bit 32 -> AccessWidth -> Bit 1 -> Bit 32
-loadMux respData addr w isUnsigned =
-    select [
-      isWordAccess w --> b3 # b2 # b1 # b0
-    , isHalfAccess w --> hExt # h
-    , isByteAccess w --> bExt # b
-    ]
-  where
-    a = lower addr :: Bit 2
-    b = select [
-          a .==. 0 --> b0
-        , a .==. 1 --> b1
-        , a .==. 2 --> b2
-        , a .==. 3 --> b3
-        ]
-    h = (at @1 a .==. 0) ? (b1 # b0, b3 # b2)
-    bExt = isUnsigned ? (0, signExtend (at @7 b))
-    hExt = isUnsigned ? (0, signExtend (at @15 h))
-    b0 = slice @7 @0 respData
-    b1 = slice @15 @8 respData
-    b2 = slice @23 @16 respData
-    b3 = slice @31 @24 respData
-
--- Convert memory response to pipeline resume request
-memRespToResumeReq :: MemResp -> ResumeReq
-memRespToResumeReq resp =
-  ResumeReq {
-    resumeReqId = origReq.memReqId
-  , resumeReqData =
-      loadMux (resp.memRespData) (origReq.memReqAddr)
-        (origReq.memReqAccessWidth) (origReq.memReqIsUnsigned)
-  }
-  where origReq = resp.memRespInfo
+  when (d.opcode `is` ["CSRRW"]) do
+    x <- csrUnitRead csrUnit (s.opBorImm.truncate)
+    csrUnitWrite csrUnit (s.opBorImm.truncate) (s.opA)
+    s.result <== x

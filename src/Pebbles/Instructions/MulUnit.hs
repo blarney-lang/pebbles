@@ -10,8 +10,8 @@ import Pebbles.Pipeline.Interface
 -- Request to multiplier unit
 data MulReq =
   MulReq {
-    -- Unique identifier from pipeline
-    mulReqId :: InstrId
+    -- Instruction info from pipeline
+    mulReqInfo :: InstrInfo
     -- Operands to multiply
   , mulReqA :: Bit 32
   , mulReqB :: Bit 32
@@ -61,7 +61,7 @@ makeHalfMulUnit = do
         Source {
           peek = 
             ResumeReq {
-              resumeReqId = reqReg.val.mulReqId
+              resumeReqInfo = reqReg.val.mulReqInfo
             , resumeReqData = reqReg.val.mulReqLower ?
                 (resultReg.val.lower, resultReg.val.upper)
             }
