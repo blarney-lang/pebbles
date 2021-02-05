@@ -37,7 +37,7 @@ $ sudo apt install ghc-8.6.5
 Now, we recursively clone the repo:
 
 ```sh
-> git clone --recursive https://github.com/blarney-lang/pebbles
+$ git clone --recursive https://github.com/blarney-lang/pebbles
 ```
 
 Inside the repo, there are various things to try.  For example, to
