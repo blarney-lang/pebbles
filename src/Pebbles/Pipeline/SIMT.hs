@@ -55,7 +55,7 @@ import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 
 -- | SIMT pipeline configuration
-data SIMTPipelineConfig =
+data SIMTPipelineConfig tag =
   SIMTPipelineConfig {
     -- | Instruction memory initialisation file
     instrMemInitFile :: Maybe String
@@ -66,12 +66,10 @@ data SIMTPipelineConfig =
     -- | Number of bits used to track function call depth
   , logMaxCallDepth :: Int
     -- | Decode table
-  , decodeStage :: [(String, String)]
+  , decodeStage :: [(String, tag)]
     -- | List of execute stages, one per lane
     -- The size of this list is the warp size
-  , executeStage :: [DecodeInfo -> State -> Action ()]
-    -- | List of resumption streams, for multi-cycle instructions
-  , resumeStage :: [Stream ResumeReq]
+  , executeStage :: [State -> Module ExecuteStage]
   }
 
 -- | SIMT pipeline inputs
@@ -111,9 +109,9 @@ data SIMTThreadState t_logInstrs t_logMaxCallDepth =
   deriving (Generic, Bits)
 
 -- | SIMT pipeline module
-makeSIMTPipeline ::
+makeSIMTPipeline :: Ord tag =>
      -- | SIMT configuration options
-     SIMTPipelineConfig
+     SIMTPipelineConfig tag
      -- | SIMT pipeline inputs
   -> SIMTPipelineIns
      -- | SIMT pipeline outputs
@@ -347,16 +345,7 @@ makeSIMTPipeline c inputs =
           \addr -> zeroExtendCast addr # (0 :: Bit 2)
 
     -- Buffer the decode tables
-    let bufferField opt = Option (opt.valid.buffer) (map buffer (opt.val))
     let tagMap5 = Map.map buffer tagMap4
-    let fieldMap5 = Map.map bufferField fieldMap4
-
-    -- Information from decode stage
-    let decodeInfo =
-          DecodeInfo {
-            opcode = tagMap5
-          , fields = fieldMap5
-          }
 
     -- Insert warp id back into warp queue, except on warp termination
     always do
@@ -385,7 +374,7 @@ makeSIMTPipeline c inputs =
             enq warpQueue (warpId5.val)
 
     -- Vector lane definition
-    let makeLane exec resume threadActive suspMask regFileA
+    let makeLane makeExecStage threadActive suspMask regFileA
                  regFileB stateMem incCallDepth decCallDepth = do
 
           -- Per lane interfacing
@@ -395,28 +384,34 @@ makeSIMTPipeline c inputs =
           suspWire   :: Wire (Bit 1) <- makeWire false
           resultWire :: Wire (Bit 32) <- makeWire dontCare
 
+          -- Instantiate execute stage
+          execStage <- makeExecStage
+            State {
+              instr = instr5.val
+            , opA = regFileA.out.old
+            , opB = regFileB.out.old
+            , opBorImm = regFileB.out.getRegBOrImm.old
+            , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
+                     pcNextWire <== writeVal.fromPC
+            , result = WriteOnly \writeVal ->
+                         when (instr5.val.dst .!=. 0) do
+                           resultWire <== writeVal
+            , suspend = do
+                suspWire <== true
+                return
+                  InstrInfo {
+                    instrId = warpId5.val.zeroExtendCast
+                  , instrDest = instr5.val.dst
+                  }
+            , retry = retryWire <== true
+            , opcode = packTagMap tagMap5
+            }
+
           always do
             -- Execute stage
             when (go5.val .&. threadActive .&. isSusp5.val.inv) do
-              exec decodeInfo State {
-                  instr = instr5.val
-                , opA = regFileA.out.old
-                , opB = regFileB.out.old
-                , opBorImm = regFileB.out.getRegBOrImm.old
-                , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
-                         pcNextWire <== writeVal.fromPC
-                , result = WriteOnly \writeVal ->
-                             when (instr5.val.dst .!=. 0) do
-                               resultWire <== writeVal
-                , suspend = do
-                    suspWire <== true
-                    return
-                      InstrInfo {
-                        instrId = warpId5.val.zeroExtendCast
-                      , instrDest = instr5.val.dst
-                      }
-                , retry = retryWire <== true
-                }
+              -- Trigger execute stage
+              execStage.execute
 
               -- Only update PC if not retrying
               when (retryWire.val.inv) do
@@ -446,20 +441,19 @@ makeSIMTPipeline c inputs =
                 store regFileB idx value
               else do
                 -- Thread resumption
-                when (resume.canPeek) do
-                  let req = resume.peek :: ResumeReq
+                when (execStage.resumeReqs.canPeek) do
+                  let req = execStage.resumeReqs.peek
                   let idx = (req.resumeReqInfo.instrId.truncateCast,
                              req.resumeReqInfo.instrDest)
                   when (req.resumeReqInfo.instrDest .!=. 0) do
                     store regFileA idx (req.resumeReqData)
                     store regFileB idx (req.resumeReqData)
                   suspMask!(req.resumeReqInfo.instrId) <== false
-                  resume.consume
+                  execStage.resumeReqs.consume
 
     -- Create vector lanes
     sequence $ getZipList $
       makeLane <$> ZipList (c.executeStage)
-               <*> ZipList (c.resumeStage) 
                <*> ZipList (activeMask5.val.toBitList)
                <*> ZipList suspBits
                <*> ZipList regFilesA

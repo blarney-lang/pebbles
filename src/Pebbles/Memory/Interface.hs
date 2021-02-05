@@ -43,7 +43,7 @@ data MemReq id =
   , memReqData :: Bit 32
     -- | Is it an unsigned load?
   , memReqIsUnsigned :: Bit 1
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | Memory responses to the processor
 data MemResp id =
@@ -52,7 +52,7 @@ data MemResp id =
     memRespId :: id
     -- | Response data
   , memRespData :: Bit 32
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | Memory unit interface
 data MemUnit id =
@@ -61,7 +61,7 @@ data MemUnit id =
     memReqs :: Sink (MemReq id)
     -- | Response source
   , memResps :: Source (MemResp id)
-  }
+  } deriving (Generic, Interface)
 
 -- Helper functions
 -- ================

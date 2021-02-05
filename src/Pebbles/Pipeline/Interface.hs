@@ -37,7 +37,7 @@ data ResumeReq =
     resumeReqInfo :: InstrInfo
     -- | Data representing the result of the suspended operation
   , resumeReqData :: Bit 32
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | Pipeline state, visisble to the execute stage
 data State =
@@ -63,18 +63,26 @@ data State =
     -- | Call this to implement a multi-cycle instruction.
     -- Results are returned via resume stage.
   , suspend :: Action InstrInfo
+
     -- | Call this if the instruction cannot currently be executed
     -- (perhaps resources are not currently available).
   , retry :: Action ()
+
+    -- Mnemonic(s) for current instruction identified by the decoder
+  , opcode :: MnemonicVec
   } deriving (Generic, Interface)
 
--- | Information from decode stage. Idenfities the opcode which the
--- instruction decoded to, and contains any fields of the instruction
--- identified by the decoder.
-data DecodeInfo =
-  DecodeInfo {
-    -- | Instruction classifiers
-    opcode :: TagMap String
-    -- | Instruction fields
-  , fields :: FieldMap
-  }
+-- | Upper bound on number of instruction mnemonics used by the decoder
+type MaxMnemonics = 64
+
+-- | Bit vector indentifying one or more active mnemonics
+type MnemonicVec = Bit MaxMnemonics
+
+-- | Interface to pipeline's execute stage
+data ExecuteStage =
+  ExecuteStage {
+    -- Trigger execute stage
+    execute :: Action ()
+    -- Resume requests for instructions that suspend
+  , resumeReqs :: Stream ResumeReq
+  } deriving (Generic, Interface)

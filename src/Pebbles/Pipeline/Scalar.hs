@@ -29,18 +29,16 @@ import qualified Data.Map as Map
 import Pebbles.Pipeline.Interface
 
 -- | Scalar pipeline configuration
-data ScalarPipelineConfig =
+data ScalarPipelineConfig tag =
   ScalarPipelineConfig {
     -- | Instruction memory initilaisation file
     instrMemInitFile :: Maybe String
     -- | Instruciton memory size
   , instrMemLogNumInstrs :: Int
     -- | Decode table
-  , decodeStage :: [(String, String)]
+  , decodeStage :: [(String, tag)]
     -- | Action for execute stage
-  , executeStage :: DecodeInfo -> State -> Action ()
-    -- | Resumption for multi-cycle instructions
-  , resumeStage :: Stream ResumeReq
+  , executeStage :: State -> Module ExecuteStage
   }
 
 -- | Scalar pipeline management
@@ -51,7 +49,11 @@ data ScalarPipeline =
   }
 
 -- | Scalar pipeline
-makeScalarPipeline :: ScalarPipelineConfig -> Module ScalarPipeline
+makeScalarPipeline :: Ord tag =>
+     -- | Inputs: pipeline configuration
+     ScalarPipelineConfig tag
+     -- | Outpus: pipeline management interface
+  -> Module ScalarPipeline
 makeScalarPipeline c = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
@@ -117,10 +119,10 @@ makeScalarPipeline c =
     go2 :: Reg (Bit 1) <- makeDReg false
     go3 :: Reg (Bit 1) <- makeDReg false
 
-    always do
-      -- Stage 0: Instruction Fetch
-      -- ==========================
+    -- Stage 0: Instruction Fetch
+    -- ==========================
 
+    always do
       -- PC to fetch
       let pcFetch = pcNext.active ? (pcNext.val, pc1.val + 4)
 
@@ -138,9 +140,10 @@ makeScalarPipeline c =
           pc1 <== pcFetch
           go1 <== true
 
-      -- Stage 1: Operand Fetch
-      -- ======================
+    -- Stage 1: Operand Fetch
+    -- ======================
 
+    always do
       when (go1.val) do
         -- Trigger stage 2 when not flushing or stalling
         when (pcNext.active.inv .&. stallWire.val.inv) do
@@ -152,33 +155,34 @@ makeScalarPipeline c =
       load regFileA (stallWire.val ? (instr2.val.srcA, instrMem.out.srcA))
       load regFileB (stallWire.val ? (instr2.val.srcB, instrMem.out.srcB))
 
-      -- Stage 2: Latch Operands
-      -- =======================
+    -- Stage 2: Latch Operands
+    -- =======================
 
-      -- Decode instruction
-      let (tagMap, fieldMap) = matchMap False (c.decodeStage) (instr2.val)
+    -- Decode instruction
+    let (tagMap, fieldMap) = matchMap False (c.decodeStage) (instr2.val)
 
-      -- Register forwarding from stage 3
-      let forward3 rS other =
-           (resultWire.active .&. (instr3.val.dst .==. instr2.val.rS)) ?
-           (resultWire.val, other)
+    -- Register forwarding from stage 3
+    let forward3 rS other =
+         (resultWire.active .&. (instr3.val.dst .==. instr2.val.rS)) ?
+         (resultWire.val, other)
 
-      -- Register forwarding from stage 4
-      let forward4 rS other =
-           (finalResultWire.active .&.
-             (instr4.val.dst .==. instr2.val.rS)) ?
-               (finalResultWire.val, other)
+    -- Register forwarding from stage 4
+    let forward4 rS other =
+         (finalResultWire.active .&.
+           (instr4.val.dst .==. instr2.val.rS)) ?
+             (finalResultWire.val, other)
 
-      -- Register forwarding
-      let a = forward3 srcA (forward4 srcA (regFileA.out))
-      let b = forward3 srcB (forward4 srcB (regFileB.out))
+    -- Register forwarding
+    let a = forward3 srcA (forward4 srcA (regFileA.out))
+    let b = forward3 srcB (forward4 srcB (regFileB.out))
 
-      -- Use "imm" field if valid, otherwise use register b
-      let bOrImm = if Map.member "imm" fieldMap
-                     then let imm = getField fieldMap "imm"
-                          in imm.valid ? (imm.val, b)
-                     else b
+    -- Use "imm" field if valid, otherwise use register b
+    let bOrImm = if Map.member "imm" fieldMap
+                   then let imm = getField fieldMap "imm"
+                        in imm.valid ? (imm.val, b)
+                   else b
 
+    always do
       when (go2.val) do
         -- Trigger stage 3 when not flushing or stalling
         when (pcNext.active.inv .&. stallWire.val.inv) do
@@ -192,61 +196,54 @@ makeScalarPipeline c =
           instr3 <== instr2.val
           pc3 <== pc2.val
 
-      -- Stage 3: Execute
-      -- ================
+    -- Stage 3: Execute
+    -- ================
 
-      -- Buffer the decode tables
-      let bufferEn = delayEn dontCare
-      let bufferField en opt =
-            Option (bufferEn en (opt.valid)) (map (bufferEn en) (opt.val))
-      let tagMap3 = Map.map (bufferEn (stallWire.val.inv)) tagMap
-      let fieldMap3 = Map.map (bufferField (stallWire.val.inv)) fieldMap
+    -- Buffer the decode tables
+    let bufferEn = delayEn dontCare
+    let tagMap3 = Map.map (bufferEn (stallWire.val.inv)) tagMap
 
-      -- Information from decode stage
-      let decodeInfo =
-            DecodeInfo {
-              opcode = tagMap3
-            , fields = fieldMap3
-            }
+    -- Isntantiate execute stage
+    execStage <- executeStage c
+      State {
+        instr = instr3.val
+      , opA = regA.val
+      , opB = regB.val
+      , opBorImm = regBorImm.val
+      , pc = ReadWrite (pc3.val) (pcNext <==)
+      , result = WriteOnly \x ->
+                   when (instr3.val.dst .!=. 0) do
+                     resultWire <== x
+      , suspend = do
+          -- In future, we could allow independent instructions
+          -- to bypass multi-cycle instructions
+          suspendInProgress <== true
+          stallWire <== true
+          return dontCare
+      , retry = do
+          go3 <== true
+          retryWire <== true
+          stallWire <== true
+      , opcode = packTagMap tagMap3
+      }
 
-      -- State for execute stage
-      let state = State {
-              instr = instr3.val
-            , opA = regA.val
-            , opB = regB.val
-            , opBorImm = regBorImm.val
-            , pc = ReadWrite (pc3.val) (pcNext <==)
-            , result = WriteOnly \x ->
-                         when (instr3.val.dst .!=. 0) do
-                           resultWire <== x
-            , suspend = do
-                -- In future, we could allow independent instructions
-                -- to bypass multi-cycle instructions
-                suspendInProgress <== true
-                stallWire <== true
-                return dontCare
-            , retry = do
-                go3 <== true
-                retryWire <== true
-                stallWire <== true
-            }
-
-      -- Execute stage
+    always do
+      -- Invoke execute stage
       when (go3.val) do
-        executeStage c decodeInfo state
+        execStage.execute
         when (retryWire.val.inv) do
           instr4 <== instr3.val
 
-      -- Stage 4: Writeback
-      -- ==================
+    -- Stage 4: Writeback
+    -- ==================
 
+    always do
       -- Resume stage for multi-cycle instructions
-      let resumeReqs = c.resumeStage
-      if resumeReqs.canPeek
+      if execStage.resumeReqs.canPeek
         then do
-          resumeReqs.consume
+          execStage.resumeReqs.consume
           when (instr4.val.dst .!=. 0) do
-            resumeResultWire <== resumeReqs.peek.resumeReqData
+            resumeResultWire <== execStage.resumeReqs.peek.resumeReqData
           suspendInProgress <== false
         else do
           -- Stall while waiting for response

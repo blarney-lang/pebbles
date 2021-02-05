@@ -32,6 +32,71 @@ import Pebbles.Instructions.Custom.CallDepth
 -- Haskell imports
 import Data.List
 
+-- Execute stage
+-- =============
+
+-- | SIMT execute stage inputs
+data SIMTExecuteIns =
+  SIMTExecuteIns {
+    -- | Lane id
+    execLaneId :: Bit SIMTLogLanes
+    -- | Warp id
+  , execWarpId :: Bit SIMTLogWarps
+    -- | Kernel address
+  , execKernelAddr :: Bit 32
+    -- | Wire to trigger warp termination
+  , execWarpTerm :: Wire (Bit 1)
+    -- | Pulse wire for call depth increment
+  , execCallDepthInc :: PulseWire
+    -- | Pulse wire for call depth decrement
+  , execCallDepthDec :: PulseWire
+    -- | Memory unit interface for lane
+  , execMemUnit :: MemUnit InstrInfo
+  } deriving (Generic, Interface)
+
+-- | Execute stage for a SIMT lane (synthesis boundary)
+makeSIMTExecuteStage :: SIMTExecuteIns -> State -> Module ExecuteStage
+makeSIMTExecuteStage ins s = do
+  -- Multiplier per vector lane
+  mulUnit <- makeHalfMulUnit
+
+  -- Divider per vector lane
+  divUnit <- makeSeqDivUnit
+
+  -- SIMT warp control CSRs
+  csr_WarpTerm <- makeCSR_WarpTerminate (ins.execLaneId) (ins.execWarpTerm)
+  csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
+
+  -- CSR unit
+  let hartId = zeroExtend (ins.execWarpId # ins.execLaneId)
+  csrUnit <- makeCSRUnit $
+       csrs_Sim
+    ++ [csr_HartId hartId]
+    ++ [csr_WarpTerm]
+    ++ [csr_WarpGetKernel]
+ 
+  return
+    ExecuteStage {
+      execute = do
+        executeI csrUnit (ins.execMemUnit) s
+        executeM mulUnit divUnit s
+        executeCallDepth (ins.execCallDepthInc) (ins.execCallDepthDec) s
+    , resumeReqs =
+        mergeTree
+          [ fmap memRespToResumeReq (ins.execMemUnit.memResps)
+          , mulUnit.mulResps
+          , divUnit.divResps
+          ]
+    }
+
+-- | Generate verilog for execute stage
+genSIMTExecuteStage :: String -> IO ()
+genSIMTExecuteStage dir =
+  writeVerilogModule makeSIMTExecuteStage "SIMTExecuteStage" dir
+
+-- Core
+-- ====
+
 -- | Configuration parameters
 data SIMTCoreConfig =
   SIMTCoreConfig {
@@ -39,6 +104,8 @@ data SIMTCoreConfig =
     simtCoreInstrMemInitFile :: Maybe String
     -- | Size of tightly coupled instruction memory
   , simtCoreInstrMemLogNumInstrs :: Int
+    -- | Synthesis boundary on execute stage?
+  , simtCoreExecBoundary :: Bool
   }
 
 -- | RV32IM SIMT core
@@ -59,30 +126,17 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   -- Apply stack address interleaving
   let memUnits' = interleaveStacks memUnits
 
-  -- SIMT warp control CSRs
-  (warpTermWire, csr_WarpTerminate) <- makeCSR_WarpTerminate
-  csr_WarpGetKernel <- makeCSR_WarpGetKernel (pipelineOuts.simtKernelAddr)
-
-  -- CSR unit per vector lane
-  csrUnits <- sequence
-    [ do let laneId :: Bit SIMTLogLanes = fromInteger i
-         let hartId = truncate (pipelineOuts.simtCurrentWarpId # laneId)
-         makeCSRUnit $
-              csrs_Sim
-           ++ [csr_HartId hartId]
-           ++ (if i == 0 then [csr_WarpTerminate] else [])
-           ++ [csr_WarpGetKernel]
-    | i <- [0..SIMTLanes-1] ]
- 
-  -- Multiplier per vector lane
-  mulUnits <- replicateM SIMTLanes makeHalfMulUnit
-
-  -- Divider per vector lane
-  divUnits <- replicateM SIMTLanes makeSeqDivUnit
-
   -- Wires for tracking function call depth
   incCallDepths <- replicateM SIMTLanes makePulseWire
   decCallDepths <- replicateM SIMTLanes makePulseWire
+
+  -- Wire for warp termination
+  warpTermWire :: Wire (Bit 1) <- makeWire 0
+
+  -- Synthesis boundary on execute stage?
+  let exec = if config.simtCoreExecBoundary
+               then makeInstanceOf makeSIMTExecuteStage "SIMTExecuteStage"
+               else makeSIMTExecuteStage
 
   -- Pipeline configuration
   let pipelineConfig =
@@ -93,21 +147,18 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , logMaxCallDepth = SIMTLogMaxCallDepth
         , decodeStage = decodeI ++ decodeM ++ decodeCallDepth
         , executeStage =
-            [ \d s -> do
-                executeI csrUnit memUnit d s
-                executeM mulUnit divUnit d s
-                executeCallDepth incCD decCD d s
-            | (memUnit, mulUnit, divUnit, csrUnit, incCD, decCD) <-
-                zip6 memUnits' mulUnits divUnits csrUnits
-                 incCallDepths decCallDepths ]
-       , resumeStage =
-            [ mergeTree
-                [ fmap memRespToResumeReq (memUnit.memResps)
-                , mulUnit.mulResps
-                , divUnit.divResps
-               ]
-            | (memUnit, mulUnit, divUnit) <-
-                zip3 memUnits' mulUnits divUnits ]
+            [ exec
+                SIMTExecuteIns {
+                  execLaneId = fromInteger i
+                , execWarpId = pipelineOuts.simtCurrentWarpId.truncate
+                , execKernelAddr = pipelineOuts.simtKernelAddr
+                , execWarpTerm = warpTermWire
+                , execCallDepthInc = incCD
+                , execCallDepthDec = decCD
+                , execMemUnit = memUnit
+                }
+            | (memUnit, incCD, decCD, i) <-
+                zip4 memUnits' incCallDepths decCallDepths [0..] ]
         }
 
   -- Pipeline instantiation
