@@ -3,23 +3,22 @@
 Pebbles is a RISC-V processor framework supporting plugable pipelines.
 The [instruction set](src/Pebbles/Instructions) and
 [pipelines](src/Pebbles/Pipeline) are defined separately, allowing
-multiple different pipelines to use the same instruction set
-definition.  We do this with the help of a modern HDL called
+different pipelines to use the same instruction set definition.  We do
+this with the help of a modern HDL called
 [Blarney](https://github.com/blarney-lang/blarney).
 
 Currently, Pebbles provides two pipelines:
 
-  * A standard 5-stage [in-order pipeline](src/Pebbles/Pipeline/Scalar.hs)
-    for a basic CPU.
+  * A standard 5-stage in-order [scalar pipeline](src/Pebbles/Pipeline/Scalar.hs).
 
-  * A 7-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT/) for a basic
-    accelerator, with a parameterisable number of warps and warp size.
+  * A 7-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT/)
+    with a parameterisable number of warps and warp size.
 
 A sample SoC is included which by default contains a scalar CPU, a
 data cache, a 32-lane 64-warp SIMT accelerator, a coalescing unit, and
-shared DRAM.  The codebase is currently optimised for a high MIPS/LUT
-on FPGA. All this is work in progress; it's functional but somewhat
-limited in terms of features.
+shared DRAM.  The codebase is optimised for a high MIPS/LUT on FPGA.
+All this is work in progress; it's functional but somewhat limited in
+terms of features.
 
 ## Build instructions
 
@@ -49,7 +48,8 @@ $ make
 $ ./sim
 ```
 
-In another window, you can build and run the test suite:
+While the simulator is running, you can build and run the test suite
+in a separate terminal:
 
 ```sh
 $ cd apps/TestSuite
