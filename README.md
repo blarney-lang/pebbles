@@ -63,8 +63,8 @@ $ cd apps/TestSuite
 $ make
 $ make TestCPUSim
 $ make TestSIMTSim
-$ ./TestCPUSim          # Run the RISC-V test suite on the CPU
-$ ./TestSIMTSim         # Run the RISC-V test suite on the SIMT core
+$ ./TestCPUSim *.S      # Run the RISC-V test suite on the CPU
+$ ./TestSIMTSim *.S     # Run the RISC-V test suite on the SIMT core
 ```
 
 Alternatively, you can run one of the SIMT kernels:
