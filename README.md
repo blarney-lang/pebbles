@@ -3,8 +3,8 @@
 Pebbles is a RISC-V processor framework supporting plugable pipelines.
 The [instruction set](src/Pebbles/Instructions) and
 [pipelines](src/Pebbles/Pipeline) are defined separately, allowing
-different pipelines to use the same instruction set definition.  We do
-this with the help of a modern HDL called
+different pipelines to share the same instruction set definition. 
+We do this with the help of a modern HDL called
 [Blarney](https://github.com/blarney-lang/blarney).
 
 Currently, Pebbles supports the RV32IM instruction set and provides
@@ -23,9 +23,9 @@ shared DRAM.
 
 The SoC is optimised for a high MIPS/LUT on FPGA.  It clocks over
 200MHz on a Stratix V and uses under 40K ALMs.  We also have the
-beginnings of a basic CUDA-like library for writing accelerators.
-All this is work in progress; it's functional but currently
-limited in terms of features.
+beginnings of a basic CUDA-like library for writing accelerator
+kernels. All this is work in progress; it's functional but
+currently limited in terms of features.
 
 ## Build instructions
 
