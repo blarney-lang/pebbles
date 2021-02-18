@@ -19,7 +19,7 @@ A sample SoC is included which by default contains a scalar CPU, a
 data cache, a 32-lane 64-warp SIMT accelerator, a coalescing unit, and
 shared DRAM.
 
-<img src="doc/SoC.svg" width="40%">
+<img src="doc/SoC.svg" width="50%">
 
 The SoC is optimised for a high MIPS/LUT on FPGA.  It clocks over
 200MHz on a Stratix V and uses under 40K ALMs.  We also have the
