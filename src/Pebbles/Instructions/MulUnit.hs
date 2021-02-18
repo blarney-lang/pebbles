@@ -2,10 +2,15 @@ module Pebbles.Instructions.MulUnit where
 
 -- Blarney imports
 import Blarney
+import Blarney.Queue
+import Blarney.Stream
 import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
+
+-- Interface
+-- =========
 
 -- Request to multiplier unit
 data MulReq =
@@ -29,9 +34,10 @@ data MulUnit =
   , mulResps :: Source ResumeReq
   }
 
--- Multiplier unit (half throughput to save area)
--- To get a DSP multiplier, inputs and outputs must be registered
--- We assume the two input operands are already registered
+-- Half throughput multiplier
+-- ==========================
+
+-- Half throughput
 makeHalfMulUnit :: Module MulUnit
 makeHalfMulUnit = do
   -- Registers for request and result
@@ -68,4 +74,102 @@ makeHalfMulUnit = do
         , canPeek = fullReg.val
         , consume = fullReg <== false
         }
+    }
+
+-- Full throughput multiplier
+-- ==========================
+
+-- Full throughput, pipelined, optimised for Fmax
+makeFullMulUnit :: Module MulUnit
+makeFullMulUnit = do
+  -- Stall wire
+  stall :: Wire (Bit 1) <- makeWire false
+
+  -- Pipeline stage triggers
+  go1 :: Reg (Bit 1) <- makeDReg false
+  go2 :: Reg (Bit 1) <- makeDReg false
+  go3 :: Reg (Bit 1) <- makeDReg false
+
+  -- Request register for each pipeline stage
+  req1 :: Reg MulReq <- makeReg dontCare
+  req2 :: Reg MulReq <- makeReg dontCare
+  req3 :: Reg MulReq <- makeReg dontCare
+
+  -- Operands (used in stage 1)
+  lowerA :: Reg (Bit 17) <- makeReg dontCare
+  upperA :: Reg (Bit 17) <- makeReg dontCare
+  lowerB :: Reg (Bit 17) <- makeReg dontCare
+  upperB :: Reg (Bit 17) <- makeReg dontCare
+
+  -- Partial products (used in stage 2)
+  prod0 :: Reg (Bit 34) <- makeReg dontCare
+  prod1 :: Reg (Bit 34) <- makeReg dontCare
+  prod2 :: Reg (Bit 34) <- makeReg dontCare
+  prod3 :: Reg (Bit 34) <- makeReg dontCare
+
+  -- Result register (used in stage 3)
+  sum :: Reg (Bit 64) <- makeReg dontCare
+
+  -- Result queue
+  resultQueue :: Queue ResumeReq <- makeQueue
+
+  -- Replay stages on stall
+  always do
+    when (stall.val) do
+      go1 <== go1.val
+      go2 <== go2.val
+      go3 <== go3.val
+
+  -- Stage 1: compute partial products
+  always do
+    when (go1.val .&. stall.val.inv) do
+      prod0 <== fullMul True (lowerA.val) (lowerB.val)
+      prod1 <== fullMul True (lowerA.val) (upperB.val)
+      prod2 <== fullMul True (upperA.val) (lowerB.val)
+      prod3 <== fullMul True (upperA.val) (upperB.val)
+      req2 <== req1.val
+      go2 <== true
+
+  -- Stage 2: sum partial products
+  always do
+    when (go2.val .&. stall.val.inv) do
+      sum <== signExtend (prod0.val)
+                + (signExtend (prod1.val) # (0 :: Bit 16))
+                + (signExtend (prod2.val) # (0 :: Bit 16))
+                + truncate (prod3.val # (0 :: Bit 32))
+      req3 <== req2.val
+      go3 <== true
+
+  -- Stage 3: select result
+  always do
+    when (go3.val) do
+      if resultQueue.notFull
+        then do
+          enq resultQueue
+            ResumeReq {
+              resumeReqInfo = req3.val.mulReqInfo
+            , resumeReqData = req3.val.mulReqLower ?
+                (sum.val.lower, sum.val.upper)
+            }
+      else do
+        stall <== true
+
+  return
+    MulUnit {
+      mulReqs =
+        Sink {
+          canPut = stall.val.inv
+        , put = \req -> do
+            let msbA = at @31 (req.mulReqA)
+            let msbB = at @31 (req.mulReqB)
+            let extA = req.mulReqUnsignedA ? (0, msbA)
+            let extB = req.mulReqUnsignedB ? (0, msbB)
+            lowerA <== false # slice @15 @0 (req.mulReqA)
+            lowerB <== false # slice @15 @0 (req.mulReqB)
+            upperA <== extA # slice @31 @16 (req.mulReqA)
+            upperB <== extB # slice @31 @16 (req.mulReqB)
+            req1 <== req
+            go1 <== true
+        }
+    , mulResps = resultQueue.toStream
     }

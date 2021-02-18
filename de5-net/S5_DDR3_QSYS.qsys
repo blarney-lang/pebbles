@@ -962,41 +962,8 @@
  <connection
    kind="conduit"
    version="16.1"
-   start="mem_if_ddr3_emif.dll_sharing"
-   end="mem_if_ddr3_emif_2.dll_sharing">
-  <parameter name="endPort" value="" />
-  <parameter name="endPortLSB" value="0" />
-  <parameter name="startPort" value="" />
-  <parameter name="startPortLSB" value="0" />
-  <parameter name="width" value="0" />
- </connection>
- <connection
-   kind="conduit"
-   version="16.1"
    start="mem_if_ddr3_emif.oct_sharing"
    end="mem_if_ddr3_emif_2.oct_sharing">
-  <parameter name="endPort" value="" />
-  <parameter name="endPortLSB" value="0" />
-  <parameter name="startPort" value="" />
-  <parameter name="startPortLSB" value="0" />
-  <parameter name="width" value="0" />
- </connection>
- <connection
-   kind="conduit"
-   version="16.1"
-   start="mem_if_ddr3_emif.oct_sharing"
-   end="mem_if_ddr3_emif_2.oct_sharing">
-  <parameter name="endPort" value="" />
-  <parameter name="endPortLSB" value="0" />
-  <parameter name="startPort" value="" />
-  <parameter name="startPortLSB" value="0" />
-  <parameter name="width" value="0" />
- </connection>
- <connection
-   kind="conduit"
-   version="16.1"
-   start="mem_if_ddr3_emif.pll_sharing"
-   end="mem_if_ddr3_emif_2.pll_sharing">
   <parameter name="endPort" value="" />
   <parameter name="endPortLSB" value="0" />
   <parameter name="startPort" value="" />
