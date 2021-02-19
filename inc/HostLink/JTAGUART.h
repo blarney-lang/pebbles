@@ -105,7 +105,7 @@ class JTAGUART {
     snprintf(chain, sizeof(chain), "%i", id);
     jtag = jtagatlantic_open(chain, 0, 0, "HostLink");
     if (jtag == NULL) {
-      fprintf(stderr, "Error opening JTAG UART %i\n", instId);
+      fprintf(stderr, "Error opening JTAG UART %i\n", id);
       exit(EXIT_FAILURE);
     }
   }
@@ -132,7 +132,6 @@ class JTAGUART {
     if (jtag != NULL) {
       jtagatlantic_close(jtag);
       jtag = NULL;
-      instanceId = -1;
     }
   }
 

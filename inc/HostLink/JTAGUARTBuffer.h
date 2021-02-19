@@ -2,6 +2,7 @@
 #define _JTAGUART_BUFFER_H_
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <HostLink/JTAGUART.h>
 #include <HostLink/Queue.h>
@@ -16,7 +17,9 @@ struct JTAGUARTBuffer {
 
   JTAGUARTBuffer() {
     uart = new JTAGUART;
-    uart->open(1);
+    char* str = getenv("PEBBLES_CABLE_ID");
+    int cable = str ? atoi(str) : 1;
+    uart->open(cable);
     in = new Queue<uint8_t> (JTAGUART_BUFFER_SIZE);
     out = new Queue<uint8_t> (JTAGUART_BUFFER_SIZE);
   }
