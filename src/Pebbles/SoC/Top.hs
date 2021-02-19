@@ -64,17 +64,17 @@ makeTop socIns = mdo
         SIMTCoreConfig {
           simtCoreInstrMemInitFile = Nothing
         , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
-        , simtCoreExecBoundary = False
+        , simtCoreExecBoundary = True
         }
   simtMgmtResps <- makeSIMTCore simtConfig
     (cpuOuts.scalarSIMTReqs)
-    simtMemUnits'
+    simtMemUnitsPrs
 
   -- Coalescing unit
   (simtMemUnits, dramReqs1) <- makeCoalescingUnit dramResps1
 
   -- Warp preserver
-  simtMemUnits' <- makeWarpPreserver simtMemUnits
+  simtMemUnitsPrs <- makeWarpPreserver simtMemUnits
 
   -- DRAM instance
   ((dramResps0, dramResps1), avlDRAMOuts) <-

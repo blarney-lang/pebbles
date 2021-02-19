@@ -11,10 +11,10 @@ module Pebbles.Pipeline.SIMT
 -- Simple 32-bit SIMT pipeline, with implicit thread convergence (a la
 -- Simty) and a configurable number of warps and warp size.
 --
--- There are 7 pipeline stages:
+-- There are 9 pipeline stages:
 --
 --  0. Warp Scheduling
---  1. Active Thread Selection
+--  1. Active Thread Selection (consists of 3 sub-stages)
 --  2. Instruction Fetch
 --  3. Operand Fetch
 --  4. Operand Latch
@@ -34,8 +34,7 @@ module Pebbles.Pipeline.SIMT
 --
 -- Other considerations for future: (1) give retried instructions a
 -- higher priority than new instructions in the warp scheduler; (2)
--- incorporate function call depth into active thread selection, a la
--- Simty.
+-- only pay cost of active thread selection on a branch/jump.
 
 -- Blarney imports
 import Blarney
@@ -51,6 +50,7 @@ import qualified Data.Map as Map
 import Control.Applicative hiding (some)
 
 -- Pebbles imports
+import Pebbles.Util.List
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 
@@ -163,14 +163,12 @@ makeSIMTPipeline c inputs =
 
     -- Trigger for each stage
     go1 :: Reg (Bit 1) <- makeDReg false
-    go2 :: Reg (Bit 1) <- makeDReg false
     go3 :: Reg (Bit 1) <- makeDReg false
     go4 :: Reg (Bit 1) <- makeDReg false
     go5 :: Reg (Bit 1) <- makeDReg false
 
     -- Warp id register, for each stage
     warpId1 :: Reg (Bit t_logWarps) <- makeReg dontCare
-    warpId2 :: Reg (Bit t_logWarps) <- makeReg dontCare
     warpId3 :: Reg (Bit t_logWarps) <- makeReg dontCare
     warpId4 :: Reg (Bit t_logWarps) <- makeReg dontCare
     warpId5 :: Reg (Bit t_logWarps) <- makeReg dontCare
@@ -255,23 +253,28 @@ makeSIMTPipeline c inputs =
     -- Stage 1: Active Thread Selection
     -- ================================
 
-    always do
-      -- Active threads are those with the max call depth, and on a
-      -- tie, the min PC
-      let packState s = s.simtCallDepth # s.simtPC
-      let minOf a b = if packState a .<. packState b then a else b
-      state2 <== tree1 minOf [mem.out | mem <- stateMems]
+    -- For timing, we split this stage over several cycles
+    let stage1Substages = 3
 
-      -- Trigger stage 2
-      warpId2 <== warpId1.val
-      go2 <== go1.val
+    -- Active threads are those with the max call depth,
+    -- and on a tie, the min PC
+    let packState s = s.simtCallDepth # s.simtPC
+    let minOf a b = if packState a .<. packState b then a else b
+    let state2 = pipelinedTree1 stage1Substages minOf
+                   [mem.out | mem <- stateMems]
+
+    -- Trigger stage 2
+    let stateMemOuts2 =
+          [iterateN stage1Substages buffer (mem.out) | mem <- stateMems]
+    let warpId2 = iterateN stage1Substages buffer (warpId1.val)
+    let go2 = iterateN stage1Substages (delay 0) (go1.val)
 
     -- Stage 2: Instruction Fetch
     -- ==========================
 
     always do
       -- Compute active thread mask
-      let activeList = [m.out.old === state2.val | m <- stateMems]
+      let activeList = [out === state2 | out <- stateMemOuts2]
       let activeMask :: Bit t_warpSize = fromBitList activeList
       activeMask3 <== activeMask
 
@@ -280,12 +283,12 @@ makeSIMTPipeline c inputs =
         "SIMT pipeline error: no active threads in warp"
 
       -- Issue load to instruction memory
-      load instrMem (state2.val.simtPC)
+      load instrMem (state2.simtPC)
 
       -- Trigger stage 3
-      warpId3 <== warpId2.val
-      state3 <== state2.val
-      go3 <== go2.val
+      warpId3 <== warpId2
+      state3 <== state2
+      go3 <== go2
 
     -- Stage 3: Operand Fetch
     -- ======================

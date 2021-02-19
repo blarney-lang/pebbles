@@ -3,22 +3,29 @@
 Pebbles is a RISC-V processor framework supporting plugable pipelines.
 The [instruction set](src/Pebbles/Instructions) and
 [pipelines](src/Pebbles/Pipeline) are defined separately, allowing
-different pipelines to use the same instruction set definition.  We do
-this with the help of a modern HDL called
+different pipelines to share the same instruction set definition. 
+We do this with the help of a modern HDL called
 [Blarney](https://github.com/blarney-lang/blarney).
 
-Currently, Pebbles provides two pipelines:
+Currently, Pebbles supports the RV32IM instruction set and provides
+two pipelines:
 
   * A standard 5-stage in-order [scalar pipeline](src/Pebbles/Pipeline/Scalar.hs).
 
-  * A 7-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT/)
+  * A 9-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT/)
     with a parameterisable number of warps and warp size.
 
 A sample SoC is included which by default contains a scalar CPU, a
 data cache, a 32-lane 64-warp SIMT accelerator, a coalescing unit, and
-shared DRAM.  The codebase is optimised for a high MIPS/LUT on FPGA.
-All this is work in progress; it's functional but somewhat limited in
-terms of features.
+shared DRAM.
+
+<img src="doc/SoC.svg" width="450">
+
+The SoC is optimised for a high MIPS/LUT on FPGA.  It clocks over
+200MHz on a Stratix V and uses under 40K ALMs.  We also have the
+beginnings of a basic CUDA-like library for writing accelerator
+kernels. All this is work in progress; it's functional but
+currently limited in terms of features.
 
 ## Build instructions
 
@@ -56,8 +63,8 @@ $ cd apps/TestSuite
 $ make
 $ make TestCPUSim
 $ make TestSIMTSim
-$ ./TestCPUSim          # Run the RISC-V test suite on the CPU
-$ ./TestSIMTSim         # Run the RISC-V test suite on the SIMT core
+$ ./TestCPUSim *.S      # Run the RISC-V test suite on the CPU
+$ ./TestSIMTSim *.S     # Run the RISC-V test suite on the SIMT core
 ```
 
 Alternatively, you can run one of the SIMT kernels:

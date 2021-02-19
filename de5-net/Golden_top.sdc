@@ -14,9 +14,11 @@ create_clock -period 20 [get_ports OSC_50_B8A]
 create_clock -period 20 [get_ports OSC_50_B8D]
 
 
-#**************************************************************^M
+#create_clock -period 1.5515 [get_ports SFP_REFCLK_p]
+
+#**************************************************************
 # JTAG
-#**************************************************************^M
+#**************************************************************
 
 create_clock -period "30.303 ns" -name {altera_reserved_tck} [get_ports {altera_reserved_tck}]
 

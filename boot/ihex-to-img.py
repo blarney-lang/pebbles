@@ -84,8 +84,7 @@ if fmt == "mif":
   for i in range(base, base+depth, inc):
     byteList.insert(0, mem.get(i, "00"))
     if len(byteList) == width:
-      print(count, ": ",)
-      print("".join(byteList), ";")
+      print(count, ": ", "".join(byteList), ";")
       byteList = []
       addr = addr + 1
       count = count + 1

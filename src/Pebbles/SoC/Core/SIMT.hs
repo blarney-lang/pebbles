@@ -58,7 +58,7 @@ data SIMTExecuteIns =
 makeSIMTExecuteStage :: SIMTExecuteIns -> State -> Module ExecuteStage
 makeSIMTExecuteStage ins s = do
   -- Multiplier per vector lane
-  mulUnit <- makeHalfMulUnit
+  mulUnit <- makeFullMulUnit
 
   -- Divider per vector lane
   divUnit <- makeSeqDivUnit
@@ -135,7 +135,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
 
   -- Synthesis boundary on execute stage?
   let exec = if config.simtCoreExecBoundary
-               then makeInstanceOf makeSIMTExecuteStage "SIMTExecuteStage"
+               then makeInstanceWithTypeOf makeSIMTExecuteStage
+                      "SIMTExecuteStage"
                else makeSIMTExecuteStage
 
   -- Pipeline configuration

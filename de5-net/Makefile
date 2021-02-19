@@ -4,40 +4,41 @@ PEBBLES_ROOT ?= $(realpath ..)
 one: checkenv
 	make -C $(PEBBLES_ROOT)/src
 	make -C $(PEBBLES_ROOT)/boot
-	qsys-generate -syn SoC.qsys
-	quartus_sh --flow compile DE5.qpf
+	qsys-generate -syn S5_DDR3_QSYS.qsys
+	quartus_sh --flow compile Golden_top.qpf
 
 .PHONY: many
 many: checkenv
 	make -C $(PEBBLES_ROOT)/src
 	make -C $(PEBBLES_ROOT)/boot
-	qsys-generate -syn SoC.qsys
-	quartus_dse DE5.qpf    \
+	qsys-generate -syn S5_DDR3_QSYS.qsys
+	quartus_dse Golden_top.qpf    \
     --num-seeds 7               \
     --launcher local            \
     --num-concurrent 4
-	quartus_dse DE5.qpf --report utilization
-	quartus_dse DE5.qpf --report fmax_summary
+	quartus_dse Golden_top.qpf --report utilization
+	quartus_dse Golden_top.qpf --report fmax_summary
 
 .PHONY: report
 report: checkenv
-	quartus_dse DE5.qpf --report utilization
-	quartus_dse DE5.qpf --report fmax_summary
+	quartus_dse Golden_top.qpf --report utilization
+	quartus_dse Golden_top.qpf --report fmax_summary
 
 .PHONY: download-sof
 download-sof: checkenv
-	quartus_pgm -m jtag -o "p;DE5.sof"
+	quartus_pgm -m jtag -o "p;Golden_top.sof"
 
 .PHONY: update-mif
 update-mif: checkenv
-	quartus_cdb --update_mif DE5.qpf
-	quartus_asm DE5.qpf
+	quartus_cdb --update_mif Golden_top.qpf
+	quartus_asm Golden_top.qpf
 
 .PHONY: clean
 clean: clean-mif
 	rm -f *.rpt *.msg *.summary *.sld *.sopcinfo *.jdi
 	rm -f *.pin *.done *.qws *.sof *.csv *.qws *.smsg
-	rm -rf dse* db incremental_db SoC .qsys_edit reconfig_mif SoC .qsys-edit
+	rm -rf dse* db incremental_db .qsys_edit reconfig_mif
+	rm -rf S5_DDR3_QSYS
 
 .PHONY: clean-mif
 clean-mif:
