@@ -64,7 +64,7 @@ makeTop socIns = mdo
         SIMTCoreConfig {
           simtCoreInstrMemInitFile = Nothing
         , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
-        , simtCoreExecBoundary = False
+        , simtCoreExecBoundary = True
         }
   simtMgmtResps <- makeSIMTCore simtConfig
     (cpuOuts.scalarSIMTReqs)

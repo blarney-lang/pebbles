@@ -105,7 +105,6 @@ makeFullMulUnit = do
   prod0 :: Reg (Bit 34) <- makeReg dontCare
   prod1 :: Reg (Bit 34) <- makeReg dontCare
   prod2 :: Reg (Bit 34) <- makeReg dontCare
-  prod3 :: Reg (Bit 34) <- makeReg dontCare
 
   -- Result register (used in stage 3)
   sum :: Reg (Bit 64) <- makeReg dontCare
@@ -124,9 +123,9 @@ makeFullMulUnit = do
   always do
     when (go1.val .&. stall.val.inv) do
       prod0 <== fullMul True (lowerA.val) (lowerB.val)
-      prod1 <== fullMul True (lowerA.val) (upperB.val)
-      prod2 <== fullMul True (upperA.val) (lowerB.val)
-      prod3 <== fullMul True (upperA.val) (upperB.val)
+      prod1 <== fullMul True (lowerA.val) (upperB.val) +
+                  fullMul True (upperA.val) (lowerB.val)
+      prod2 <== fullMul True (upperA.val) (upperB.val)
       req2 <== req1.val
       go2 <== true
 
@@ -135,8 +134,7 @@ makeFullMulUnit = do
     when (go2.val .&. stall.val.inv) do
       sum <== signExtend (prod0.val)
                 + (signExtend (prod1.val) # (0 :: Bit 16))
-                + (signExtend (prod2.val) # (0 :: Bit 16))
-                + truncate (prod3.val # (0 :: Bit 32))
+                + truncate (prod2.val # (0 :: Bit 32))
       req3 <== req2.val
       go3 <== true
 
