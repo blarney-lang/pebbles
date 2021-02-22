@@ -7,7 +7,9 @@ module Pebbles.SoC.Top where
 
 -- Blarney imports
 import Blarney
+import Blarney.Queue
 import Blarney.Stream
+import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.SoC.JTAGUART
@@ -70,8 +72,20 @@ makeTop socIns = mdo
     (cpuOuts.scalarSIMTReqs)
     simtMemUnitsPrs
 
+  -- SIMT memory request queues
+  memReqQueues <- replicateM SIMTLanes makeQueue
+
   -- Coalescing unit
-  (simtMemUnits, dramReqs1) <- makeCoalescingUnit dramResps1
+  (coalResps, dramReqs1) <- makeCoalescingUnit
+    (map toStream memReqQueues) dramResps1
+
+  -- SIMT memory units
+  let simtMemUnits =
+        [ MemUnit {
+            memReqs = toSink reqs
+          , memResps = resps
+          }
+        | (reqs, resps) <- zip memReqQueues coalResps ]
 
   -- Warp preserver
   simtMemUnitsPrs <- makeWarpPreserver simtMemUnits

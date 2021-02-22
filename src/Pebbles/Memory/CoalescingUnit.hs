@@ -79,19 +79,17 @@ data CoalescingInfo t_id =
 --   * Backpressure on memory responses currently propagates to
 --     DRAM responses, which could cause blocking on the DRAM bus.
 makeCoalescingUnit :: Bits t_id =>
-     -- | Inputs: responses from DRAM
-     Stream (DRAMResp DRAMReqId)
-     -- | Outputs: MemUnit per lane and a stream of DRAM requests
-  -> Module ([MemUnit t_id], Stream (DRAMReq DRAMReqId))
-makeCoalescingUnit dramResps = do
+     -- | Stream of memory requests per lane
+     [Stream (MemReq t_id)]
+     -- | Responses from DRAM
+  -> Stream (DRAMResp DRAMReqId)
+     -- | Outputs: memory responses per lane and a stream of DRAM requests
+  -> Module ([Stream (MemResp t_id)], Stream (DRAMReq DRAMReqId))
+makeCoalescingUnit memReqs dramResps = do
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
      "number of half-words in DRAM beat")
-
-  -- Input memory request queues
-  memReqQueues :: [Queue (MemReq t_id)] <-
-    replicateM SIMTLanes (makeShiftQueue 1)
 
   -- Trigger signals for each pipeline stage
   go1 :: Reg (Bit 1) <- makeDReg false
@@ -153,16 +151,16 @@ makeCoalescingUnit dramResps = do
     -- Inject requests from input queues when no stall/feedback in progress
     when (stallWire.val.inv .&. feedbackWire.val.inv) do
       -- Consume requests and inject into pipeline
-      forM_ (zip memReqQueues memReqs1) \(q, r) -> do
-        when (q.canDeq) do
-          q.deq
-        r <== q.first
+      forM_ (zip memReqs memReqs1) \(s, r) -> do
+        when (s.canPeek) do
+          s.consume
+        r <== s.peek
       -- Initialise pending mask
       pending1 <== fromBitList
-        [ q.canDeq .&. (q.first.memReqOp .!=. memNullOp)
-        | q <- memReqQueues ]
+        [ s.canPeek .&. (s.peek.memReqOp .!=. memNullOp)
+        | s <- memReqs ]
       -- Trigger pipeline
-      go1 <== orList [q.canDeq | q <- memReqQueues]
+      go1 <== orList [s.canPeek | s <- memReqs]
 
     -- Preserve go signals on stall
     when (stallWire.val) do
@@ -550,13 +548,4 @@ makeCoalescingUnit dramResps = do
           let respData = useSameBlock ? (d, sameAddrData)
           enq respQueue (MemResp id respData)
 
-  -- Memory interfaces
-  let memUnits =
-        [ MemUnit {
-            memReqs = toSink reqQueue
-          , memResps = toStream respQueue
-          }
-        | (reqQueue, respQueue) <- zip memReqQueues respQueues
-        ]
-
-  return (memUnits, toStream dramReqQueue)
+  return (map toStream respQueues, toStream dramReqQueue)
