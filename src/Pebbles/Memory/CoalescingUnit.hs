@@ -156,9 +156,7 @@ makeCoalescingUnit memReqs dramResps = do
           s.consume
         r <== s.peek
       -- Initialise pending mask
-      pending1 <== fromBitList
-        [ s.canPeek .&. (s.peek.memReqOp .!=. memNullOp)
-        | s <- memReqs ]
+      pending1 <== fromBitList [s.canPeek | s <- memReqs]
       -- Trigger pipeline
       go1 <== orList [s.canPeek | s <- memReqs]
 

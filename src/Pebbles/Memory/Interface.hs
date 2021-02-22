@@ -14,7 +14,6 @@ import Pebbles.Pipeline.Interface
 type MemReqOp = Bit 2
 
 -- | Memory request opcodes
-memNullOp       :: MemReqOp = 0
 memLoadOp       :: MemReqOp = 1
 memStoreOp      :: MemReqOp = 2
 memCacheFlushOp :: MemReqOp = 3

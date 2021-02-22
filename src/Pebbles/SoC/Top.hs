@@ -70,25 +70,13 @@ makeTop socIns = mdo
         }
   simtMgmtResps <- makeSIMTCore simtConfig
     (cpuOuts.scalarSIMTReqs)
-    simtMemUnitsPrs
-
-  -- SIMT memory request queues
-  memReqQueues <- replicateM SIMTLanes makeQueue
+    simtMemUnits
 
   -- Coalescing unit
-  (coalResps, dramReqs1) <- makeCoalescingUnit
-    (map toStream memReqQueues) dramResps1
-
-  -- SIMT memory units
-  let simtMemUnits =
-        [ MemUnit {
-            memReqs = toSink reqs
-          , memResps = resps
-          }
-        | (reqs, resps) <- zip memReqQueues coalResps ]
+  (coalUnitResps, dramReqs1) <- makeCoalescingUnit coalUnitReqs dramResps1
 
   -- Warp preserver
-  simtMemUnitsPrs <- makeWarpPreserver simtMemUnits
+  (coalUnitReqs, simtMemUnits) <- makeWarpPreserver coalUnitResps
 
   -- DRAM instance
   ((dramResps0, dramResps1), avlDRAMOuts) <-
