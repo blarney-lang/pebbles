@@ -62,6 +62,18 @@ data MemUnit id =
   , memResps :: Source (MemResp id)
   } deriving (Generic, Interface)
 
+-- | Information from a memory request needed to process response
+data MemReqInfo =
+  MemReqInfo {
+    -- | Lower bits of address
+    memReqInfoAddr :: Bit 2
+    -- | Access width
+  , memReqInfoAccessWidth :: AccessWidth
+    -- | Is it an unsigned load?
+  , memReqInfoIsUnsigned :: Bit 1
+  }
+  deriving (Generic, Bits)
+
 -- Helper functions
 -- ================
 

@@ -18,9 +18,13 @@ import Pebbles.SoC.Core.Scalar
 import Pebbles.SoC.DRAM.DualPort
 import Pebbles.SoC.DRAM.Interface
 import Pebbles.Memory.SBDCache
+import Pebbles.Memory.Alignment
 import Pebbles.Memory.Interface
 import Pebbles.Memory.WarpPreserver
 import Pebbles.Memory.CoalescingUnit
+
+-- SoC top-level interface
+-- =======================
 
 -- | SoC inputs
 data SoCIns =
@@ -42,7 +46,10 @@ data SoCOuts =
   }
   deriving (Generic, Interface)
 
--- | Blarney SoC top-level
+-- SoC top-level module
+-- ====================
+
+-- | SoC top-level
 makeTop :: SoCIns -> Module SoCOuts
 makeTop socIns = mdo
   -- Scalar core
@@ -72,11 +79,8 @@ makeTop socIns = mdo
     (cpuOuts.scalarSIMTReqs)
     simtMemUnits
 
-  -- Coalescing unit
-  (coalUnitResps, dramReqs1) <- makeCoalescingUnit coalUnitReqs dramResps1
-
-  -- Warp preserver
-  (coalUnitReqs, simtMemUnits) <- makeWarpPreserver coalUnitResps
+  -- SIMT memory subsystem
+  (simtMemUnits, dramReqs1) <- makeSIMTMemSubsystem dramResps1
 
   -- DRAM instance
   ((dramResps0, dramResps1), avlDRAMOuts) <-
@@ -92,3 +96,51 @@ makeTop socIns = mdo
       socUARTOuts = avlUARTOuts
     , socDRAMOuts = avlDRAMOuts
     }
+
+-- SIMT memory subsystem
+-- =====================
+
+makeSIMTMemSubsystem :: Bits t_id =>
+     -- | DRAM responses
+     Stream (DRAMResp ())
+     -- | DRAM requests and per-lane mem units
+  -> Module ([MemUnit t_id], Stream (DRAMReq ()))
+makeSIMTMemSubsystem dramResps = mdo
+  -- Warp preserver
+  (memReqs, simtMemUnits) <- makeWarpPreserver memRespsProcessed
+
+  -- Prepare request for memory subsystem
+  let prepareReq req =
+        req {
+          -- Align store-data (account for access width)
+          memReqData =
+            writeAlign (req.memReqAccessWidth) (req.memReqData)
+          -- Remember info needed to process response
+        , memReqId =
+            ( req.memReqId
+            , MemReqInfo {
+                memReqInfoAddr = req.memReqAddr.truncate
+              , memReqInfoAccessWidth = req.memReqAccessWidth
+              , memReqInfoIsUnsigned = req.memReqIsUnsigned
+              }
+            )
+        }
+  let memReqsPrepared = map (mapSource prepareReq) memReqs
+
+  -- Coalescing unit
+  (memResps, dramReqs) <- makeCoalescingUnit memReqsPrepared dramResps
+
+  -- Process response from memory subsystem
+  let processResp resp =
+        resp {
+          -- | Drop info, no longer needed
+          memRespId = resp.memRespId.fst
+          -- | Use info to mux loaded data
+        , memRespData = loadMux (resp.memRespData)
+            (resp.memRespId.snd.memReqInfoAddr.truncate)
+            (resp.memRespId.snd.memReqInfoAccessWidth)
+            (resp.memRespId.snd.memReqInfoIsUnsigned)
+        }
+  let memRespsProcessed = map (mapSource processResp) memResps
+
+  return (simtMemUnits, dramReqs)

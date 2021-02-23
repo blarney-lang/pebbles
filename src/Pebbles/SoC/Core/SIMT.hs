@@ -7,9 +7,11 @@ module Pebbles.SoC.Core.SIMT where
 
 -- Blarney imports
 import Blarney
+import Blarney.Queue
 import Blarney.Stream
 import Blarney.PulseWire
 import Blarney.SourceSink
+import Blarney.Connectable
 import Blarney.Interconnect
 
 -- Pebbles imports
@@ -75,18 +77,25 @@ makeSIMTExecuteStage ins s = do
     ++ [csr_WarpTerm]
     ++ [csr_WarpGetKernel]
  
+  -- Merge resume requests
+  let resumeReqStream =
+        mergeTree
+          [ fmap memRespToResumeReq (ins.execMemUnit.memResps)
+          , mulUnit.mulResps
+          , divUnit.divResps
+          ]
+
+  -- Resume queue
+  resumeQueue <- makeQueue
+  makeConnection resumeReqStream (resumeQueue.toSink)
+
   return
     ExecuteStage {
       execute = do
         executeI csrUnit (ins.execMemUnit) s
         executeM mulUnit divUnit s
         executeCallDepth (ins.execCallDepthInc) (ins.execCallDepthDec) s
-    , resumeReqs =
-        mergeTree
-          [ fmap memRespToResumeReq (ins.execMemUnit.memResps)
-          , mulUnit.mulResps
-          , divUnit.divResps
-          ]
+    , resumeReqs = resumeQueue.toStream
     }
 
 -- | Generate verilog for execute stage
