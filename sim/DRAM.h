@@ -120,7 +120,6 @@ struct DRAM {
 
     // Assign output signals
     DRAMResponse resp = respQueue.front();
-    *ifc.waitrequest = readBurstCount > 1;
     *ifc.readdatavalid = resp.valid;
     for (uint32_t i = 0; i < DRAMBeatWords; i++)
       ifc.readdata[i] = resp.beat[i];
@@ -200,6 +199,9 @@ struct DRAM {
       resp.valid = false;
       respQueue.push(resp);
     }
+
+    // Assert wait request during burst read
+    *ifc.waitrequest = readBurstCount > 1;
   }
 };
 
