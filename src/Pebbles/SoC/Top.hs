@@ -20,6 +20,7 @@ import Pebbles.SoC.DRAM.Interface
 import Pebbles.Memory.SBDCache
 import Pebbles.Memory.Alignment
 import Pebbles.Memory.Interface
+import Pebbles.Memory.BankedSRAMs
 import Pebbles.Memory.WarpPreserver
 import Pebbles.Memory.CoalescingUnit
 
