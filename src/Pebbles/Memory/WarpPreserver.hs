@@ -33,10 +33,11 @@ makeWarpPreserver :: Bits t_id =>
   -> Module ([Stream (MemReq t_id)], [MemUnit t_id])
 makeWarpPreserver resps = do
   -- Queue of vectorised memory requests
-  memReqsQueue :: Queue (V.Vec SIMTLanes (MemReq t_id)) <- makeQueue
+  memReqsQueue :: Queue (V.Vec SIMTLanes (MemReq t_id)) <-
+    makeShiftQueue 1
 
   -- Queue of masks indicating which vector elements are valid
-  validMask :: Queue (Bit SIMTLanes) <- makeQueue
+  validMask :: Queue (Bit SIMTLanes) <- makeShiftQueue 1
 
   -- Wires indicating if each lane putting or not 
   putWires :: [Wire (MemReq t_id)] <- replicateM SIMTLanes (makeWire dontCare)

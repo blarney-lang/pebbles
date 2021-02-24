@@ -86,7 +86,7 @@ makeSIMTExecuteStage ins s = do
           ]
 
   -- Resume queue
-  resumeQueue <- makeQueue
+  resumeQueue <- makePipelineQueue 1
   makeConnection resumeReqStream (resumeQueue.toSink)
 
   return
