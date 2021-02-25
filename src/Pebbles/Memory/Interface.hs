@@ -62,7 +62,7 @@ data MemReq id =
   , memReqAccessWidth :: AccessWidth
     -- | Memory operation
   , memReqOp :: MemReqOp
-    -- | Atomic operation (if memory operation is atomic)
+    -- | Atomic operation info (if memory operation is atomic)
   , memReqAtomicInfo :: AtomicInfo
     -- | Memory address
   , memReqAddr :: Bit 32

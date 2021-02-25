@@ -39,6 +39,9 @@ data Mnemonic =
   | MUL
   | DIV
 
+    -- A extension
+  | AMO
+
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE
 

@@ -3,7 +3,6 @@ module Pebbles.Instructions.RV32_A where
 
 -- Blarney imports
 import Blarney
-import Blarney.Stmt
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.BitScan
@@ -19,7 +18,7 @@ import Pebbles.Instructions.Mnemonics
 -- ============
 
 decodeA =
-  [ "amo<5> aq<1> rl<1> rs2<5> rs1<5> 010 rd<5> 0101111" --> "AMO"
+  [ "amo<5> aq<1> rl<1> rs2<5> rs1<5> 010 rd<5> 0101111" --> AMO
   ]
 
 -- Field selectors
@@ -43,7 +42,7 @@ executeA memUnit s = do
   when (s.opcode `is` [AMO]) do
     if memUnit.memReqs.canPut
       then do
-        s.suspend
+        info <- s.suspend
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
@@ -58,6 +57,6 @@ executeA memUnit s = do
               }
           , memReqAddr = s.opA
           , memReqData = s.opB
-          , memReqIsUnsigned = s.instr.getIsUnsignedLoad
+          , memReqIsUnsigned = true
           }
       else s.retry
