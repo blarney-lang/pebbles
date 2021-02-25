@@ -14,9 +14,35 @@ import Pebbles.Pipeline.Interface
 type MemReqOp = Bit 2
 
 -- | Memory request opcodes
+memCacheFlushOp :: MemReqOp = 0
 memLoadOp       :: MemReqOp = 1
 memStoreOp      :: MemReqOp = 2
-memCacheFlushOp :: MemReqOp = 3
+memAtomicOp     :: MemReqOp = 3
+
+-- | Information about an atomic memory operation
+data AtomicInfo =
+  AtomicInfo {
+    amoOp :: AtomicOp
+  , amoAcquire :: Bit 1
+  , amoRelease :: Bit 1
+  }
+  deriving (Generic, Interface, Bits)
+
+-- | Atomic operation
+type AtomicOp = Bit 5
+
+-- | Atomic opcodes (use the RISC-V encoding)
+amoLROp   :: AtomicOp = 0b00010
+amoSCOp   :: AtomicOp = 0b00011
+amoSwapOp :: AtomicOp = 0b00001
+amoAddOp  :: AtomicOp = 0b00000
+amoXorOp  :: AtomicOp = 0b00100
+amoAndOp  :: AtomicOp = 0b01100
+amoOrOp   :: AtomicOp = 0b01000
+amoMinOp  :: AtomicOp = 0b10000
+amoMaxOp  :: AtomicOp = 0b10100
+amoMinUOp :: AtomicOp = 0b11000
+amoMaxUOp :: AtomicOp = 0b11100
 
 -- | Memory access width (bytes = 2 ^ AccessWidth)
 type AccessWidth = Bit 2
@@ -36,6 +62,8 @@ data MemReq id =
   , memReqAccessWidth :: AccessWidth
     -- | Memory operation
   , memReqOp :: MemReqOp
+    -- | Atomic operation (if memory operation is atomic)
+  , memReqAtomicInfo :: AtomicInfo
     -- | Memory address
   , memReqAddr :: Bit 32
     -- | Data to store

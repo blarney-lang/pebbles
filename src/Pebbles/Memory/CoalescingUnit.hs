@@ -170,6 +170,11 @@ makeCoalescingUnit memReqs dramResps = do
     when (go1.val .&. stallWire.val.inv) do
       -- Select first pending request as leader
       leader2 <== pending1.val .&. (pending1.val.inv + 1)
+      -- Check that atomics are not in use
+      sequence_
+        [ dynamicAssert (req.memReqOp .!=. memAtomicOp)
+            "Atomics not yet supported by CoalescingUnit"
+        | req <- map val memReqs1 ]
       -- Trigger stage 2
       go2 <== true
       zipWithM_ (<==) memReqs2 (map val memReqs1)

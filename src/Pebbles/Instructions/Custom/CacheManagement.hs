@@ -34,6 +34,7 @@ executeCacheMgmt memUnit s = do
             memReqId = dontCare
           , memReqAccessWidth = dontCare
           , memReqOp = memCacheFlushOp
+          , memReqAtomicInfo = dontCare
           , memReqAddr = s.opA
           , memReqData = dontCare
           , memReqIsUnsigned = dontCare

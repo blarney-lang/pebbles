@@ -115,6 +115,8 @@ makeSBDCache dramResps = do
 
     -- Respond on hit, writeback on miss
     when (state.val .==. 1) do
+      dynamicAssert (reqReg.val.memReqOp .!=. memAtomicOp)
+        "Atomics not yet supported by SBDCache"
       -- Is it a cache flush request?
       let isFlush = reqReg.val.memReqOp .==. memCacheFlushOp
       -- Is it a cache hit?
