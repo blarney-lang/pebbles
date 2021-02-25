@@ -22,7 +22,7 @@ makeBankedSRAMs :: Bits t_id =>
      -- | Stream of memory responses per lane
   -> Module [Stream (MemResp t_id)]
 makeBankedSRAMs reqStreams = do
-  staticAssert (length reqStreams == SIMTLogLanes)
+  staticAssert (length reqStreams == SIMTLanes)
     "makeBankedSRAMs: number of streams /= number of lanes"
 
   -- Tag requests with lane id

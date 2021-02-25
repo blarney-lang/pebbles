@@ -79,11 +79,8 @@ makeSIMTExecuteStage ins s = do
  
   -- Merge resume requests
   let resumeReqStream =
-        mergeTree
-          [ fmap memRespToResumeReq (ins.execMemUnit.memResps)
-          , mulUnit.mulResps
-          , divUnit.divResps
-          ]
+        fmap memRespToResumeReq (ins.execMemUnit.memResps)
+          `mergeTwo` mergeTwo (mulUnit.mulResps) (divUnit.divResps)
 
   -- Resume queue
   resumeQueue <- makePipelineQueue 1

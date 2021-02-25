@@ -10,6 +10,7 @@ import Blarney
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.SourceSink
+import Blarney.Interconnect
 
 -- Pebbles imports
 import Pebbles.SoC.JTAGUART
@@ -108,7 +109,7 @@ makeSIMTMemSubsystem :: Bits t_id =>
   -> Module ([MemUnit t_id], Stream (DRAMReq ()))
 makeSIMTMemSubsystem dramResps = mdo
   -- Warp preserver
-  (memReqs, simtMemUnits) <- makeWarpPreserver memRespsProcessed
+  (memReqs, simtMemUnits) <- makeWarpPreserver memResps1
 
   -- Prepare request for memory subsystem
   let prepareReq req =
@@ -126,10 +127,22 @@ makeSIMTMemSubsystem dramResps = mdo
               }
             )
         }
-  let memReqsPrepared = map (mapSource prepareReq) memReqs
+
+  -- Split request streams for SRAM and DRAM
+  let (memReqsSRAM, memReqsDRAM) = unzip
+        [ let isSRAM = isBankedSRAMAccess (reqs.peek) in
+            ( reqs { canPeek = isSRAM .&. reqs.canPeek }
+            , reqs { canPeek = inv isSRAM .&. reqs.canPeek } )
+        | reqs <- map (mapSource prepareReq) memReqs ]
 
   -- Coalescing unit
-  (memResps, dramReqs) <- makeCoalescingUnit memReqsPrepared dramResps
+  (memRespsDRAM, dramReqs) <- makeCoalescingUnit memReqsDRAM dramResps
+
+  -- Banked SRAMs
+  memRespsSRAM <- makeBankedSRAMs memReqsSRAM
+
+  -- Merge responses
+  let memResps = zipWith mergeTwo memRespsSRAM memRespsDRAM
 
   -- Process response from memory subsystem
   let processResp resp =
@@ -142,6 +155,18 @@ makeSIMTMemSubsystem dramResps = mdo
             (resp.memRespId.snd.memReqInfoAccessWidth)
             (resp.memRespId.snd.memReqInfoIsUnsigned)
         }
-  let memRespsProcessed = map (mapSource processResp) memResps
+  let memResps1 = map (mapSource processResp) memResps
 
   return (simtMemUnits, dramReqs)
+
+-- Determine if request maps to banked SRAMs
+isBankedSRAMAccess :: MemReq t_id -> Bit 1
+isBankedSRAMAccess req =
+    (addr .<. fromInteger simtStacksStart) .&.
+      (addr .>=. fromInteger sramBase)
+  where
+    addr = req.memReqAddr
+    simtStacksStart = 2 ^ (DRAMAddrWidth + DRAMBeatLogBytes) -
+      2 ^ (SIMTLogLanes + SIMTLogWarps + SIMTLogBytesPerStack)
+    sramSize = 2 ^ (SIMTLogLanes + SIMTLogWordsPerSRAMBank+2)
+    sramBase = simtStacksStart - sramSize
