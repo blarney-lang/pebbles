@@ -12,6 +12,7 @@ import Blarney.Interconnect
 -- Pebbles imports
 import Pebbles.Util.Counter
 import Pebbles.Memory.Interface
+import Pebbles.Memory.Alignment
 
 -- | Create an array of indepdendent SRAM banks that are accessible as a
 -- multi-port shared memory.  We use a shuffle-exchange network to route
@@ -55,7 +56,7 @@ makeSRAMBank :: Bits t_id =>
   -> Module (Stream (MemResp t_id))
 makeSRAMBank reqs = do
   -- SRAM bank implemented by a block RAM
-  sramBank :: RAM (Bit SIMTLogWordsPerSRAMBank) (Bit 32) <- makeRAM
+  sramBank :: RAMBE SIMTLogWordsPerSRAMBank 4 <- makeDualRAMBE
 
   -- 2-element response queue
   respQueue :: Queue (MemResp t_id) <- makeQueue
@@ -78,14 +79,15 @@ makeSRAMBank reqs = do
       -- Drop the bottom address bits used as bank selector
       let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
       -- Pass request to block RAM 
-      if req.memReqOp .==. memLoadOp
+      if req.memReqOp .==. memStoreOp
         then do
-          load sramBank addr
+          let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
+          storeBE sramBank addr byteEn (req.memReqData)
+        else do
+          loadBE sramBank addr
           incrBy inflightCount 1
           respIdReg <== req.memReqId
           doEnq <== true
-        else do
-          store sramBank addr (req.memReqData)
 
   -- Produce responses
   always do
@@ -95,7 +97,7 @@ makeSRAMBank reqs = do
       enq respQueue
         MemResp {
           memRespId = respIdReg.val
-        , memRespData = sramBank.out
+        , memRespData = sramBank.outBE
         }
           
   return 
