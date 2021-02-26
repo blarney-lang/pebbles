@@ -10,6 +10,7 @@ import Blarney
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.SourceSink
+import Blarney.Connectable
 import Blarney.Interconnect
 
 -- Pebbles imports
