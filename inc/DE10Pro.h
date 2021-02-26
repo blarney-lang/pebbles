@@ -39,7 +39,7 @@ NOTE("Stack size (in bytes) for each SIMT thread")
 #define SIMTLogBytesPerStack 19
 
 NOTE("Size of each SRAM bank (in words)")
-#define SIMTLogWordsPerSRAMBank 13
+#define SIMTLogWordsPerSRAMBank 9
 
 NOTE("CPU configuration")
 NOTE("=================")
