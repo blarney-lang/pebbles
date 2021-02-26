@@ -142,7 +142,11 @@ makeSIMTMemSubsystem dramResps = mdo
   memRespsSRAM <- makeBankedSRAMs memReqsSRAM
 
   -- Merge responses
-  let memResps = zipWith mergeTwo memRespsSRAM memRespsDRAM
+  memResps <- sequence
+    [ do q <- makePipelineQueue 1
+         makeConnection s (q.toSink)
+         return (q.toStream)
+    | s <- zipWith mergeTwo memRespsSRAM memRespsDRAM ]
 
   -- Process response from memory subsystem
   let processResp resp =
