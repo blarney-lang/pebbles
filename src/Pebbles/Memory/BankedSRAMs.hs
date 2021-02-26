@@ -58,53 +58,107 @@ makeSRAMBank reqs = do
   -- SRAM bank implemented by a block RAM
   sramBank :: RAMBE SIMTLogWordsPerSRAMBank 4 <- makeDualRAMBE
 
-  -- 2-element response queue
-  respQueue :: Queue (MemResp t_id) <- makeQueue
+  -- Response queue
+  respQueue :: Queue (MemResp t_id) <- makeShiftQueue 1
 
-  -- In-flight request counter
-  -- The maximum count must equal the size of the response queue
-  inflightCount :: Counter 2 <- makeCounter 2
+  -- SRAM bank state machine
+  -- State 0: Consume request
+  -- State 1: Issues response
+  -- State 2: Update SRAM bank
+  state :: Reg (Bit 2) <- makeReg 0
 
-  -- For triggering response enqueue on cycle after load is issued
-  doEnq :: Reg (Bit 1) <- makeDReg false
+  -- Request register
+  reqReg :: Reg (MemReq t_id) <- makeReg dontCare
 
-  -- For the response id
-  respIdReg :: Reg t_id <- makeReg dontCare
+  -- Decoded atomic operation
+  isSwap     <- makeReg false
+  isXor      <- makeReg false
+  isAnd      <- makeReg false
+  isAdd      <- makeReg false
+  isOr       <- makeReg false
+  isMin      <- makeReg false
+  isMinMax   <- makeReg false
+  isUnsigned <- makeReg false
 
-  -- Process requests
+  -- Store register
+  storeData <- makeReg dontCare
+
+  -- State 0: consume request
   always do
-    when (reqs.canPeek .&. inflightCount.isFull.inv) do
+    when (state.val .==. 0) do
       reqs.consume
       let req = reqs.peek
+      reqReg <== req
       -- Drop the bottom address bits used as bank selector
       let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
-      -- Pass request to block RAM 
-      if req.memReqOp .==. memStoreOp
-        then do
-          let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
-          storeBE sramBank addr byteEn (req.memReqData)
-        else do
-          loadBE sramBank addr
-          incrBy inflightCount 1
-          respIdReg <== req.memReqId
-          doEnq <== true
-
-  -- Produce responses
+      -- Shorthand
+      let amo = req.memReqAtomicInfo.amoOp
+      -- Check that memory request is supported
+      dynamicAssert (req.memReqOp .!=. memCacheFlushOp)
+        "BankedSRAMs: cache flush not applicable!"
+      when (req.memReqOp .==. memAtomicOp) do
+        dynamicAssert (amo .!=. amoLROp) "BankedSRAMs: LR not supported"
+        dynamicAssert (amo .!=. amoSCOp) "BankedSRAMs: SC not supported"
+      -- Decode atomic operation
+      isSwap     <==  amo .==. amoSwapOp
+      isXor      <==  amo .==. amoXorOp
+      isAdd      <==  amo .==. amoAddOp
+      isAnd      <==  amo .==. amoAndOp
+      isOr       <==  amo .==. amoOrOp
+      isMin      <==  orList [amo .==. op | op <- [amoMinOp, amoMinUOp]]
+      isMinMax   <==  orList [amo .==. op | op <-
+                        [amoMinOp, amoMaxOp, amoMinUOp, amoMaxUOp]]
+      isUnsigned <==  orList [amo .==. op | op <- [amoMinUOp, amoMaxUOp]]
+      -- Setup store register
+      storeData <== req.memReqData
+      -- Load data from block RAM and move to next state
+      loadBE sramBank addr
+      state <== req.memReqOp .==. memStoreOp ? (2, 1)
+ 
+  -- State 1: issue response
   always do
-    when (doEnq.val) do
-      dynamicAssert (respQueue.notFull)
-        "makeSRAMBank: response queue overflow"
-      enq respQueue
-        MemResp {
-          memRespId = respIdReg.val
-        , memRespData = sramBank.outBE
-        }
-          
-  return 
-    Source {
-      peek = respQueue.first
-    , canPeek = respQueue.canDeq
-    , consume = do
-        respQueue.deq
-        decrBy inflightCount 1
-    }
+    when (state.val .==. 1) do
+      when (respQueue.notFull) do
+        -- Shorthands
+        let a = reqReg.val.memReqData
+        let b = sramBank.outBE
+        -- Prepare min/max operation
+        let msb a = upper a :: Bit 1
+        let sa = isUnsigned.val ? (0, msb a)
+        let sb = isUnsigned.val ? (0, msb b)
+        let less = (sa # a) `sLT` (sb # b)
+        let pickA = isMin.val .==. less
+        -- Compute store data
+        storeData <==
+          select    
+            [ isSwap.val   --> a
+            , isAdd.val    --> a + b
+            , isXor.val    --> a .^. b
+            , isAnd.val    --> a .&. b
+            , isOr.val     --> a .|. b
+            , isMinMax.val --> if pickA then a else b
+            ]
+        -- Issue response
+        enq respQueue
+          MemResp {
+            memRespId = reqReg.val.memReqId
+          , memRespData = sramBank.outBE
+          }
+        -- Move to next state
+        state <== reqReg.val.memReqOp .==. memLoadOp ? (0, 2)
+
+  -- State 2: update SRAM bank
+  -- (Might consider merging this with state 1)
+  always do
+    when (state.val .==. 2) do
+      let req = reqReg.val
+      -- Drop the bottom address bits used as bank selector
+      let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
+      -- Determine byte enable
+      let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
+      -- Write to bank
+      storeBE sramBank addr byteEn (storeData.val)
+      -- Move back to initial state
+      state <== 0
+
+  return (toStream respQueue)
