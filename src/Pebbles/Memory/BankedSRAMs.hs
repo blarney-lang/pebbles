@@ -63,9 +63,8 @@ makeSRAMBank reqs = do
 
   -- SRAM bank state machine
   -- State 0: Consume request
-  -- State 1: Issues response
-  -- State 2: Update SRAM bank
-  state :: Reg (Bit 2) <- makeReg 0
+  -- State 1: Issues response & update SRAM bank
+  state :: Reg (Bit 1) <- makeReg 0
 
   -- Request register
   reqReg :: Reg (MemReq t_id) <- makeReg dontCare
@@ -79,9 +78,6 @@ makeSRAMBank reqs = do
   isMin      <- makeReg false
   isMinMax   <- makeReg false
   isUnsigned <- makeReg false
-
-  -- Store register
-  storeData <- makeReg dontCare
 
   -- State 0: consume request
   always do
@@ -109,17 +105,16 @@ makeSRAMBank reqs = do
       isMinMax   <==  orList [amo .==. op | op <-
                         [amoMinOp, amoMaxOp, amoMinUOp, amoMaxUOp]]
       isUnsigned <==  orList [amo .==. op | op <- [amoMinUOp, amoMaxUOp]]
-      -- Setup store register
-      storeData <== req.memReqData
       -- Load data from block RAM and move to next state
       loadBE sramBank addr
-      state <== req.memReqOp .==. memStoreOp ? (2, 1)
+      state <== 1
  
-  -- State 1: issue response
+  -- State 1: issue response and update SRAM bank
   always do
     when (state.val .==. 1) do
       when (respQueue.notFull) do
         -- Shorthands
+        let req = reqReg.val
         let a = reqReg.val.memReqData
         let b = sramBank.outBE
         -- Prepare min/max operation
@@ -129,36 +124,32 @@ makeSRAMBank reqs = do
         let less = (sa # a) `sLT` (sb # b)
         let pickA = isMin.val .==. less
         -- Compute store data
-        storeData <==
-          select    
-            [ isSwap.val   --> a
-            , isAdd.val    --> a + b
-            , isXor.val    --> a .^. b
-            , isAnd.val    --> a .&. b
-            , isOr.val     --> a .|. b
-            , isMinMax.val --> if pickA then a else b
-            ]
+        let storeData =
+              select    
+                [ isSwap.val   --> a
+                , isAdd.val    --> a + b
+                , isXor.val    --> a .^. b
+                , isAnd.val    --> a .&. b
+                , isOr.val     --> a .|. b
+                , isMinMax.val --> if pickA then a else b
+                ]
         -- Issue response
-        enq respQueue
-          MemResp {
-            memRespId = reqReg.val.memReqId
-          , memRespData = sramBank.outBE
-          }
-        -- Move to next state
-        state <== reqReg.val.memReqOp .==. memLoadOp ? (0, 2)
-
-  -- State 2: update SRAM bank
-  -- (Might consider merging this with state 1)
-  always do
-    when (state.val .==. 2) do
-      let req = reqReg.val
-      -- Drop the bottom address bits used as bank selector
-      let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
-      -- Determine byte enable
-      let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
-      -- Write to bank
-      storeBE sramBank addr byteEn (storeData.val)
-      -- Move back to initial state
-      state <== 0
+        when (req.memReqOp .!=. memStoreOp) do
+          enq respQueue
+            MemResp {
+              memRespId = req.memReqId
+            , memRespData = sramBank.outBE
+            }
+        -- Drop the bottom address bits used as bank selector
+        let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
+        -- Determine byte enable
+        let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
+        -- Write to bank
+        when (req.memReqOp .!=. memLoadOp) do
+          storeBE sramBank addr byteEn
+            (if req.memReqOp .==. memStoreOp then req.memReqData
+                                             else storeData)
+        -- Move back to initial state
+        state <== 0
 
   return (toStream respQueue)
