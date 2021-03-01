@@ -81,7 +81,7 @@ makeSRAMBank reqs = do
 
   -- State 0: consume request
   always do
-    when (state.val .==. 0) do
+    when (reqs.canPeek .&. (state.val .==. 0)) do
       reqs.consume
       let req = reqs.peek
       reqReg <== req

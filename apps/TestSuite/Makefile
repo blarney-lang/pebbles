@@ -1,13 +1,13 @@
 PEBBLES_ROOT ?= $(realpath ../..)
 
 # Binary utilities
-RV_ARCH    = rv32im
+RV_ARCH    = rv32ima
 RV_CC      = riscv64-unknown-elf-gcc
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 
 # Compiler and linker flags
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I.
+CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I. -I$(PEBBLES_ROOT)/inc
 LDFLAGS = -melf32lriscv -G 0 
 
 .PHONY: v-files
