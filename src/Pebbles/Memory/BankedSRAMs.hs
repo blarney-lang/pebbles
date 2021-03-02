@@ -112,44 +112,47 @@ makeSRAMBank reqs = do
   -- State 1: issue response and update SRAM bank
   always do
     when (state.val .==. 1) do
-      when (respQueue.notFull) do
-        -- Shorthands
-        let req = reqReg.val
-        let a = reqReg.val.memReqData
-        let b = sramBank.outBE
-        -- Prepare min/max operation
-        let msb a = upper a :: Bit 1
-        let sa = isUnsigned.val ? (0, msb a)
-        let sb = isUnsigned.val ? (0, msb b)
-        let less = (sa # a) `sLT` (sb # b)
-        let pickA = isMin.val .==. less
-        -- Compute store data
-        let storeData =
-              select    
-                [ isSwap.val   --> a
-                , isAdd.val    --> a + b
-                , isXor.val    --> a .^. b
-                , isAnd.val    --> a .&. b
-                , isOr.val     --> a .|. b
-                , isMinMax.val --> if pickA then a else b
-                ]
-        -- Issue response
-        when (req.memReqOp .!=. memStoreOp) do
-          enq respQueue
-            MemResp {
-              memRespId = req.memReqId
-            , memRespData = sramBank.outBE
-            }
-        -- Drop the bottom address bits used as bank selector
-        let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
-        -- Determine byte enable
-        let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
-        -- Write to bank
-        when (req.memReqOp .!=. memLoadOp) do
-          storeBE sramBank addr byteEn
-            (if req.memReqOp .==. memStoreOp then req.memReqData
-                                             else storeData)
-        -- Move back to initial state
-        state <== 0
+      if respQueue.notFull
+        then do
+          -- Shorthands
+          let req = reqReg.val
+          let a = reqReg.val.memReqData
+          let b = sramBank.outBE
+          -- Prepare min/max operation
+          let msb a = upper a :: Bit 1
+          let sa = isUnsigned.val ? (0, msb a)
+          let sb = isUnsigned.val ? (0, msb b)
+          let less = (sa # a) `sLT` (sb # b)
+          let pickA = isMin.val .==. less
+          -- Compute store data
+          let storeData =
+                select    
+                  [ isSwap.val   --> a
+                  , isAdd.val    --> a + b
+                  , isXor.val    --> a .^. b
+                  , isAnd.val    --> a .&. b
+                  , isOr.val     --> a .|. b
+                  , isMinMax.val --> if pickA then a else b
+                  ]
+          -- Issue response
+          when (req.memReqOp .!=. memStoreOp) do
+            enq respQueue
+              MemResp {
+                memRespId = req.memReqId
+              , memRespData = sramBank.outBE
+              }
+          -- Drop the bottom address bits used as bank selector
+          let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
+          -- Determine byte enable
+          let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
+          -- Write to bank
+          when (req.memReqOp .!=. memLoadOp) do
+            storeBE sramBank addr byteEn
+              (if req.memReqOp .==. memStoreOp then req.memReqData
+                                               else storeData)
+          -- Move back to initial state
+          state <== 0
+        else do
+          sramBank.preserveOutBE
 
   return (toStream respQueue)

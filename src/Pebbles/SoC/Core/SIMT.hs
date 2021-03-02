@@ -92,6 +92,7 @@ makeSIMTExecuteStage ins s = do
       execute = do
         executeI csrUnit (ins.execMemUnit) s
         executeM mulUnit divUnit s
+        executeA (ins.execMemUnit) s
         executeCallDepth (ins.execCallDepthInc) (ins.execCallDepthDec) s
     , resumeReqs = resumeQueue.toStream
     }
@@ -153,7 +154,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , instrMemLogNumInstrs = config.simtCoreInstrMemLogNumInstrs
         , logNumWarps = SIMTLogWarps
         , logMaxCallDepth = SIMTLogMaxCallDepth
-        , decodeStage = decodeI ++ decodeM ++ decodeCallDepth
+        , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeCallDepth
         , executeStage =
             [ exec
                 SIMTExecuteIns {
