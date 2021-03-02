@@ -109,7 +109,7 @@ data SIMTThreadState t_logInstrs t_logMaxCallDepth =
   deriving (Generic, Bits)
 
 -- | SIMT pipeline module
-makeSIMTPipeline :: Ord tag =>
+makeSIMTPipeline :: Tag tag =>
      -- | SIMT configuration options
      SIMTPipelineConfig tag
      -- | SIMT pipeline inputs
