@@ -7,7 +7,7 @@ RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 
 # Compiler and linker flags
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I. -I$(PEBBLES_ROOT)/inc
+CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I./inc -I$(PEBBLES_ROOT)/inc
 LDFLAGS = -melf32lriscv -G 0 
 
 .PHONY: help
@@ -19,13 +19,16 @@ help:
 	@echo "  test-simt-sim   test SIMT core in simulation"
 	@echo "  clean           remove intermediate files"
 
+# Helper function
+v-files-for = $(patsubst %.S,%.$(1).code.v,$(wildcard $(2)/*.S)) \
+              $(patsubst %.S,%.$(1).data.v,$(wildcard $(2)/*.S))
+
 .PHONY: v-files
-v-files: $(patsubst %.S,%.cpu.code.v,$(wildcard *.S)) \
-         $(patsubst %.S,%.cpu.data.v,$(wildcard *.S)) \
-         $(patsubst %.S,%.simt.code.v,$(wildcard *.S)) \
-         $(patsubst %.S,%.simt.data.v,$(wildcard *.S)) \
-         $(patsubst %.S,%.simt.code.v,$(wildcard A/*.S)) \
-         $(patsubst %.S,%.simt.data.v,$(wildcard A/*.S))
+v-files: $(call v-files-for,cpu,I) \
+         $(call v-files-for,simt,I) \
+         $(call v-files-for,cpu,M) \
+         $(call v-files-for,simt,M) \
+         $(call v-files-for,simt,A)
 
 %.code.v: %.elf
 	@$(RV_OBJCOPY) -O verilog --only-section=.text $< $@
@@ -42,11 +45,11 @@ link.ld: $(PEBBLES_ROOT)/apps/Common/link.ld.h
 	@cpp -P -I $(PEBBLES_ROOT)/inc $< > link.ld
 
 .PRECIOUS: %.cpu.o
-%.cpu.o: %.S test_macros.h riscv_test.h encoding.h
+%.cpu.o: %.S
 	@$(RV_CC) $(CFLAGS) -Wall -c -o $@ $<
 
 .PRECIOUS: %.simt.o
-%.simt.o: %.S test_macros.h riscv_test.h encoding.h
+%.simt.o: %.S
 	@$(RV_CC) -D_TEST_SIMT_ $(CFLAGS) -Wall -c -o $@ $<
 
 TestCPU: checkenv TestCPU.cpp
@@ -67,19 +70,19 @@ TestSIMTSim: TestSIMT.cpp
 
 .PHONY: test-cpu
 test-cpu: v-files TestCPU
-	@./TestCPU *.S
+	@./TestCPU I/*.S M/*.S
 
 .PHONY: test-cpu-sim
 test-cpu-sim: v-files TestCPUSim
-	@./TestCPUSim *.S
+	@./TestCPUSim I/*.S M/*.S
 
 .PHONY: test-simt
 test-simt: v-files TestSIMT
-	@./TestSIMT *.S A/*.S
+	@./TestSIMT I/*.S M/*.S A/*.S
 
 .PHONY: test-simt-sim
 test-simt-sim: v-files TestSIMTSim
-	@./TestSIMTSim *.S A/*.S
+	@./TestSIMTSim I/*.S M/*.S A/*.S
 
 # Raise error if QUARTUS_ROOTDIR not set
 .PHONY: checkenv
@@ -88,6 +91,8 @@ checkenv:
 
 .PHONY: clean
 clean:
-	@rm -f *.o *.elf *.out *.v link.ld \
+	@rm -f link.ld \
+    I/*.o I/*.elf I/*.v \
+    M/*.o M/*.elf M/*.v \
     A/*.o A/*.elf A/*.v \
     TestCPU TestCPUSim TestSIMT TestSIMTSim
