@@ -1,5 +1,5 @@
 -- Custom CSRs for warp control on the SIMT core
-module Pebbles.CSRs.Custom.WarpControl where
+module Pebbles.CSRs.Custom.SIMTDevice where
 
 -- Blarney imports
 import Blarney

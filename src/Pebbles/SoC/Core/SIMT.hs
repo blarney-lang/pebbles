@@ -18,7 +18,7 @@ import Blarney.Interconnect
 import Pebbles.CSRs.Hart
 import Pebbles.CSRs.CSRUnit
 import Pebbles.CSRs.Custom.Simulate
-import Pebbles.CSRs.Custom.WarpControl
+import Pebbles.CSRs.Custom.SIMTDevice
 import Pebbles.Util.Counter
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.SIMT

@@ -60,11 +60,8 @@ in a separate terminal:
 
 ```sh
 $ cd apps/TestSuite
-$ make
-$ make TestCPUSim
-$ make TestSIMTSim
-$ ./TestCPUSim *.S      # Run the RISC-V test suite on the CPU
-$ ./TestSIMTSim *.S     # Run the RISC-V test suite on the SIMT core
+$ make test-cpu-sim     # Run the RISC-V test suite on the CPU
+$ make test-simt-sim    # Run the RISC-V test suite on the SIMT core
 ```
 
 Alternatively, you can run one of the SIMT kernels:
