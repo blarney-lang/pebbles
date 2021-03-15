@@ -63,15 +63,15 @@
 
 #else
 
-#define CSR_WarpTerminate 0x830
+#define CSR_WarpCmd 0x830
 
 #define RVTEST_PASS                                                     \
-        li TESTNUM, 1;                                                  \
-        csrw CSR_WarpTerminate, TESTNUM;
+        li TESTNUM, 3;                                                  \
+        csrw CSR_WarpCmd, TESTNUM;
 
 #define RVTEST_FAIL                                                     \
-        li TESTNUM, 0;                                                  \
-        csrw CSR_WarpTerminate, TESTNUM;
+        li TESTNUM, 1;                                                  \
+        csrw CSR_WarpCmd, TESTNUM;
 
 #endif
 

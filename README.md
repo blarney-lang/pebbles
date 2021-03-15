@@ -12,7 +12,7 @@ two pipelines:
 
   * A standard 5-stage in-order [scalar pipeline](src/Pebbles/Pipeline/Scalar.hs).
 
-  * A 9-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT/)
+  * A 9-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT.hs)
     with a parameterisable number of warps and warp size.
 
 A sample SoC is included which by default contains a scalar CPU, a

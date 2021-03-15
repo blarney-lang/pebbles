@@ -10,30 +10,36 @@ import Pebbles.CSRs.CSRUnit
 -- +------------------+---------+--------+-----------------------------------+
 -- | CSR              | Address | Access | Description                       |
 -- +------------------+---------+--------+-----------------------------------+
--- | WarpTerminate    |   0x830 | W      | Terminate current warp            |
+-- | WarpCmd          |   0x830 | W      | Warp command register             |
 -- | WarpGetKernel    |   0x831 | R      | Get address of kernel closure     |
 -- +------------------+---------+--------+-----------------------------------+
 
--- Notes: The value written to WarpTerminate is current treated as a
--- boolean, indicating the success or failure of the warp.  The
--- write assumes that all threads in the warp have converged and
--- indicates that the warp should be terminated.
+-- A write to WarpCmd assumes that all threads in the warp have converged
 
--- | CSR for warp termination
-makeCSR_WarpTerminate :: KnownNat n =>
-  Bit n -> Wire (Bit 1) -> Module CSR
-makeCSR_WarpTerminate laneId termWire = do
-  -- Terminate warp
-  let csr_WarpTerminate =
+-- | Warp command
+data WarpCmd =
+  WarpCmd {
+    warpCmd_termCode :: Bit 1
+    -- ^ The termination code
+  , warpCmd_isTerminate :: Bit 1
+    -- ^ Is it a termination or barrier command?
+  }
+  deriving (Generic, Bits, Interface)
+
+-- | CSR for warp commands
+makeCSR_WarpCmd :: KnownNat n =>
+  Bit n -> Wire WarpCmd -> Module CSR
+makeCSR_WarpCmd laneId warpCmd = do
+  let csr_WarpCmd =
         CSR {
           csrId = 0x830
         , csrRead = Nothing
         , csrWrite = Just \x -> do
             when (laneId .==. 0) do
-              termWire <== x.truncate
+              warpCmd <== unpack (x.truncate)
         }
 
-  return csr_WarpTerminate
+  return csr_WarpCmd
 
 -- | CSR for accessing kernel closure address
 makeCSR_WarpGetKernel :: Bit 32 -> Module CSR

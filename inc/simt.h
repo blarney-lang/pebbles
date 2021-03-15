@@ -6,7 +6,7 @@
 // Control/status registers
 #define CSR_SimEmit         "0x800"
 #define CSR_SimFinish       "0x801"
-#define CSR_WrapTerminate   "0x830"
+#define CSR_WrapCmd         "0x830"
 #define CSR_WrapGetKernel   "0x831"
 #define CSR_HartId          "0xf14"
 
@@ -31,7 +31,8 @@ INLINE void simtFinish()
 // Terminate current warp; assumes all threads in warp have converged
 INLINE void simtWarpTerminate()
 {
-  asm volatile("csrw " CSR_WrapTerminate ", zero\n" : :);
+  uint32_t code = 3; // Successfull termination
+  asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
 }
 
 // Get id of calling thread

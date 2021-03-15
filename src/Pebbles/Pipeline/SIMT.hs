@@ -52,6 +52,7 @@ import Control.Applicative hiding (some)
 -- Pebbles imports
 import Pebbles.Util.List
 import Pebbles.Pipeline.Interface
+import Pebbles.CSRs.Custom.SIMTDevice
 import Pebbles.Pipeline.SIMT.Management
 
 -- | SIMT pipeline configuration
@@ -78,8 +79,8 @@ data SIMTPipelineIns =
       -- | Stream of pipeline management requests
       simtMgmtReqs :: Stream SIMTReq
       -- | When this wire is active, the warp currently in the execute
-      -- stage (assumed to be converged) is terminated
-    , simtWarpTerminatedWire :: Wire (Bit 1)
+      -- stage (assumed to be converged) is issuing a warp command
+    , simtWarpCmdWire :: Wire WarpCmd
       -- | A pulse on these wires indicates that current instruction (in
       -- execute) is incrementing/decrementing the function call
       -- depth; one bit per lane
@@ -353,7 +354,8 @@ makeSIMTPipeline c inputs =
     -- Insert warp id back into warp queue, except on warp termination
     always do
       when (go5.val) do
-        if inputs.simtWarpTerminatedWire.active
+        if inputs.simtWarpCmdWire.active .&.
+           inputs.simtWarpCmdWire.val.warpCmd_isTerminate
           then do
             -- We assume that a warp only terminates when it has converged
             dynamicAssert (activeMask5.val .==. ones)
@@ -371,7 +373,7 @@ makeSIMTPipeline c inputs =
                 kernelSuccess <== true
               else do
                 kernelSuccess <== kernelSuccess.val .&.
-                  inputs.simtWarpTerminatedWire.val
+                  inputs.simtWarpCmdWire.val.warpCmd_termCode
           else do
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             enq warpQueue (warpId5.val)

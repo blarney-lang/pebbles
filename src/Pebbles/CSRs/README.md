@@ -45,5 +45,5 @@
 
   Name              | CSR    | R/W | Function
   ----------------- | ------ | --- | --------
-  `WarpTerminate`   | 0x830  | W   | Terminate current warp
+  `WarpCmd`         | 0x830  | W   | Warp command register
   `WarpGetKernel`   | 0x831  | R   | Get address of kernel closure
