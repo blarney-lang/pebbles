@@ -35,6 +35,13 @@ INLINE void simtWarpTerminate()
   asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
 }
 
+// Barrier synchonrisation; assumes all threads in warp have converged
+INLINE void simtBarrier()
+{
+  uint32_t code = 0; // Barrier
+  asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
+}
+
 // Get id of calling thread
 INLINE int simtThreadId()
 {

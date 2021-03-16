@@ -99,6 +99,16 @@ data SIMTPipelineOuts =
     , simtKernelAddr :: Bit 32
   }
 
+-- | Format of a start pipeline command
+data StartCmd pc =
+  StartCmd {
+    start :: Bit 1
+    -- ^ Trigger to start the pipeline
+  , initialPC :: Option pc
+    -- ^ Set initial PCs? (Or leave PCs as they are, e.g. for barrier release)
+  }
+  deriving (Generic, Bits)
+
 -- | Per-thread state
 data SIMTThreadState t_logInstrs t_logMaxCallDepth =
   SIMTThreadState {
@@ -200,11 +210,21 @@ makeSIMTPipeline c inputs =
     -- Kernel response queue (indicates to CPU when kernel has finished)
     kernelRespQueue :: Queue SIMTResp <- makeShiftQueue 1
 
+    -- Track how many warps have terminated
+    completedWarps :: Reg (Bit t_logWarps) <- makeReg 0
+
+    -- Track kernel success/failure
+    kernelSuccess :: Reg (Bit 1) <- makeReg true
+
+    -- Number of warps in a synchronisation barrier
+    syncCount :: Reg (Bit t_logWarps) <- makeReg 0
+
     -- Pipeline Initialisation
     -- =======================
 
     -- Register to trigger pipeline initialisation at some PC
-    startReg :: Reg (Option (Bit t_logInstrs)) <- makeReg none
+    startReg :: Reg (StartCmd (Bit t_logInstrs)) <-
+      makeReg (dontCare { start = false })
 
     -- Warp id counter, to initialise PC of each thread
     warpIdCounter :: Reg (Bit t_logWarps) <- makeReg 0
@@ -214,16 +234,17 @@ makeSIMTPipeline c inputs =
 
     always do
       -- When start register is valid, perform initialisation
-      when (startReg.val.isSome .&. kernelRespQueue.notFull) do
+      when (startReg.val.start .&. kernelRespQueue.notFull) do
+        let pc = startReg.val.initialPC
         -- Write PC to each thread of warp
         let initState =
               SIMTThreadState {
-                simtPC = startReg.val.val
+                simtPC = pc.val
               , simtCallDepth = ones
               }
-        sequence_ [ store stateMem (warpIdCounter.val) initState
-                  | stateMem <- stateMems ]
-        warpIdCounter <== warpIdCounter.val + 1
+        when (pc.valid) do
+          sequence_ [ store stateMem (warpIdCounter.val) initState
+                    | stateMem <- stateMems ]
 
         -- Insert into warp queue
         dynamicAssert (warpQueue.notFull)
@@ -231,9 +252,13 @@ makeSIMTPipeline c inputs =
         enq warpQueue (warpIdCounter.val)
 
         -- Finish initialisation and activate pipeline
-        when (warpIdCounter.val .==. ones) do
-          startReg <== none
-          pipelineActive <== true
+        if (completedWarps.val + warpIdCounter.val) .==. ones
+          then do
+            startReg <== dontCare { start = false }
+            pipelineActive <== true
+            warpIdCounter <== 0
+          else
+            warpIdCounter <== warpIdCounter.val + 1
 
     -- Stage 0: Warp Scheduling
     -- ========================
@@ -336,12 +361,6 @@ makeSIMTPipeline c inputs =
     -- Stages 5 and 6: Execute and Writeback
     -- =====================================
 
-    -- Track how many warps have terminated
-    completedWarps :: Reg (Bit t_logWarps) <- makeReg 0
-
-    -- Track kernel success/failure
-    kernelSuccess :: Reg (Bit 1) <- makeReg true
-
     -- Functions to convert between 32-bit PC and instruction address
     let fromPC :: Bit 32 -> Bit t_logInstrs =
           \pc -> truncateCast (slice @31 @2 pc)
@@ -351,16 +370,19 @@ makeSIMTPipeline c inputs =
     -- Buffer the decode tables
     let tagMap5 = Map.map buffer tagMap4
 
-    -- Insert warp id back into warp queue, except on warp termination
+    -- Insert warp id back into warp queue, except on warp command
     always do
       when (go5.val) do
-        if inputs.simtWarpCmdWire.active .&.
-           inputs.simtWarpCmdWire.val.warpCmd_isTerminate
+        if inputs.simtWarpCmdWire.active
           then do
-            -- We assume that a warp only terminates when it has converged
-            dynamicAssert (activeMask5.val .==. ones)
-              "SIMT pipeline: terminating warp that hasn't converged"
-            completedWarps <== completedWarps.val + 1
+            -- Is it a termination or barrier command?
+            let isTerm = inputs.simtWarpCmdWire.val.warpCmd_isTerminate
+            -- Handle termination command
+            when isTerm do
+              -- We assume that a terminating warp has converged
+              dynamicAssert (activeMask5.val .==. ones)
+                "SIMT pipeline: warp command issued by diverged warp"
+              completedWarps <== completedWarps.val + 1
             -- Have all warps have terminated?
             if completedWarps.val .==. ones
               then do
@@ -371,10 +393,23 @@ makeSIMTPipeline c inputs =
                 -- Re-enter initial state
                 pipelineActive <== false
                 kernelSuccess <== true
+                syncCount <== 0
               else do
-                kernelSuccess <== kernelSuccess.val .&.
-                  inputs.simtWarpCmdWire.val.warpCmd_termCode
+                -- Track kernel success
+                when isTerm do
+                  kernelSuccess <== kernelSuccess.val .&.
+                    inputs.simtWarpCmdWire.val.warpCmd_termCode
+                -- Check for barrier completion
+                if syncCount.val .==. ones
+                  then do
+                    -- Barrier release
+                    syncCount <== completedWarps.val
+                    pipelineActive <== false
+                    startReg <== StartCmd { start = true, initialPC = none } 
+                  else do
+                    syncCount <== syncCount.val + 1
           else do
+            -- Not a SIMT command, so reschedule
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             enq warpQueue (warpId5.val)
 
@@ -477,7 +512,7 @@ makeSIMTPipeline c inputs =
       when (inputs.simtMgmtReqs.canPeek) do
         let req = inputs.simtMgmtReqs.peek
         -- Is pipeline busy?
-        let busy = startReg.val.isSome .|. pipelineActive.val
+        let busy = startReg.val.start .|. pipelineActive.val
         -- Write instruction
         when (req.simtReqCmd .==. simtCmd_WriteInstr) do
           dynamicAssert (busy.inv)
@@ -487,7 +522,10 @@ makeSIMTPipeline c inputs =
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
           when (busy.inv) do
-            startReg <== some (req.simtReqAddr.fromPC)
+            startReg <== StartCmd {
+                           start = true
+                         , initialPC = some (req.simtReqAddr.fromPC)
+                         }
             kernelAddrReg <== req.simtReqData
             inputs.simtMgmtReqs.consume
 
