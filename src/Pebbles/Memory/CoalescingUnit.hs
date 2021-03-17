@@ -42,10 +42,6 @@ data CoalescingInfo t_id =
   , coalInfoReqIds :: V.Vec SIMTLanes t_id
     -- | Mode for SameBlock strategy
   , coalInfoSameBlockMode :: Bit 2
-    -- | Is unsigned load?
-  , coalInfoIsUnsigned :: Bit 1
-    -- | Access width
-  , coalInfoAccessWidth :: AccessWidth
     -- | Lower bits of address
   , coalInfoAddr :: Bit DRAMBeatLogBytes
     -- | Burst length
@@ -79,19 +75,17 @@ data CoalescingInfo t_id =
 --   * Backpressure on memory responses currently propagates to
 --     DRAM responses, which could cause blocking on the DRAM bus.
 makeCoalescingUnit :: Bits t_id =>
-     -- | Inputs: responses from DRAM
-     Stream (DRAMResp DRAMReqId)
-     -- | Outputs: MemUnit per lane and a stream of DRAM requests
-  -> Module ([MemUnit t_id], Stream (DRAMReq DRAMReqId))
-makeCoalescingUnit dramResps = do
+     -- | Stream of memory requests per lane
+     [Stream (MemReq t_id)]
+     -- | Responses from DRAM
+  -> Stream (DRAMResp DRAMReqId)
+     -- | Outputs: memory responses per lane and a stream of DRAM requests
+  -> Module ([Stream (MemResp t_id)], Stream (DRAMReq DRAMReqId))
+makeCoalescingUnit memReqs dramResps = do
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
      "number of half-words in DRAM beat")
-
-  -- Input memory request queues
-  memReqQueues :: [Queue (MemReq t_id)] <-
-    replicateM SIMTLanes (makeShiftQueue 1)
 
   -- Trigger signals for each pipeline stage
   go1 :: Reg (Bit 1) <- makeDReg false
@@ -153,16 +147,14 @@ makeCoalescingUnit dramResps = do
     -- Inject requests from input queues when no stall/feedback in progress
     when (stallWire.val.inv .&. feedbackWire.val.inv) do
       -- Consume requests and inject into pipeline
-      forM_ (zip memReqQueues memReqs1) \(q, r) -> do
-        when (q.canDeq) do
-          q.deq
-        r <== q.first
+      forM_ (zip memReqs memReqs1) \(s, r) -> do
+        when (s.canPeek) do
+          s.consume
+        r <== s.peek
       -- Initialise pending mask
-      pending1 <== fromBitList
-        [ q.canDeq .&. (q.first.memReqOp .!=. memNullOp)
-        | q <- memReqQueues ]
+      pending1 <== fromBitList [s.canPeek | s <- memReqs]
       -- Trigger pipeline
-      go1 <== orList [q.canDeq | q <- memReqQueues]
+      go1 <== orList [s.canPeek | s <- memReqs]
 
     -- Preserve go signals on stall
     when (stallWire.val) do
@@ -178,6 +170,11 @@ makeCoalescingUnit dramResps = do
     when (go1.val .&. stallWire.val.inv) do
       -- Select first pending request as leader
       leader2 <== pending1.val .&. (pending1.val.inv + 1)
+      -- Check that atomics are not in use
+      sequence_
+        [ dynamicAssert (req.memReqOp .!=. memAtomicOp)
+            "Atomics not yet supported by CoalescingUnit"
+        | req <- map val memReqs1 ]
       -- Trigger stage 2
       go2 <== true
       zipWithM_ (<==) memReqs2 (map val memReqs1)
@@ -329,22 +326,9 @@ makeCoalescingUnit dramResps = do
           coalSameBlockStrategy <== useSameBlock
           coalSameBlockMode <== sameBlockMode4.val
           coalMask <== mask
-          -- Align data field of leader request
-          leaderReq5 <==
-            (leaderReq4.val) {
-              memReqData =
-                writeAlign (leaderReq4.val.memReqAccessWidth)
-                           (leaderReq4.val.memReqData)
-            }
-          -- In WordMode, align data field of each request
+          leaderReq5 <== leaderReq4.val
           forM_ (zip memReqs4 memReqs5) \(r4, r5) -> do
-            if sameBlockMode4.val .==. 2
-              then do
-                r5 <== (r4.val) {
-                  memReqData = writeAlign (r4.val.memReqAccessWidth)
-                                          (r4.val.memReqData) }
-              else do
-                r5 <== r4.val
+            r5 <== r4.val
           -- Determine any remaining pending requests
           let remaining = pending4.val .&. inv mask
           -- If there are any, feed them back
@@ -379,10 +363,16 @@ makeCoalescingUnit dramResps = do
     let dramAddr = slice @31 @DRAMBeatLogBytes (leaderReq5.val.memReqAddr)
     -- DRAM data field for SameBlock strategy
     let sameBlockData8 :: V.Vec DRAMBeatBytes (Bit 8) =
-          V.fromList $ concat $ replicate 2
-            [r.val.memReqData.truncate | r <- memReqs5]
+          V.fromList $ concat $ replicate 2 $ concat
+            [ [slice @7 @0 (r1.val.memReqData),
+               slice @15 @8 (r2.val.memReqData),
+               slice @23 @16 (r3.val.memReqData),
+               slice @31 @24 (r4.val.memReqData)]
+            | [r1, r2, r3, r4] <- groupsOf 4 memReqs5]
     let sameBlockData16 :: V.Vec DRAMBeatHalfs (Bit 16) =
-          V.fromList [r.val.memReqData.truncate | r <- memReqs5]
+          V.fromList $ concat $
+            [ [r1.val.memReqData.lower, r2.val.memReqData.upper]
+            | [r1, r2] <- groupsOf 2 memReqs5 ]
     let sameBlockData32 :: V.Vec DRAMBeatWords (Bit 32) =
           V.fromList $ selectHalf (storeCount.val.truncate)
             [r.val.memReqData | r <- memReqs5]
@@ -443,8 +433,6 @@ makeCoalescingUnit dramResps = do
               , coalInfoMask = mask
               , coalInfoReqIds = V.fromList [r.val.memReqId | r <- memReqs5]
               , coalInfoSameBlockMode = sameBlockMode
-              , coalInfoIsUnsigned = leaderReq5.val.memReqIsUnsigned
-              , coalInfoAccessWidth = leaderReq5.val.memReqAccessWidth
               , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
               , coalInfoBurstLen = burstLen - 1
               }
@@ -477,7 +465,6 @@ makeCoalescingUnit dramResps = do
     let mask = info.coalInfoMask
     -- Shorthand for access info
     let sameBlockMode = info.coalInfoSameBlockMode
-    let isUnsigned = info.coalInfoIsUnsigned
     -- Which lanes may deliver a response under SameBlock strategy?
     let deliverSameBlock =
           [ loadCount.val .==. 
@@ -500,14 +487,7 @@ makeCoalescingUnit dramResps = do
     -- Determine items of data response
     let beatBytes :: V.Vec DRAMBeatBytes (Bit 8) = unpack (resp.dramRespData)
     let beatHalfs :: V.Vec DRAMBeatHalfs (Bit 16) = unpack (resp.dramRespData)
-    let beatWordsRaw :: V.Vec DRAMBeatWords (Bit 32) =
-          unpack (resp.dramRespData)
-    let beatWords :: V.Vec DRAMBeatWords (Bit 32) = V.fromList
-          [ loadMux w
-              (info.coalInfoAddr.truncate)
-              (info.coalInfoAccessWidth)
-              (info.coalInfoIsUnsigned)
-          | w <- V.toList beatWordsRaw ]
+    let beatWords :: V.Vec DRAMBeatWords (Bit 32) = unpack (resp.dramRespData)
     -- Response data for SameAddress strategy
     let sameAddrWordIndex :: Bit (DRAMBeatLogBytes-2) =
           info.coalInfoAddr.upper
@@ -515,11 +495,11 @@ makeCoalescingUnit dramResps = do
     -- Response data for SameBlock strategy
     let sameBlockBytes :: V.Vec SIMTLanes (Bit 32) =
           V.fromList $
-            map (\x -> isUnsigned ? (zeroExtend x, signExtend x)) $
+            map (\x -> x # x # x # x) $
               selectHalf (at @(DRAMBeatLogBytes-1) (info.coalInfoAddr)) $
                 V.toList beatBytes
     let sameBlockHalfs :: V.Vec SIMTLanes (Bit 32) =
-          V.map (\x -> isUnsigned ? (zeroExtend x, signExtend x)) beatHalfs
+          V.map (\x -> x # x) beatHalfs
     let sameBlockData :: V.Vec SIMTLanes (Bit 32) =
           [ sameBlockBytes
           , sameBlockHalfs
@@ -550,13 +530,4 @@ makeCoalescingUnit dramResps = do
           let respData = useSameBlock ? (d, sameAddrData)
           enq respQueue (MemResp id respData)
 
-  -- Memory interfaces
-  let memUnits =
-        [ MemUnit {
-            memReqs = toSink reqQueue
-          , memResps = toStream respQueue
-          }
-        | (reqQueue, respQueue) <- zip memReqQueues respQueues
-        ]
-
-  return (memUnits, toStream dramReqQueue)
+  return (map toStream respQueues, toStream dramReqQueue)

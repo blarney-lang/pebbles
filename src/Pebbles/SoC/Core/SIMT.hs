@@ -7,16 +7,18 @@ module Pebbles.SoC.Core.SIMT where
 
 -- Blarney imports
 import Blarney
+import Blarney.Queue
 import Blarney.Stream
 import Blarney.PulseWire
 import Blarney.SourceSink
+import Blarney.Connectable
 import Blarney.Interconnect
 
 -- Pebbles imports
 import Pebbles.CSRs.Hart
 import Pebbles.CSRs.CSRUnit
 import Pebbles.CSRs.Custom.Simulate
-import Pebbles.CSRs.Custom.WarpControl
+import Pebbles.CSRs.Custom.SIMTDevice
 import Pebbles.Util.Counter
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.SIMT
@@ -25,6 +27,7 @@ import Pebbles.Pipeline.Interface
 import Pebbles.SoC.DRAM.Interface
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
+import Pebbles.Instructions.RV32_A
 import Pebbles.Instructions.MulUnit
 import Pebbles.Instructions.DivUnit
 import Pebbles.Instructions.Custom.CallDepth
@@ -44,8 +47,8 @@ data SIMTExecuteIns =
   , execWarpId :: Bit SIMTLogWarps
     -- | Kernel address
   , execKernelAddr :: Bit 32
-    -- | Wire to trigger warp termination
-  , execWarpTerm :: Wire (Bit 1)
+    -- | Wire containing warp command
+  , execWarpCmd :: Wire WarpCmd
     -- | Pulse wire for call depth increment
   , execCallDepthInc :: PulseWire
     -- | Pulse wire for call depth decrement
@@ -64,7 +67,7 @@ makeSIMTExecuteStage ins s = do
   divUnit <- makeSeqDivUnit
 
   -- SIMT warp control CSRs
-  csr_WarpTerm <- makeCSR_WarpTerminate (ins.execLaneId) (ins.execWarpTerm)
+  csr_WarpCmd <- makeCSR_WarpCmd (ins.execLaneId) (ins.execWarpCmd)
   csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
 
   -- CSR unit
@@ -72,21 +75,26 @@ makeSIMTExecuteStage ins s = do
   csrUnit <- makeCSRUnit $
        csrs_Sim
     ++ [csr_HartId hartId]
-    ++ [csr_WarpTerm]
+    ++ [csr_WarpCmd]
     ++ [csr_WarpGetKernel]
  
+  -- Merge resume requests
+  let resumeReqStream =
+        fmap memRespToResumeReq (ins.execMemUnit.memResps)
+          `mergeTwo` mergeTwo (mulUnit.mulResps) (divUnit.divResps)
+
+  -- Resume queue
+  resumeQueue <- makePipelineQueue 1
+  makeConnection resumeReqStream (resumeQueue.toSink)
+
   return
     ExecuteStage {
       execute = do
         executeI csrUnit (ins.execMemUnit) s
         executeM mulUnit divUnit s
+        executeA (ins.execMemUnit) s
         executeCallDepth (ins.execCallDepthInc) (ins.execCallDepthDec) s
-    , resumeReqs =
-        mergeTree
-          [ fmap memRespToResumeReq (ins.execMemUnit.memResps)
-          , mulUnit.mulResps
-          , divUnit.divResps
-          ]
+    , resumeReqs = resumeQueue.toStream
     }
 
 -- | Generate verilog for execute stage
@@ -130,8 +138,8 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   incCallDepths <- replicateM SIMTLanes makePulseWire
   decCallDepths <- replicateM SIMTLanes makePulseWire
 
-  -- Wire for warp termination
-  warpTermWire :: Wire (Bit 1) <- makeWire 0
+  -- Wire for warp command
+  warpCmdWire :: Wire WarpCmd <- makeWire dontCare
 
   -- Synthesis boundary on execute stage?
   let exec = if config.simtCoreExecBoundary
@@ -146,14 +154,14 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , instrMemLogNumInstrs = config.simtCoreInstrMemLogNumInstrs
         , logNumWarps = SIMTLogWarps
         , logMaxCallDepth = SIMTLogMaxCallDepth
-        , decodeStage = decodeI ++ decodeM ++ decodeCallDepth
+        , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeCallDepth
         , executeStage =
             [ exec
                 SIMTExecuteIns {
                   execLaneId = fromInteger i
                 , execWarpId = pipelineOuts.simtCurrentWarpId.truncate
                 , execKernelAddr = pipelineOuts.simtKernelAddr
-                , execWarpTerm = warpTermWire
+                , execWarpCmd = warpCmdWire
                 , execCallDepthInc = incCD
                 , execCallDepthDec = decCD
                 , execMemUnit = memUnit
@@ -166,7 +174,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   pipelineOuts <- makeSIMTPipeline pipelineConfig
     SIMTPipelineIns {
       simtMgmtReqs = mgmtReqs
-    , simtWarpTerminatedWire = warpTermWire
+    , simtWarpCmdWire = warpCmdWire
     , simtIncCallDepth = map val incCallDepths
     , simtDecCallDepth = map val decCallDepths
     }

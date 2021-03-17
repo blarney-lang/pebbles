@@ -1,11 +1,20 @@
 module Pebbles.Memory.WarpPreserver where
 
+-- SoC parameters
+#include <SoC.h>
+
 -- Blarney imports
 import Blarney
+import Blarney.Queue
+import Blarney.Stream
 import Blarney.SourceSink
+import qualified Blarney.Vector as V
 
 -- Pebbles imports
 import Pebbles.Memory.Interface
+
+-- Haskell imports
+import Data.List
 
 -- | It can be desirable to keep memory requests from the same warp
 -- together as they enter the memory subsytem.  This is because these
@@ -13,45 +22,84 @@ import Pebbles.Memory.Interface
 -- which helps the coalescing unit.  If only some SIMT lanes make a
 -- request on a given clock cycle (due to divergence), then requests
 -- form different warps could get mixed up, which could hinder
--- coalescing.  The following module resolves this by implciclity
--- inserting "null" requests from the SIMT lanes than do not make a
--- request on the same cycle as those that do.
+-- coalescing.  The following module keeps requests from the same warp
+-- together, moving from warp to warp only when all requests have
+-- been consumed.
 makeWarpPreserver :: Bits t_id =>
-     -- | Memory unit interface for each SIMT lane
-     [MemUnit t_id]
-     -- | A new memory unit interface for each SIMT lane, with null requests
-     -- inserted to keep the requests of the same warp in lock-step
-  -> Module [MemUnit t_id]
-makeWarpPreserver inps = do
-  -- Determine if all sinks allow put
-  let allCanPut = andList [inp.memReqs.canPut | inp <- inps]
+     -- | Memory response stream to each SIMT lane
+     [Stream (MemResp t_id)]
+     -- | A memory unit interface for each SIMT lane and a
+     --   memory request stream for each SIMT lane
+  -> Module ([Stream (MemReq t_id)], [MemUnit t_id])
+makeWarpPreserver resps = do
+  -- Queue of vectorised memory requests
+  memReqsQueue :: Queue (V.Vec SIMTLanes (MemReq t_id)) <-
+    makeShiftQueue 1
 
-  -- Null request
-  let nullReq = dontCare { memReqOp = memNullOp }
+  -- Queue of masks indicating which vector elements are valid
+  validMask :: Queue (Bit SIMTLanes) <- makeShiftQueue 1
 
-  -- Boolean wire indicating if each lane is putting or not
-  putWires :: [Wire (Bit 1)] <- replicateM (length inps) (makeWire false)
+  -- Wires indicating if each lane putting or not 
+  putWires :: [Wire (MemReq t_id)] <- replicateM SIMTLanes (makeWire dontCare)
 
-  -- Catch case when a request is being made to any sink
-  let anyPut = orList (map val putWires)
+  -- Wires indicating if each lane is consuming or not 
+  getWires :: [Wire (Bit 1)] <- replicateM SIMTLanes (makeWire false)
 
+  -- Register tracking requests at the head of the queue that have
+  -- already been consumed
+  gotMask :: Reg (Bit SIMTLanes) <- makeReg 0
+
+  -- Catch case when a request is being enqueued
+  let anyPut = orList (map active putWires)
+
+  -- Fill queues
   always do
-    -- Insert null requests
-    forM_ (zip inps putWires) \(inp, putWire) ->
-      when (anyPut .&. putWire.val.inv) do
-        put (inp.memReqs) nullReq
+    when anyPut do
+      dynamicAssert (memReqsQueue.notFull .&. validMask.notFull)
+        "WarpPreserver: overflow"
+      enq memReqsQueue (V.fromList $ map val putWires)
+      enq validMask (fromBitList $ map active putWires)
 
-  return
-    [ inp {
-        memReqs =
-          Sink {
-            -- Can only put if all sinks can put
-            canPut = allCanPut
-            -- Observe when put is called
-          , put = \x -> do
-              put (inp.memReqs) x
-              putWire <== true
+  -- Drain queues
+  always do
+    when (memReqsQueue.canDeq) do
+      dynamicAssert (validMask.canDeq) "WarpPreserver: mismatch"
+      let mask = validMask.first
+      let getMask = fromBitList (map val getWires)
+      let remaining = (mask .&. getMask.inv) .&. gotMask.val.inv
+      -- Dequeue when all requests have been consumed
+      if remaining .==. 0
+        then do
+          validMask.deq
+          memReqsQueue.deq
+          gotMask <== 0
+        else do
+          gotMask <== gotMask.val .|. getMask
+
+  -- Ouputs
+  let reqStreams =
+        [ Source {
+            peek = req
+          , canPeek = memReqsQueue.canDeq .&. valid .&. inv got
+          , consume = getWire <== true
           }
-      }
-    | (inp, putWire) <- zip inps putWires
-    ]
+        | (req, valid, got, getWire) <-
+            zip4 (V.toList $ memReqsQueue.first)
+                 (toBitList $ validMask.first)
+                 (toBitList $ gotMask.val)
+                 getWires
+        ]
+
+  let memUnits =
+        [ MemUnit {
+            memReqs =
+              Sink {
+                canPut = memReqsQueue.notFull
+              , put = \x -> putWire <== x
+              }
+          , memResps = resp
+          }
+        | (resp, putWire) <- zip resps putWires
+        ]
+
+  return (reqStreams, memUnits)

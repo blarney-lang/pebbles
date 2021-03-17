@@ -49,7 +49,7 @@ data ScalarPipeline =
   }
 
 -- | Scalar pipeline
-makeScalarPipeline :: Ord tag =>
+makeScalarPipeline :: Tag tag =>
      -- | Inputs: pipeline configuration
      ScalarPipelineConfig tag
      -- | Outpus: pipeline management interface

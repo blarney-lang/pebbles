@@ -1,5 +1,5 @@
 -- Custom CSRs for managing the SIMT core from the CPU
-module Pebbles.CSRs.Custom.SIMTManagement where
+module Pebbles.CSRs.Custom.SIMTHost where
 
 -- Blarney imports
 import Blarney
@@ -27,12 +27,12 @@ import Pebbles.Pipeline.SIMT.Management
 -- SIMTCanGet is true.
 
 -- | CSRs for management of SIMT core from CPU
-makeCSRs_SIMTManagement ::
+makeCSRs_SIMTHost ::
      -- | Responses from SIMT core
      Stream SIMTResp
      -- | Requests to SIMT core, and a list of CSRs
   -> Module (Stream SIMTReq, [CSR])
-makeCSRs_SIMTManagement resps = do
+makeCSRs_SIMTHost resps = do
   -- Queue of requests to SIMT core
   reqs :: Queue SIMTReq <- makeShiftQueue 1
 

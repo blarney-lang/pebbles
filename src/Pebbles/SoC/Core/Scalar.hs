@@ -13,7 +13,7 @@ import Pebbles.CSRs.CSRUnit
 import Pebbles.CSRs.Custom.Simulate
 import Pebbles.CSRs.Custom.UART
 import Pebbles.CSRs.Custom.InstrMem
-import Pebbles.CSRs.Custom.SIMTManagement
+import Pebbles.CSRs.Custom.SIMTHost
 import Pebbles.Pipeline.Scalar
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
@@ -70,7 +70,7 @@ makeScalarCore config inputs = mdo
   imemCSRs <- makeCSRs_InstrMem (pipeline.writeInstr)
 
   -- SIMT management CSRs
-  (simtReqs, simtCSRs) <- makeCSRs_SIMTManagement (inputs.scalarSIMTResps)
+  (simtReqs, simtCSRs) <- makeCSRs_SIMTHost (inputs.scalarSIMTResps)
 
   -- CSR unit
   csrUnit <- makeCSRUnit $

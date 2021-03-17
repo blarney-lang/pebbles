@@ -6,12 +6,14 @@
 #include <cpu.h>
 #include <stdint.h>
 
+// Alias some useful SIMT macros
+#define nocl_local simt_local
+#define nocl_aligned simt_aligned
+
 // Parameters that are available to any kernel
+// All kernels inherit from this
 struct Kernel {
-  // Work item id
-  uint32_t id;
-  // Number of work items
-  uint32_t numWorkItems;
+  // Currently unused
 };
 
 // SIMT main function
@@ -20,17 +22,11 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   K* kernelPtr = (K*) simtGetKernelClosureAddr();
   K k = *kernelPtr;
 
-  // Initialise the work item id
-  k.id = simtThreadId();
-
-  // Execute kernel for every work item
-  while (k.id < k.numWorkItems) {
-    k.kernel();
-    k.id += SIMTLanes * SIMTWarps;
-  }
+  // Execute kernel
+  k.kernel();
 
   // Issue a load to ensure all data has reached DRAM
-  volatile uint32_t* ptr = &kernelPtr->numWorkItems; *ptr;
+  volatile uint8_t* ptr = (uint8_t*) kernelPtr; *ptr;
 
   // Terminate warp
   simtWarpTerminate();
@@ -68,5 +64,20 @@ template <typename K> __attribute__ ((noinline))
     while (!cpuSIMTCanGet()) {}
     return cpuSIMTGet();
   }
+
+// Get local thread id
+INLINE int noclLocalId() {
+  return simtThreadId();
+}
+
+// Max workgroup size
+INLINE int noclMaxGroupSize() {
+  return SIMTLanes * SIMTWarps;
+}
+
+// Barrier synchronisation within workgroup
+INLINE void noclBarrier() {
+  simtBarrier();
+}
 
 #endif

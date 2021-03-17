@@ -12,7 +12,7 @@ two pipelines:
 
   * A standard 5-stage in-order [scalar pipeline](src/Pebbles/Pipeline/Scalar.hs).
 
-  * A 9-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT/)
+  * A 9-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT.hs)
     with a parameterisable number of warps and warp size.
 
 A sample SoC is included which by default contains a scalar CPU, a
@@ -60,11 +60,8 @@ in a separate terminal:
 
 ```sh
 $ cd apps/TestSuite
-$ make
-$ make TestCPUSim
-$ make TestSIMTSim
-$ ./TestCPUSim *.S      # Run the RISC-V test suite on the CPU
-$ ./TestSIMTSim *.S     # Run the RISC-V test suite on the SIMT core
+$ make test-cpu-sim     # Run the RISC-V test suite on the CPU
+$ make test-simt-sim    # Run the RISC-V test suite on the SIMT core
 ```
 
 Alternatively, you can run one of the SIMT kernels:

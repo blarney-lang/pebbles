@@ -146,6 +146,7 @@ executeI csrUnit memUnit s = do
             memReqId = info
           , memReqAccessWidth = s.instr.getAccessWidth
           , memReqOp = isLoad ? (memLoadOp, memStoreOp)
+          , memReqAtomicInfo = dontCare
           , memReqAddr = memAddr
           , memReqData = s.opB
           , memReqIsUnsigned = s.instr.getIsUnsignedLoad

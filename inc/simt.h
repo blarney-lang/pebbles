@@ -6,7 +6,7 @@
 // Control/status registers
 #define CSR_SimEmit         "0x800"
 #define CSR_SimFinish       "0x801"
-#define CSR_WrapTerminate   "0x830"
+#define CSR_WrapCmd         "0x830"
 #define CSR_WrapGetKernel   "0x831"
 #define CSR_HartId          "0xf14"
 
@@ -15,6 +15,9 @@
 
 // Arrays should be aligned to support coalescing unit
 #define simt_aligned __attribute__ ((aligned (SIMTLanes * 4)))
+
+// For declaring data in shared local memory
+#define simt_local static __attribute__((section (".local_mem"))) volatile
 
 // Emit word to console (simulation only)
 INLINE void simtEmit(unsigned int x)
@@ -31,7 +34,14 @@ INLINE void simtFinish()
 // Terminate current warp; assumes all threads in warp have converged
 INLINE void simtWarpTerminate()
 {
-  asm volatile("csrw " CSR_WrapTerminate ", zero\n" : :);
+  uint32_t code = 3; // Successfull termination
+  asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
+}
+
+// Barrier synchonrisation; assumes all threads in warp have converged
+INLINE void simtBarrier()
+{
+  asm volatile("csrw " CSR_WrapCmd ", zero\n");
 }
 
 // Get id of calling thread
@@ -50,8 +60,9 @@ INLINE uint32_t simtGetKernelClosureAddr()
   return x;
 }
 
-// Explicit mark a point the the program that must be executed;
-// useful for marking convergence points at the end of a loop body
+// Explicitly mark a point the the program that must be executed;
+// useful for marking convergence points in the presence of certain
+// compiler optimisations
 INLINE void simtConverge() {
   asm volatile("");
 }

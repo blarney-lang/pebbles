@@ -7,7 +7,11 @@ module Pebbles.SoC.Top where
 
 -- Blarney imports
 import Blarney
+import Blarney.Queue
 import Blarney.Stream
+import Blarney.SourceSink
+import Blarney.Connectable
+import Blarney.Interconnect
 
 -- Pebbles imports
 import Pebbles.SoC.JTAGUART
@@ -16,9 +20,14 @@ import Pebbles.SoC.Core.Scalar
 import Pebbles.SoC.DRAM.DualPort
 import Pebbles.SoC.DRAM.Interface
 import Pebbles.Memory.SBDCache
+import Pebbles.Memory.Alignment
 import Pebbles.Memory.Interface
+import Pebbles.Memory.BankedSRAMs
 import Pebbles.Memory.WarpPreserver
 import Pebbles.Memory.CoalescingUnit
+
+-- SoC top-level interface
+-- =======================
 
 -- | SoC inputs
 data SoCIns =
@@ -40,7 +49,10 @@ data SoCOuts =
   }
   deriving (Generic, Interface)
 
--- | Blarney SoC top-level
+-- SoC top-level module
+-- ====================
+
+-- | SoC top-level
 makeTop :: SoCIns -> Module SoCOuts
 makeTop socIns = mdo
   -- Scalar core
@@ -68,13 +80,10 @@ makeTop socIns = mdo
         }
   simtMgmtResps <- makeSIMTCore simtConfig
     (cpuOuts.scalarSIMTReqs)
-    simtMemUnitsPrs
+    simtMemUnits
 
-  -- Coalescing unit
-  (simtMemUnits, dramReqs1) <- makeCoalescingUnit dramResps1
-
-  -- Warp preserver
-  simtMemUnitsPrs <- makeWarpPreserver simtMemUnits
+  -- SIMT memory subsystem
+  (simtMemUnits, dramReqs1) <- makeSIMTMemSubsystem dramResps1
 
   -- DRAM instance
   ((dramResps0, dramResps1), avlDRAMOuts) <-
@@ -90,3 +99,87 @@ makeTop socIns = mdo
       socUARTOuts = avlUARTOuts
     , socDRAMOuts = avlDRAMOuts
     }
+
+-- SIMT memory subsystem
+-- =====================
+
+makeSIMTMemSubsystem :: Bits t_id =>
+     -- | DRAM responses
+     Stream (DRAMResp ())
+     -- | DRAM requests and per-lane mem units
+  -> Module ([MemUnit t_id], Stream (DRAMReq ()))
+makeSIMTMemSubsystem dramResps = mdo
+    -- Warp preserver
+    (memReqs, simtMemUnits) <- makeWarpPreserver memResps1
+
+    -- Prepare request for memory subsystem
+    let prepareReq req =
+          req {
+            -- Align store-data (account for access width)
+            memReqData =
+              writeAlign (req.memReqAccessWidth) (req.memReqData)
+            -- Remember info needed to process response
+          , memReqId =
+              ( req.memReqId
+              , MemReqInfo {
+                  memReqInfoAddr = req.memReqAddr.truncate
+                , memReqInfoAccessWidth = req.memReqAccessWidth
+                , memReqInfoIsUnsigned = req.memReqIsUnsigned
+                }
+              )
+          }
+
+    -- Split request streams for SRAM and DRAM
+    let (memReqsSRAM, memReqsDRAM) = unzip
+          [ let isSRAM = isBankedSRAMAccess (reqs.peek) in
+              ( reqs { canPeek = isSRAM .&. reqs.canPeek
+                     , peek = mapBankedSRAMAccess (reqs.peek) }
+              , reqs { canPeek = inv isSRAM .&. reqs.canPeek } )
+          | reqs <- map (mapSource prepareReq) memReqs ]
+
+    -- Coalescing unit
+    (memRespsDRAM, dramReqs) <- makeCoalescingUnit memReqsDRAM dramResps
+
+    -- Banked SRAMs
+    memRespsSRAM <- makeBankedSRAMs memReqsSRAM
+
+    -- Merge responses
+    memResps <- sequence
+      [ do q <- makePipelineQueue 1
+           makeConnection s (q.toSink)
+           return (q.toStream)
+      | s <- zipWith mergeTwo memRespsSRAM memRespsDRAM ]
+
+    -- Process response from memory subsystem
+    let processResp resp =
+          resp {
+            -- | Drop info, no longer needed
+            memRespId = resp.memRespId.fst
+            -- | Use info to mux loaded data
+          , memRespData = loadMux (resp.memRespData)
+              (resp.memRespId.snd.memReqInfoAddr.truncate)
+              (resp.memRespId.snd.memReqInfoAccessWidth)
+              (resp.memRespId.snd.memReqInfoIsUnsigned)
+          }
+    let memResps1 = map (mapSource processResp) memResps
+
+    return (simtMemUnits, dramReqs)
+
+  where
+    -- SRAM-related addresses
+    simtStacksStart = 2 ^ (DRAMAddrWidth + DRAMBeatLogBytes) -
+      2 ^ (SIMTLogLanes + SIMTLogWarps + SIMTLogBytesPerStack)
+    sramSize = 2 ^ (SIMTLogLanes + SIMTLogWordsPerSRAMBank+2)
+    sramBase = simtStacksStart - sramSize
+
+    -- Determine if request maps to banked SRAMs
+    isBankedSRAMAccess :: MemReq t_id -> Bit 1
+    isBankedSRAMAccess req =
+        (addr .<. fromInteger simtStacksStart) .&.
+          (addr .>=. fromInteger sramBase)
+      where addr = req.memReqAddr
+
+    -- Map address when accessing banked SRAMs
+    mapBankedSRAMAccess :: MemReq t_id -> MemReq t_id
+    mapBankedSRAMAccess req =
+        req { memReqAddr = req.memReqAddr - fromInteger sramBase }
