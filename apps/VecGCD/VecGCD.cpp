@@ -3,23 +3,26 @@
 #include <cpu/io.h>
 
 // Euclid's algorithm on vectors
-struct VectorGCD : Kernel {
+struct VecGCD : Kernel {
+  int len;
   int* a;
   int* b;
   int* result;
 
   void kernel() {
-    int x = a[id];
-    int y = b[id];
-    while (x != y) {
-      if (x > y) 
-        x = x-y;
-      else
-        y = y-x;
+    for (int i = noclLocalId(); i < len; i += noclMaxGroupSize()) {
+      int x = a[i];
+      int y = b[i];
+      while (x != y) {
+        if (x > y) 
+          x = x-y;
+        else
+          y = y-x;
 
-      simtConverge();
+        simtConverge();
+      }
+      result[i] = x;
     }
-    result[id] = x;
   }
 };
 
@@ -39,8 +42,8 @@ int main()
   }
 
   // Invoke kernel
-  VectorGCD k;
-  k.numWorkItems = N;
+  VecGCD k;
+  k.len = N;
   k.a = a;
   k.b = b;
   k.result = result;

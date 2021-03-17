@@ -1,4 +1,4 @@
-APP_CPP = VectorGCD.cpp
+APP_CPP = Histo.cpp
 APP_HDR = 
 RUN_CPP = Run.cpp
 RUN_H   =

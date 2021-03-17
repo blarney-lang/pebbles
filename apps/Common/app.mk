@@ -1,7 +1,7 @@
 PEBBLES_ROOT ?= $(realpath ../..)
 
 # Binary utilities
-RV_ARCH    = rv32im
+RV_ARCH    = rv32ima
 RV_CC      = riscv64-unknown-elf-g++
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy

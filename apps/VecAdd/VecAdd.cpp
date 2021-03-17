@@ -3,13 +3,16 @@
 #include <nocl.h>
 
 // Kernel for adding vectors
-struct VectorAdd : Kernel {
+struct VecAdd : Kernel {
+  int len;
   int* a;
   int* b;
   int* result;
 
   void kernel() {
-    result[id] = a[id] + b[id];
+    for (int i = noclLocalId(); i < len; i += noclMaxGroupSize()) {
+      result[i] = a[i] + b[i];
+    }
   }
 };
 
@@ -28,8 +31,8 @@ int main()
   }
 
   // Invoke kernel
-  VectorAdd k;
-  k.numWorkItems = N;
+  VecAdd k;
+  k.len = N;
   k.a = a;
   k.b = b;
   k.result = result;

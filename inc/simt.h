@@ -16,6 +16,9 @@
 // Arrays should be aligned to support coalescing unit
 #define simt_aligned __attribute__ ((aligned (SIMTLanes * 4)))
 
+// For declaring data in shared local memory
+#define simt_local static __attribute__((section (".local_mem"))) volatile
+
 // Emit word to console (simulation only)
 INLINE void simtEmit(unsigned int x)
 {
@@ -38,8 +41,7 @@ INLINE void simtWarpTerminate()
 // Barrier synchonrisation; assumes all threads in warp have converged
 INLINE void simtBarrier()
 {
-  uint32_t code = 0; // Barrier
-  asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
+  asm volatile("csrw " CSR_WrapCmd ", zero\n");
 }
 
 // Get id of calling thread
@@ -58,8 +60,9 @@ INLINE uint32_t simtGetKernelClosureAddr()
   return x;
 }
 
-// Explicit mark a point the the program that must be executed;
-// useful for marking convergence points at the end of a loop body
+// Explicitly mark a point the the program that must be executed;
+// useful for marking convergence points in the presence of certain
+// compiler optimisations
 INLINE void simtConverge() {
   asm volatile("");
 }
