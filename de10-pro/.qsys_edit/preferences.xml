@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<preferences>
+ <debug showDebugMenu="0" />
+ <window width="1864" height="1053" x="56" y="27" />
+ <systemtable filter="All Interfaces" />
+ <library
+   expandedCategories="Library/Basic Functions/Bridges and Adaptors/Memory Mapped,Existing IP Variants/home/mn416,Library/Intel FPGA Interconnect/Interrupt,Library/Intel FPGA Interconnect,Project,Library/Bridges and Adapters,Existing IP Variants/home/mn416/work/pebbles/de10-pro,Existing IP Variants/home/mn416/work,Existing IP Variants/home,Existing IP Variants/home/mn416/work/pebbles,Existing IP Variants,Library,Library/Basic Functions/Bridges and Adaptors,Library/Bridges and Adapters/Streaming,Existing IP Variants/home/mn416/work/pebbles/de10-pro/ip/DE10_Pro_QSYS,Existing IP Variants/home/mn416/work/pebbles/de10-pro/ip,Library/Intel FPGA Interconnect/Memory-Mapped Alpha,Library/Basic Functions" />
+ <generation path="" />
+ <hdlexample language="VERILOG" />
+</preferences>

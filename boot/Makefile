@@ -1,7 +1,6 @@
 PEBBLES_ROOT ?= $(realpath ..)
 
 SIM = $(PEBBLES_ROOT)/sim
-QP = $(PEBBLES_ROOT)/de5-net
 
 # Binary utilities
 RV_ARCH    = rv32i
@@ -28,7 +27,7 @@ LOG_INSTR_BYTES = $(shell echo -n CPUInstrMemLogWords \
 INSTR_BYTES = $(shell echo "4 * (2 ^ $(LOG_INSTR_BYTES))" | bc)
 
 .PHONY: all
-all: $(SIM)/boot.hex $(QP)/boot.mif
+all: $(SIM)/boot.hex ../de5-net/boot.mif ../de10-pro/boot.mif
 
 link.ld: link.ld.h
 	cpp -P -I $(PEBBLES_ROOT)/inc link.ld.h > link.ld
@@ -37,9 +36,13 @@ $(SIM)/boot.hex: InstrMem.ihex
 	./ihex-to-img.py InstrMem.ihex hex 0 4 $(INSTR_BYTES) 1 \
     > $(SIM)/boot.hex
 
-$(QP)/boot.mif: InstrMem.ihex
+../de5-net/boot.mif: InstrMem.ihex
 	./ihex-to-img.py InstrMem.ihex mif 0 4 $(INSTR_BYTES) 1 \
-    > $(QP)/boot.mif
+    > ../de5-net/boot.mif
+
+../de10-pro/boot.mif: InstrMem.ihex
+	./ihex-to-img.py InstrMem.ihex mif 0 4 $(INSTR_BYTES) 1 \
+    > ../de10-pro/boot.mif
 
 InstrMem.ihex: out.elf
 	$(RV_OBJCOPY) --only-section=.text -O ihex out.elf InstrMem.ihex
@@ -57,4 +60,4 @@ out.elf: entry.S $(OFILES) link.ld
 
 .PHONY: clean
 clean:
-	rm -f *.o *.elf *.ihex link.ld
+	rm -f *.o *.elf *.ihex link.ld *.mif

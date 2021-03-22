@@ -72,7 +72,7 @@ except:
 # Print out memory contents
 if fmt == "mif":
   # Altera mif format
-  print("DEPTH =", (depth/width)/inc, ";")
+  print("DEPTH =", int((depth/width)/inc), ";")
   print("WIDTH =", 8*width, ";")
   print("ADDRESS_RADIX = DEC ;")
   print("DATA_RADIX = HEX ;")
