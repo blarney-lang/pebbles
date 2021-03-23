@@ -1714,6 +1714,7 @@ set_global_assignment -name MINIMUM_SEU_INTERVAL 0
 set_global_assignment -name ACTIVE_SERIAL_CLOCK AS_FREQ_100MHZ
 set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 1
 set_global_assignment -name IP_FILE reset_release.ip
+set_global_assignment -name MIF_FILE boot.mif
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAM.v
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMDual.v
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMTrueDual.v
