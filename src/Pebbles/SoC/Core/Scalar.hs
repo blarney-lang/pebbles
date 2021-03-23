@@ -19,8 +19,8 @@ import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
-import Pebbles.Instructions.MulUnit
-import Pebbles.Instructions.DivUnit
+import Pebbles.Instructions.Units.MulUnit
+import Pebbles.Instructions.Units.DivUnit
 import Pebbles.Instructions.Custom.CacheManagement
 import Pebbles.Memory.Interface
 import Pebbles.SoC.DRAM.Interface

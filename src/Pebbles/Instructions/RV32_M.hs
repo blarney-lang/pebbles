@@ -8,9 +8,9 @@ import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
-import Pebbles.Instructions.MulUnit
-import Pebbles.Instructions.DivUnit
 import Pebbles.Instructions.Mnemonics
+import Pebbles.Instructions.Units.MulUnit
+import Pebbles.Instructions.Units.DivUnit
 
 -- Decode stage
 -- ============

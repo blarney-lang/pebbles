@@ -28,8 +28,8 @@ import Pebbles.SoC.DRAM.Interface
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.RV32_A
-import Pebbles.Instructions.MulUnit
-import Pebbles.Instructions.DivUnit
+import Pebbles.Instructions.Units.MulUnit
+import Pebbles.Instructions.Units.DivUnit
 import Pebbles.Instructions.Custom.CallDepth
 
 -- Haskell imports

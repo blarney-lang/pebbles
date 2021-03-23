@@ -12,8 +12,8 @@ import Blarney.SourceSink
 import Pebbles.CSRs.CSRUnit
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
-import Pebbles.Instructions.AddUnit
 import Pebbles.Instructions.Mnemonics
+import Pebbles.Instructions.Units.AddUnit
 
 -- Decode stage
 -- ============

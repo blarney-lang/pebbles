@@ -1,4 +1,4 @@
-module Pebbles.Instructions.AddUnit where
+module Pebbles.Instructions.Units.AddUnit where
   
 -- Blarney imports
 import Blarney
