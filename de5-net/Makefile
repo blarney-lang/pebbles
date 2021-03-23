@@ -36,7 +36,7 @@ update-mif: checkenv
 .PHONY: clean
 clean: clean-mif
 	rm -f *.rpt *.msg *.summary *.sld *.sopcinfo *.jdi
-	rm -f *.pin *.done *.qws *.sof *.csv *.qws *.smsg
+	rm -f *.pin *.done *.qws *.sof *.csv *.qws *.smsg *.mif
 	rm -rf dse* db incremental_db .qsys_edit reconfig_mif
 	rm -rf S5_DDR3_QSYS
 

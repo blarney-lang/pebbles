@@ -4,3 +4,4 @@ clean:
 	make -C TestSuite clean
 	make -C VecAdd clean
 	make -C VecGCD clean
+	make -C Histo clean
