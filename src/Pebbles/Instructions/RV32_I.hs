@@ -12,6 +12,7 @@ import Blarney.SourceSink
 import Pebbles.CSRs.CSRUnit
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
+import Pebbles.Instructions.AddUnit
 import Pebbles.Instructions.Mnemonics
 
 -- Decode stage
@@ -72,15 +73,14 @@ getIsUnsignedLoad = makeFieldSelector decodeI "ul"
 
 executeI :: CSRUnit -> MemUnit InstrInfo -> State -> Action ()
 executeI csrUnit memUnit s = do
-  -- 33-bit add/sub/compare
-  let uns = s.opcode `is` [SLTU, BLTU, BGEU]
-  let addA = (uns ? (0, at @31 (s.opA))) # s.opA
-  let addB = (uns ? (0, at @31 (s.opBorImm))) # s.opBorImm
-  let isAdd = s.opcode `is` [ADD]
-  let sum = addA + (isAdd ? (addB, inv addB))
-                 + (isAdd ? (0, 1))
-  let less = at @32 sum
-  let equal = s.opA .==. s.opBorImm
+  -- Add/sub/compare unit
+  let AddOuts sum less equal = addUnit 
+        AddIns {
+          addSub = inv (s.opcode `is` [ADD])
+        , addUnsigned = s.opcode `is` [SLTU, BLTU, BGEU]
+        , addOpA = s.opA
+        , addOpB = s.opBorImm
+        }
 
   when (s.opcode `is` [ADD, SUB]) do
     s.result <== truncate sum
