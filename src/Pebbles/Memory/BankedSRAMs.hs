@@ -27,7 +27,13 @@ makeBankedSRAMs reqStreams = do
     "makeBankedSRAMs: number of streams /= number of lanes"
 
   -- Tag requests with lane id
-  let tag t req = req { memReqId = (t :: Bit SIMTLogLanes, req.memReqId) }
+  -- (And on a fence, ensure one request per bank)
+  let tag (t :: Bit SIMTLogLanes) req =
+        req {
+          memReqId = (t, req.memReqId)
+        , memReqAddr = if req.memReqOp .==. memLocalFenceOp
+                         then dontCare # t else req.memReqAddr
+        }
   let reqStreams1 = [ fmap (tag (fromInteger id)) s
                     | (s, id) <- zip reqStreams [0..] ]
 
@@ -92,6 +98,8 @@ makeSRAMBank reqs = do
       -- Check that memory request is supported
       dynamicAssert (req.memReqOp .!=. memCacheFlushOp)
         "BankedSRAMs: cache flush not applicable!"
+      dynamicAssert (req.memReqOp .!=. memGlobalFenceOp)
+        "BankedSRAMs: global fence not applicable!"
       when (req.memReqOp .==. memAtomicOp) do
         dynamicAssert (amo .!=. amoLROp) "BankedSRAMs: LR not supported"
         dynamicAssert (amo .!=. amoSCOp) "BankedSRAMs: SC not supported"
@@ -146,7 +154,8 @@ makeSRAMBank reqs = do
           -- Determine byte enable
           let byteEn = genByteEnable (req.memReqAccessWidth) (req.memReqAddr)
           -- Write to bank
-          when (req.memReqOp .!=. memLoadOp) do
+          when (req.memReqOp .==. memStoreOp .||.
+                  req.memReqOp .==. memAtomicOp) do
             storeBE sramBank addr byteEn
               (if req.memReqOp .==. memStoreOp then req.memReqData
                                                else storeData)

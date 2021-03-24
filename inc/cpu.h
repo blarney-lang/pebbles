@@ -114,7 +114,12 @@ INLINE int cpuSIMTGet()
   int x;
   asm volatile("csrrw %0, " CSR_SIMTGet ", zero" : "=r"(x));
   return x;
+}
 
+// Memory fence
+INLINE void cpuMemFence()
+{
+  asm volatile("fence rw, rw");
 }
 
 // Cache line flush
@@ -136,10 +141,8 @@ INLINE void cpuCacheFlushFull()
     uint32_t addr = i * DRAMBeatBytes;
     cpuCacheFlushLine((void*) addr);
   }
-  // Issue a load to ensure flush is complete
-  uint8_t slot = 0; volatile uint8_t* addr = &slot; *addr;
-  // Invalidate loaded data
-  cpuCacheFlushLine((void*) addr);
+  // Issue a fence to ensure flush is complete
+  cpuMemFence();
 }
 
 #endif

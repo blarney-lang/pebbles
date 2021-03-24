@@ -74,6 +74,9 @@ data CoalescingInfo t_id =
 --   * We assume that DRAM responses come back in order.
 --   * Backpressure on memory responses currently propagates to
 --     DRAM responses, which could cause blocking on the DRAM bus.
+--   * A global fence is treated like a load (the response data is 
+--     ignored but the response signifies that all preceeding stores
+--     have reached DRAM).
 makeCoalescingUnit :: Bits t_id =>
      -- | Stream of memory requests per lane
      [Stream (MemReq t_id)]
@@ -172,8 +175,10 @@ makeCoalescingUnit memReqs dramResps = do
       leader2 <== pending1.val .&. (pending1.val.inv + 1)
       -- Check that atomics are not in use
       sequence_
-        [ dynamicAssert (req.memReqOp .!=. memAtomicOp)
-            "Atomics not yet supported by CoalescingUnit"
+        [ do dynamicAssert (req.memReqOp .!=. memAtomicOp)
+               "Atomics not yet supported by CoalescingUnit"
+             dynamicAssert (req.memReqOp .!=. memLocalFenceOp)
+               "Local fence not supported by CoalescingUnit"
         | req <- map val memReqs1 ]
       -- Trigger stage 2
       go2 <== true
@@ -436,8 +441,10 @@ makeCoalescingUnit memReqs dramResps = do
               , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
               , coalInfoBurstLen = burstLen - 1
               }
-        -- Handle load: insert info into inflight queue
-        when (leaderReq5.val.memReqOp .==. memLoadOp) do
+        -- Handle load & fence: insert info into inflight queue
+        let hasResp = leaderReq5.val.memReqOp .==. memLoadOp
+                        .||. leaderReq5.val.memReqOp .==. memGlobalFenceOp
+        when hasResp do
           enq inflightQueue info
           go5 <== false
         -- Handle store: increment burst count

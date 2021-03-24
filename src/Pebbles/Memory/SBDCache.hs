@@ -115,22 +115,22 @@ makeSBDCache dramResps = do
 
     -- Respond on hit, writeback on miss
     when (state.val .==. 1) do
-      dynamicAssert (reqReg.val.memReqOp .!=. memAtomicOp)
-        "Atomics not yet supported by SBDCache"
-      -- Is it a cache flush request?
+      -- What kind of request is it
+      let isLoad = reqReg.val.memReqOp .==. memLoadOp
+      let isFence = reqReg.val.memReqOp .==. memGlobalFenceOp
       let isFlush = reqReg.val.memReqOp .==. memCacheFlushOp
       -- Is it a cache hit?
-      let isHit = tagMem.out.lineValid .&.
-            (tag .==. tagMem.out.lineTag) .&.
-              isFlush.inv
+      let isHit = tagMem.out.lineValid .&&.
+                    tag .==. tagMem.out.lineTag .&&.
+                      isFlush.inv
       -- Separate behaviours for hit and miss
-      if isHit
+      if isHit .||. isFence
         then do
           -- Handle hit
           -- ==========
 
           -- Load hit or store hit?
-          if reqReg.val.memReqOp .==. memLoadOp
+          if isLoad .||. isFence
             then do
               -- Handle load hit
               -- Words in loaded cache line
@@ -246,15 +246,16 @@ makeSBDCache dramResps = do
       -- Wait until DRAM response available
       when (dramResps.canPeek) do
         dramResps.consume
-        -- Update cache
+        -- Update cache (if not a fence)
         let line =
               LineState {
                 lineTag = tag
               , lineValid = true
               , lineDirty = false
               }
-        store tagMem lineNum line
-        storeBE dataMem lineNum ones (dramResps.peek.dramRespData)
+        when (reqReg.val.memReqOp .!=. memGlobalFenceOp) do
+          store tagMem lineNum line
+          storeBE dataMem lineNum ones (dramResps.peek.dramRespData)
         -- Move to loopback state
         state <== 4
 
@@ -272,7 +273,12 @@ makeSBDCache dramResps = do
           , put = \req -> do
               reqWire <== req
               reqReg <== req
-              state <== 1
+              state <== (req.memReqOp .==. memGlobalFenceOp) ? (2, 1)
+              -- Checks
+              dynamicAssert (req.memReqOp .!=. memAtomicOp)
+                "Atomics not yet supported by SBDCache"
+              dynamicAssert (req.memReqOp .!=. memLocalFenceOp)
+                "Local fence not supported by SBDCache"
           }
       , memResps = respQueue.toStream
       }

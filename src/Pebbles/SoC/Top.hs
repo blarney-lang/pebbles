@@ -173,10 +173,13 @@ makeSIMTMemSubsystem dramResps = mdo
     sramBase = simtStacksStart - sramSize
 
     -- Determine if request maps to banked SRAMs
+    -- (Local fence goes to banked SRAMs)
     isBankedSRAMAccess :: MemReq t_id -> Bit 1
     isBankedSRAMAccess req =
-        (addr .<. fromInteger simtStacksStart) .&.
-          (addr .>=. fromInteger sramBase)
+      req.memReqOp .==. memLocalFenceOp .||.
+        (req.memReqOp .!=. memGlobalFenceOp .&&.
+           addr .<. fromInteger simtStacksStart .&&.
+             addr .>=. fromInteger sramBase)
       where addr = req.memReqAddr
 
     -- Map address when accessing banked SRAMs

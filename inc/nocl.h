@@ -25,8 +25,8 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   // Execute kernel
   k.kernel();
 
-  // Issue a load to ensure all data has reached DRAM
-  volatile uint8_t* ptr = (uint8_t*) kernelPtr; *ptr;
+  // Issue a fence ensure all data has reached DRAM
+  simtGlobalMemFence();
 
   // Terminate warp
   simtWarpTerminate();

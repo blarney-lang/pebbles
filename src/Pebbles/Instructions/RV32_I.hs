@@ -50,7 +50,7 @@ decodeI =
   , "off[12] off[10:5] rs2<5> rs1<5> 111 off[4:1] off[11] 1100011" --> BGEU
   , "imm[11:0] rs1<5> ul<1> aw<2> rd<5> 0000011" --> LOAD
   , "imm[11:5] rs2<5> rs1<5> 0 aw<2> imm[4:0] 0100011" --> STORE
-  , "<4> <4> <4> <5> 000 <5> 0001111" --> FENCE
+  , "fence<4> pred<4> succ<4> rs1<5> 000 00000 0001111" --> FENCE
   , "000000000000 <5> 000 <5> 1110011" --> ECALL
   , "000000000001 <5> 000 <5> 1110011" --> EBREAK
   , "imm[11:0] rs1<5> 001 rd<5> 1110011" --> CSRRW
@@ -67,6 +67,9 @@ getAccessWidth = makeFieldSelector decodeI "aw"
 
 getIsUnsignedLoad :: Bit 32 -> Bit 1
 getIsUnsignedLoad = makeFieldSelector decodeI "ul"
+
+getFenceFlags :: Bit 32 -> Bit 4
+getFenceFlags = makeFieldSelector decodeI "fence"
 
 -- Execute stage
 -- =============
@@ -132,29 +135,33 @@ executeI csrUnit memUnit s = do
     s.result <== s.pc.val + 4
 
   -- Memory access
-  when (s.opcode `is` [LOAD, STORE]) do
+  when (s.opcode `is` [LOAD, STORE, FENCE]) do
     let memAddr = s.opA + s.opBorImm
     if memUnit.memReqs.canPut
       then do
-        let isLoad = s.opcode `is` [LOAD]
         -- Currently the memory subsystem doesn't issue store responses
-        -- so we make sure to only suspend on a load
-        info <- whenR isLoad (s.suspend)
+        -- so we make sure to only suspend on a load or fence
+        let hasResp = s.opcode `is` [LOAD, FENCE]
+        info <- whenR hasResp (s.suspend)
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
             memReqId = info
           , memReqAccessWidth = s.instr.getAccessWidth
-          , memReqOp = isLoad ? (memLoadOp, memStoreOp)
+          , memReqOp =
+              select [
+                s.opcode `is` [LOAD] --> memLoadOp
+              , s.opcode `is` [STORE] --> memStoreOp
+              , s.opcode `is` [FENCE] -->
+                  if at @0 (s.instr.getFenceFlags)
+                    then memLocalFenceOp else memGlobalFenceOp
+              ]
           , memReqAtomicInfo = dontCare
           , memReqAddr = memAddr
           , memReqData = s.opB
           , memReqIsUnsigned = s.instr.getIsUnsignedLoad
           }
       else s.retry
-
-  when (s.opcode `is` [FENCE]) do
-    noAction
 
   when (s.opcode `is` [ECALL]) do
     display "ECALL not implemented"

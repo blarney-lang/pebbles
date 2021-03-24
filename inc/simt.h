@@ -31,6 +31,20 @@ INLINE void simtFinish()
   asm volatile("csrw " CSR_SimFinish ", zero\n" : :);
 }
 
+// Local memory fence
+INLINE void simtLocalMemFence()
+{
+  // Opcode: 0001 0011 0011 00000 000 00000 0001111
+  asm volatile(
+    ".word 0x1330000f\n");
+}
+
+// Memory fence
+INLINE void simtGlobalMemFence()
+{
+  asm volatile("fence rw, rw");
+}
+
 // Terminate current warp; assumes all threads in warp have converged
 INLINE void simtWarpTerminate()
 {
@@ -42,6 +56,7 @@ INLINE void simtWarpTerminate()
 INLINE void simtBarrier()
 {
   asm volatile("csrw " CSR_WrapCmd ", zero\n");
+  simtLocalMemFence();
 }
 
 // Get id of calling thread

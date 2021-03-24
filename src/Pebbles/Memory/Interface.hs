@@ -11,13 +11,15 @@ import Pebbles.Pipeline.Interface
 -- ==========================
 
 -- | Memory operation
-type MemReqOp = Bit 2
+type MemReqOp = Bit 3
 
 -- | Memory request opcodes
-memCacheFlushOp :: MemReqOp = 0
-memLoadOp       :: MemReqOp = 1
-memStoreOp      :: MemReqOp = 2
-memAtomicOp     :: MemReqOp = 3
+memCacheFlushOp  :: MemReqOp = 0
+memLoadOp        :: MemReqOp = 1
+memStoreOp       :: MemReqOp = 2
+memAtomicOp      :: MemReqOp = 3
+memGlobalFenceOp :: MemReqOp = 4
+memLocalFenceOp  :: MemReqOp = 5
 
 -- | Information about an atomic memory operation
 data AtomicInfo =
@@ -56,49 +58,49 @@ isWordAccess = (.==. 0b10)
 -- | Memory requests from the processor
 data MemReq id =
   MemReq {
-    -- | Identifier, to support out-of-order responses
     memReqId :: id
-    -- | Access width of operation
+    -- ^ Identifier, to support out-of-order responses
   , memReqAccessWidth :: AccessWidth
-    -- | Memory operation
+    -- ^ Access width of operation
   , memReqOp :: MemReqOp
-    -- | Atomic operation info (if memory operation is atomic)
+    -- ^ Memory operation
   , memReqAtomicInfo :: AtomicInfo
-    -- | Memory address
+    -- ^ Atomic operation info (if memory operation is atomic)
   , memReqAddr :: Bit 32
-    -- | Data to store
+    -- ^ Memory address
   , memReqData :: Bit 32
-    -- | Is it an unsigned load?
+    -- ^ Data to store
   , memReqIsUnsigned :: Bit 1
+    -- ^ Is it an unsigned load?
   } deriving (Generic, Interface, Bits)
 
 -- | Memory responses to the processor
 data MemResp id =
   MemResp {
-    -- | Idenitifier, to match up request and response
     memRespId :: id
-    -- | Response data
+    -- ^ Idenitifier, to match up request and response
   , memRespData :: Bit 32
+    -- ^ Response data
   } deriving (Generic, Interface, Bits)
 
 -- | Memory unit interface
 data MemUnit id =
   MemUnit {
-    -- | Request sink
     memReqs :: Sink (MemReq id)
-    -- | Response source
+    -- ^ Request sink
   , memResps :: Source (MemResp id)
+    -- ^ Response source
   } deriving (Generic, Interface)
 
 -- | Information from a memory request needed to process response
 data MemReqInfo =
   MemReqInfo {
-    -- | Lower bits of address
     memReqInfoAddr :: Bit 2
-    -- | Access width
+    -- ^ Lower bits of address
   , memReqInfoAccessWidth :: AccessWidth
-    -- | Is it an unsigned load?
+    -- ^ Access width
   , memReqInfoIsUnsigned :: Bit 1
+    -- ^ Is it an unsigned load?
   }
   deriving (Generic, Bits)
 
