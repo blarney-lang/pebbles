@@ -2,6 +2,7 @@ PEBBLES_ROOT ?= $(realpath ../..)
 
 # Binary utilities
 RV_ARCH    = rv32ima
+RV_C       = riscv64-unknown-elf-gcc
 RV_CC      = riscv64-unknown-elf-g++
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
@@ -16,9 +17,9 @@ CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -Os \
           -fno-reorder-blocks
 LDFLAGS = -melf32lriscv -G 0 
 
-# C files to compile
 OFILES = $(patsubst %.cpp,%.o,$(APP_CPP)) \
-         $(PEBBLES_ROOT)/lib/cpu/io.o
+         $(PEBBLES_ROOT)/lib/cpu/io.o \
+         $(PEBBLES_ROOT)/lib/baremetal.o
 
 .PHONY: all
 all: Run
@@ -32,6 +33,9 @@ data.v: app.elf
 
 app.elf: $(OFILES) link.ld
 	$(RV_LD) $(LDFLAGS) -T link.ld -o app.elf $(OFILES)
+
+$(PEBBLES_ROOT)/lib/baremetal.o: $(PEBBLES_ROOT)/lib/baremetal.c
+	$(RV_C) $(CFLAGS) -I $(PEBBLES_ROOT)/inc -Wall -c -o $@ $<
 
 %.o: %.cpp $(APP_HDR)
 	$(RV_CC) $(CFLAGS) -I $(PEBBLES_ROOT)/inc -Wall -c -o $@ $<

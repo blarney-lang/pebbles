@@ -32,7 +32,8 @@ makeBankedSRAMs reqStreams = do
         req {
           memReqId = (t, req.memReqId)
         , memReqAddr = if req.memReqOp .==. memLocalFenceOp
-                         then dontCare # t else req.memReqAddr
+                         then 0 # t # (0b00 :: Bit 2)
+                         else req.memReqAddr
         }
   let reqStreams1 = [ fmap (tag (fromInteger id)) s
                     | (s, id) <- zip reqStreams [0..] ]
@@ -87,7 +88,7 @@ makeSRAMBank reqs = do
 
   -- State 0: consume request
   always do
-    when (reqs.canPeek .&. (state.val .==. 0)) do
+    when (reqs.canPeek .&&. state.val .==. 0) do
       reqs.consume
       let req = reqs.peek
       reqReg <== req

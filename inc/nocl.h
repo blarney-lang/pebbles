@@ -37,7 +37,8 @@ template <typename K> __attribute__ ((noinline))
   void _noclSIMTEntry_() {
     // Determine stack pointer based on SIMT thread id
     uint32_t top = 0;
-    top -= simtThreadId() << SIMTLogBytesPerStack;
+    top -= (SIMTLanes * SIMTWarps - 1 - simtThreadId()) <<
+             SIMTLogBytesPerStack;
     top -= 8;
     // Set stack pointer
     asm volatile("mv sp, %0\n" : : "r"(top));
