@@ -75,9 +75,9 @@ INLINE int noclMaxGroupSize() {
   return SIMTLanes * SIMTWarps;
 }
 
-// Barrier synchronisation within workgroup
+// Barrier synchronisation
 INLINE void noclBarrier() {
-  simtBarrier();
+  simtLocalBarrier();
 }
 
 #endif
