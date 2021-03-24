@@ -410,7 +410,7 @@ makeCoalescingUnit memReqs dramResps = do
     -- DRAM byte enable field for SameAddress strategy
     let leaderBE = genByteEnable (leaderReq5.val.memReqAccessWidth)
                     (leaderReq5.val.memReqAddr)
-    let subWord = slice @DRAMBeatLogBytes @2 (leaderReq5.val.memReqAddr)
+    let subWord = slice @(DRAMBeatLogBytes-1) @2 (leaderReq5.val.memReqAddr)
     let sameAddrBEVec :: V.Vec DRAMBeatWords (Bit 4) = 
           V.fromList [ subWord .==. fromInteger i ? (leaderBE, 0)
                      | i <- [0..DRAMBeatWords-1] ]
