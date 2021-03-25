@@ -4,36 +4,28 @@
 // Atomic swap
 INLINE int atomicSwap(volatile int *ptr, int val) {
   int x;
-  asm volatile("amoswap.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
+  __atomic_exchange(ptr, &val, &x, __ATOMIC_RELAXED);
   return x;
 }
 
 // Atomic add
 INLINE int atomicAdd(volatile int *ptr, int val) {
-  int x;
-  asm volatile("amoadd.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
-  return x;
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED);
 }
 
 // Atomic and
 INLINE int atomicAnd(volatile int *ptr, int val) {
-  int x;
-  asm volatile("amoand.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
-  return x;
+  return __atomic_fetch_and(ptr, val, __ATOMIC_RELAXED);
 }
 
 // Atomic or
 INLINE int atomicOr(volatile int *ptr, int val) {
-  int x;
-  asm volatile("amoor.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
-  return x;
+  return __atomic_fetch_or(ptr, val, __ATOMIC_RELAXED);
 }
 
 // Atomic xor
 INLINE int atomicXor(volatile int *ptr, int val) {
-  int x;
-  asm volatile("amoxor.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
-  return x;
+  return __atomic_fetch_xor(ptr, val, __ATOMIC_RELAXED);
 }
 
 // Atomic max (signed)

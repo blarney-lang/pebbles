@@ -22,11 +22,14 @@ memGlobalFenceOp :: MemReqOp = 4
 memLocalFenceOp  :: MemReqOp = 5
 
 -- | Information about an atomic memory operation
-data AtomicInfo =
-  AtomicInfo {
+data AMOInfo =
+  AMOInfo {
     amoOp :: AtomicOp
+    -- ^ Atomic operation opcode
   , amoAcquire :: Bit 1
   , amoRelease :: Bit 1
+  , amoNeedsResp :: Bit 1
+    -- ^ Is the response of the atomic operation needed?
   }
   deriving (Generic, Interface, Bits)
 
@@ -64,7 +67,7 @@ data MemReq id =
     -- ^ Access width of operation
   , memReqOp :: MemReqOp
     -- ^ Memory operation
-  , memReqAtomicInfo :: AtomicInfo
+  , memReqAMOInfo :: AMOInfo
     -- ^ Atomic operation info (if memory operation is atomic)
   , memReqAddr :: Bit 32
     -- ^ Memory address

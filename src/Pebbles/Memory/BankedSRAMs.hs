@@ -95,7 +95,7 @@ makeSRAMBank reqs = do
       -- Drop the bottom address bits used as bank selector
       let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
       -- Shorthand
-      let amo = req.memReqAtomicInfo.amoOp
+      let amo = req.memReqAMOInfo.amoOp
       -- Check that memory request is supported
       dynamicAssert (req.memReqOp .!=. memCacheFlushOp)
         "BankedSRAMs: cache flush not applicable!"
@@ -144,7 +144,11 @@ makeSRAMBank reqs = do
                   , isMinMax.val --> if pickA then a else b
                   ]
           -- Issue response
-          when (req.memReqOp .!=. memStoreOp) do
+          let needsResp = req.memReqOp .==. memLoadOp
+                .||. req.memReqOp .==. memLocalFenceOp
+                .||. (req.memReqOp .==. memAtomicOp .&&.
+                        req.memReqAMOInfo.amoNeedsResp)
+          when needsResp do
             enq respQueue
               MemResp {
                 memRespId = req.memReqId

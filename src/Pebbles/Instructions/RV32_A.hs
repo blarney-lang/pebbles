@@ -33,6 +33,9 @@ getAcquire = makeFieldSelector decodeA "aq"
 getRelease :: Bit 32 -> Bit 1
 getRelease = makeFieldSelector decodeA "rl"
 
+getDestReg :: Bit 32 -> Bit 5
+getDestReg = makeFieldSelector decodeA "rd"
+
 -- Execute stage
 -- =============
 
@@ -42,18 +45,22 @@ executeA memUnit s = do
   when (s.opcode `is` [AMO]) do
     if memUnit.memReqs.canPut
       then do
-        info <- s.suspend
+        -- Is response needed?
+        let needsResp = s.instr.getDestReg .!=. 0
+        -- Suspend if response needed
+        info <- whenR needsResp (s.suspend)
         -- Send request to memory unit
         put (memUnit.memReqs)
           MemReq {
             memReqId = info
           , memReqAccessWidth = 0b10
           , memReqOp = memAtomicOp
-          , memReqAtomicInfo =
-              AtomicInfo {
+          , memReqAMOInfo =
+              AMOInfo {
                 amoOp = s.instr.getAMO
               , amoAcquire = s.instr.getAcquire
               , amoRelease = s.instr.getRelease
+              , amoNeedsResp = needsResp
               }
           , memReqAddr = s.opA
           , memReqData = s.opB

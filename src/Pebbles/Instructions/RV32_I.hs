@@ -156,7 +156,7 @@ executeI csrUnit memUnit s = do
                   if at @0 (s.instr.getFenceFlags)
                     then memLocalFenceOp else memGlobalFenceOp
               ]
-          , memReqAtomicInfo = dontCare
+          , memReqAMOInfo = dontCare
           , memReqAddr = memAddr
           , memReqData = s.opB
           , memReqIsUnsigned = s.instr.getIsUnsignedLoad
