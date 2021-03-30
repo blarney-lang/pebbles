@@ -31,15 +31,16 @@
 
 ## Custom SIMT Host/Management CSRs
 
-  Name              | CSR    | R/W | Function
-  ----------------- | ------ | --- | --------
-  `SIMTCanPut`      | 0x820  | R   | Can issue SIMT request?
-  `SIMTInstrAddr`   | 0x821  | W   | Set instruction mem address
-  `SIMTWriteInstr`  | 0x822  | W   | Write to instruction mem
-  `SIMTStartKernel` | 0x823  | W   | Start all warps with given PC
-  `SIMTCanGet`      | 0x824  | R   | Can get SIMT response?
-  `SIMTGet`         | 0x825  | R   | Get SIMT response
-  `SIMTSetKernel`   | 0x826  | W   | Set address of kernel closure
+  Name                   | CSR    | R/W | Function
+  ---------------------- | ------ | --- | --------
+  `SIMTCanPut`           | 0x820  | R   | Can issue SIMT request?
+  `SIMTInstrAddr`        | 0x821  | W   | Set instruction mem address
+  `SIMTWriteInstr`       | 0x822  | W   | Write to instruction mem
+  `SIMTStartKernel`      | 0x823  | W   | Start all warps with given PC
+  `SIMTCanGet`           | 0x824  | R   | Can get SIMT response?
+  `SIMTGet`              | 0x825  | R   | Get SIMT response
+  `SIMTSetKernel`        | 0x826  | W   | Set address of kernel closure
+  `SIMTSetWarpsPerBlock` | 0x827  | W   | Set num of warps per block
 
 ## Custom SIMT Device CSRs
 

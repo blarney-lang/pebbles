@@ -5,21 +5,22 @@
 #include <SoC.h>
 
 // Control/status registers
-#define CSR_SimEmit         "0x800"
-#define CSR_SimFinish       "0x801"
-#define CSR_UARTCanPut      "0x802"
-#define CSR_UARTPut         "0x803"
-#define CSR_UARTCanGet      "0x804"
-#define CSR_UARTGet         "0x805"
-#define CSR_InstrAddr       "0x806"
-#define CSR_WriteInstr      "0x807"
-#define CSR_SIMTCanPut      "0x820"
-#define CSR_SIMTInstrAddr   "0x821"
-#define CSR_SIMTWriteInstr  "0x822"
-#define CSR_SIMTStartKernel "0x823"
-#define CSR_SIMTCanGet      "0x824"
-#define CSR_SIMTGet         "0x825"
-#define CSR_SIMTSetKernel   "0x826"
+#define CSR_SimEmit              "0x800"
+#define CSR_SimFinish            "0x801"
+#define CSR_UARTCanPut           "0x802"
+#define CSR_UARTPut              "0x803"
+#define CSR_UARTCanGet           "0x804"
+#define CSR_UARTGet              "0x805"
+#define CSR_InstrAddr            "0x806"
+#define CSR_WriteInstr           "0x807"
+#define CSR_SIMTCanPut           "0x820"
+#define CSR_SIMTInstrAddr        "0x821"
+#define CSR_SIMTWriteInstr       "0x822"
+#define CSR_SIMTStartKernel      "0x823"
+#define CSR_SIMTCanGet           "0x824"
+#define CSR_SIMTGet              "0x825"
+#define CSR_SIMTSetKernel        "0x826"
+#define CSR_SIMTSetWarpsPerBlock "0x827"
 
 #define INLINE inline __attribute__((always_inline))
 
@@ -91,6 +92,14 @@ INLINE void cpuSIMTWriteInstr(uint32_t addr, uint32_t instr)
 INLINE void cpuSIMTSetKernel(uint32_t addr)
 {
   asm volatile("csrw " CSR_SIMTSetKernel ", %0\n" : : "r"(addr));
+}
+
+// Set number of warps per block
+// (A block is a group of threads that synchronise on a barrier)
+// (A value of 0 indicates all warps)
+INLINE void cpuSIMTSetWarpsPerBlock(uint32_t n)
+{
+  asm volatile("csrw " CSR_SIMTSetWarpsPerBlock ", %0\n" : : "r"(n));
 }
 
 // Start a kernel on the SIMT core; assumes cpuSIMTCanPut() is true

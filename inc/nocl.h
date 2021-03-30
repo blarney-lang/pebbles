@@ -51,7 +51,12 @@ template <typename K> __attribute__ ((noinline))
   int noclRunKernel(K* k) {
     // Set address of kernel closure
     uintptr_t kernelAddr = (uintptr_t) k;
+    while (!cpuSIMTCanPut()) {}
     cpuSIMTSetKernel(kernelAddr);
+
+    // Set number of warps per block
+    while (!cpuSIMTCanPut()) {}
+    cpuSIMTSetWarpsPerBlock(0);
 
     // Flush cache
     cpuCacheFlushFull();
