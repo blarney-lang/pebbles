@@ -1,8 +1,9 @@
 #ifndef _CPU_H_
 #define _CPU_H_
 
-#include <stdint.h>
 #include <SoC.h>
+#include <cpu/io.h>
+#include <stdint.h>
 
 // Control/status registers
 #define CSR_SimEmit              "0x800"
@@ -152,6 +153,15 @@ INLINE void cpuCacheFlushFull()
   }
   // Issue a fence to ensure flush is complete
   cpuMemFence();
+}
+
+INLINE void cpuAssert(int cond, const char* msg)
+{
+  if (!cond) {
+    puts(msg);
+    putchar('\n');
+    while (1) {};
+  }
 }
 
 #endif

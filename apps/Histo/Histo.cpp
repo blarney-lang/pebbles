@@ -1,6 +1,5 @@
 #include <nocl.h>
 #include <atomics.h>
-#include <cpu/io.h>
 
 // Kernel for computing 256-bin histograms
 struct Histo256 : Kernel {
@@ -9,23 +8,23 @@ struct Histo256 : Kernel {
   int* bins;
 
   void kernel() {
-    // Store histogram bins in shared local memory
-    nocl_local int histo[256];
+    // Allocate histogram bins in shared local memory
+    int* histo = shared.alloc<int>(256);
 
     // Initialise bins
-    for (int i = noclLocalId(); i < 256; i += noclMaxGroupSize())
+    for (int i = threadIdx.x; i < 256; i += blockDim.x)
       histo[i] = 0;
 
-    noclBarrier();
+    __syncthreads();
 
     // Update bins
-    for (int i = noclLocalId(); i < len; i += noclMaxGroupSize())
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
       atomicAdd(&histo[input[i]], 1);
 
-    noclBarrier();
+    __syncthreads();
 
     // Write bins to global memory
-    for (int i = noclLocalId(); i < 256; i += noclMaxGroupSize())
+    for (int i = threadIdx.x; i < 256; i += blockDim.x)
       bins[i] = histo[i];
   }
 };
@@ -44,11 +43,18 @@ int main()
     input[i] = i & 0xff;
   }
 
-  // Invoke kernel
+  // Instantiate kernel
   Histo256 k;
+
+  // Use single block of threads
+  k.blockDim.x = SIMTLanes * SIMTWarps;
+
+  // Assign parameters
   k.len = N;
   k.input = input;
   k.bins = bins;
+
+  // Invoke kernel
   noclRunKernel(&k);
 
   // Display result

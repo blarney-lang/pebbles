@@ -16,8 +16,8 @@
 // Arrays should be aligned to support coalescing unit
 #define simt_aligned __attribute__ ((aligned (SIMTLanes * 4)))
 
-// For declaring data in shared local memory
-#define simt_local static __attribute__((section (".local_mem"))) volatile
+// Base address of shared local memory
+extern char __localBase;
 
 // Emit word to console (simulation only)
 INLINE void simtEmit(unsigned int x)
@@ -46,9 +46,16 @@ INLINE void simtGlobalMemFence()
 }
 
 // Terminate current warp; assumes all threads in warp have converged
-INLINE void simtWarpTerminate()
+INLINE void simtWarpTerminateSuccess()
 {
   uint32_t code = 3; // Successfull termination
+  asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
+}
+
+// Terminate current warp; assumes all threads in warp have converged
+INLINE void simtWarpTerminateFailure()
+{
+  uint32_t code = 1; // Unsuccessfull termination
   asm volatile("csrw " CSR_WrapCmd ", %0\n" : : "r"(code));
 }
 

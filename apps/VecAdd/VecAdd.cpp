@@ -1,5 +1,3 @@
-#include <cpu.h>
-#include <cpu/io.h>
 #include <nocl.h>
 
 // Kernel for adding vectors
@@ -10,7 +8,7 @@ struct VecAdd : Kernel {
   int* result;
 
   void kernel() {
-    for (int i = noclLocalId(); i < len; i += noclMaxGroupSize()) {
+    for (int i = threadIdx.x; i < len; i += blockDim.x) {
       result[i] = a[i] + b[i];
     }
   }
@@ -30,12 +28,19 @@ int main()
     b[i] = 2*i;
   }
 
-  // Invoke kernel
+  // Instantiate kernel
   VecAdd k;
+
+  // Use a single block of threads
+  k.blockDim.x = SIMTWarps * SIMTLanes;
+
+  // Assign parameters
   k.len = N;
   k.a = a;
   k.b = b;
   k.result = result;
+
+  // Invoke kernel
   noclRunKernel(&k);
 
   // Display result
