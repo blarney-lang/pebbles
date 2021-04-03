@@ -8,8 +8,8 @@ struct Histo256 : Kernel {
   int* bins;
 
   void kernel() {
-    // Allocate histogram bins in shared local memory
-    int* histo = shared.alloc<int>(256);
+    // Store histogram bins in shared local memory
+    int* histo = shared.array<int, 256>();
 
     // Initialise bins
     for (int i = threadIdx.x; i < 256; i += blockDim.x)

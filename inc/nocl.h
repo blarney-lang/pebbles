@@ -43,26 +43,88 @@ struct Dim3 {
   Dim3(unsigned xd, unsigned yd, unsigned zd) : x(xd), y(yd), z(zd) {};
 };
 
+// 1D arrays
+template <typename T> struct Array {
+  T* base;
+  unsigned size;
+  INLINE T& operator[](int index) const {
+    return base[index];
+  }
+};
+
+// 2D arrays
+template <typename T> struct Array2D {
+  T* base;
+  unsigned size0, size1;
+  INLINE const Array<T> operator[](int index) const {
+    Array<T> a; a.base = &base[index * size1]; a.size = size1; return a;
+  }
+};
+
+// 3D arrays
+template <typename T> struct Array3D {
+  T* base;
+  unsigned size0, size1, size2;
+  INLINE const Array2D<T> operator[](int index) const {
+    Array2D<T> a; a.base = &base[index * size1 * size2];
+    a.size0 = size1; a.size1 = size2; return a;
+  }
+};
+
 // For shared local memory allocation
-// Memory is allocated/freed in a stack-like fashion
+// Memory is allocated/released using a stack
 struct SharedLocalMem {
   // This points to the top of the stack (which grows upwards)
   char* top;
 
-  // Allocate memory on shared memory stack
-  template <typename T> T* alloc(unsigned numElems) {
-    T* base = (T*) top;
-    unsigned size = numElems * sizeof(T);
-    size += 4-(size&3);
-    top += size;
-    return base;
+  // Allocate memory on shared memory stack (static)
+  template <unsigned numBytes> void* alloc() {
+    void* ptr = (void*) top;
+    constexpr unsigned bytes =
+      (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
+    top += bytes;
+    return ptr;
   }
 
-  // Reclaim memory on shared memory stack
-  template <typename T> void release(unsigned numElems) {
-    unsigned size = numElems * sizeof(T);
-    size += 4-(size&3);
-    top -= size;
+  // Allocate memory on shared memory stack (dynamic)
+  void* alloc(unsigned numBytes) {
+    void* ptr = (void*) top;
+    unsigned bytes = (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
+    top += bytes;
+    return ptr;
+  }
+
+  // Allocate 1D array with static size
+  template <typename T, unsigned dim1> T* array() {
+    return (T*) alloc<dim1 * sizeof(T)>();
+  }
+
+  // Allocate 2D array with static size
+  template <typename T, unsigned dim1, unsigned dim2> auto array() {
+    return (T (*)[dim2]) alloc<dim1 * dim2 * sizeof(T)>();
+  }
+
+  // Allocate 3D array with static size
+  template <typename T, unsigned dim1,
+              unsigned dim2, unsigned dim3> auto array() {
+    return (T (*)[dim2][dim3]) alloc<dim1 * dim2 * dim3 * sizeof(T)>();
+  }
+
+  // Allocate 1D array with dynamic size
+  template <typename T> Array<T> array(int n) {
+    Array<T> a; a.base = (T*) alloc(n * sizeof(T));
+    a.size = n; return a;
+  }
+
+  // Allocate 2D array with dynamic size
+  template <typename T> Array2D<T> array(int n0, int n1) {
+    Array2D<T> a; a.base = (T*) alloc(n0 * n1 * sizeof(T));
+    a.size0 = n0; a.size1 = n1; return a;
+  }
+
+  template <typename T> Array3D<T> array(int n0, int n1, int n2) {
+    Array3D<T> a; a.base = (T*) alloc(n0 * n1 * n2 * sizeof(T));
+    a.size0 = n0; a.size1 = n1; a.size2 = n2; return a;
   }
 };
 
@@ -105,10 +167,10 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   // Set base of shared local memory (per block)
   unsigned localBytes = 4 << (SIMTLogLanes + SIMTLogWordsPerSRAMBank);
   unsigned localBytesPerBlock = localBytes / k.blocksPerSM;
-  k.shared.top = &__localBase + localBytesPerBlock * k.blockIdx.x;
 
   // Invoke kernel
   while (k.blockIdx.x < k.gridDim.x) {
+    k.shared.top = &__localBase + localBytesPerBlock * k.blockIdx.x;
     k.kernel();
     k.blockIdx.x += k.blocksPerSM;
     simtLocalBarrier();
