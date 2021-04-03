@@ -111,21 +111,22 @@ struct SharedLocalMem {
   }
 
   // Allocate 1D array with dynamic size
-  template <typename T> Array<T> array(int n) {
+  template <typename T> Array<T> array(unsigned n) {
     Array<T> a; a.base = (T*) alloc(n * sizeof(T));
     a.size = n; return a;
   }
 
   // Allocate 2D array with dynamic size
-  template <typename T> Array2D<T> array(int n0, int n1) {
+  template <typename T> Array2D<T> array(unsigned n0, unsigned n1) {
     Array2D<T> a; a.base = (T*) alloc(n0 * n1 * sizeof(T));
     a.size0 = n0; a.size1 = n1; return a;
   }
 
-  template <typename T> Array3D<T> array(int n0, int n1, int n2) {
-    Array3D<T> a; a.base = (T*) alloc(n0 * n1 * n2 * sizeof(T));
-    a.size0 = n0; a.size1 = n1; a.size2 = n2; return a;
-  }
+  template <typename T> Array3D<T>
+    array(unsigned n0, unsigned n1, unsigned n2) {
+      Array3D<T> a; a.base = (T*) alloc(n0 * n1 * n2 * sizeof(T));
+      a.size0 = n0; a.size1 = n1; a.size2 = n2; return a;
+    }
 };
 
 // Parameters that are available to any kernel
