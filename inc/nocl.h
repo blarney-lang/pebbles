@@ -158,13 +158,18 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
 
   // Block dimensions are all powers of two
   unsigned blockXMask = k.blockDim.x - 1;
+  unsigned blockYMask = k.blockDim.y - 1;
   unsigned blockXShift = log2floor(k.blockDim.x);
+  unsigned blockYShift = log2floor(k.blockDim.y);
 
   // Set thread index
   k.threadIdx.x = simtThreadId() & blockXMask;
+  k.threadIdx.y = (simtThreadId() >> blockXShift) & blockYMask;
+  k.threadIdx.z = 0;
 
   // Set initial block index
-  k.blockIdx.x = simtThreadId() >> blockXShift;
+  k.blockIdx.x = simtThreadId() >> (blockXShift + blockYShift);
+  k.blockIdx.y = 0;
 
   // Set base of shared local memory (per block)
   unsigned localBytes = 4 << (SIMTLogLanes + SIMTLogWordsPerSRAMBank);
@@ -202,13 +207,17 @@ template <typename K> __attribute__ ((noinline))
 // Trigger SIMT kernel execution from CPU
 template <typename K> __attribute__ ((noinline))
   int noclRunKernel(K* k) {
+    unsigned threadsPerBlock = k->blockDim.x * k->blockDim.y;
+
     // Constraints (some of which are simply limitations)
-    cpuAssert(isOneHot(k->blockDim.x),
-      "NoCL: blockDim.x is not a power of two");
-    cpuAssert(k->blockDim.x >= SIMTLanes,
-      "NoCL: blockDim.x is not a multiple of warp size");
-    cpuAssert(k->blockDim.x <= SIMTWarps * SIMTLanes,
-      "NoCL: blockDim.x is too large (exceeds SIMT thread count)");
+    cpuAssert(k->blockDim.z == 1,
+      "NoCL: blockDim.z != 1 (3D thread blocks not yet supported)");
+    cpuAssert(isOneHot(k->blockDim.x) && isOneHot(k->blockDim.y),
+      "NoCL: blockDim.x or blockDim.y is not a power of two");
+    cpuAssert(threadsPerBlock >= SIMTLanes,
+      "NoCL: threads-per-block is not a multiple of warp size");
+    cpuAssert(threadsPerBlock <= SIMTWarps * SIMTLanes,
+      "NoCL: threads-per-block is too large (exceeds SIMT thread count)");
 
     // Set number of warps per block
     // (for fine-grained barrier synchronisation)
@@ -217,9 +226,9 @@ template <typename K> __attribute__ ((noinline))
     cpuSIMTSetWarpsPerBlock(warpsPerBlock);
 
     // Set number of blocks per streaming multiprocessor
-    k->blocksPerSM = (SIMTWarps * SIMTLanes) / k->blockDim.x;
+    k->blocksPerSM = (SIMTWarps * SIMTLanes) / threadsPerBlock;
     cpuAssert((k->gridDim.x % k->blocksPerSM) == 0,
-      "NoCL: blocksPerSM not a multiple of number of blocks");
+      "NoCL: number of blocks is not a multiple of blocks-per-SM");
 
     // Set address of kernel closure
     uintptr_t kernelAddr = (uintptr_t) k;
