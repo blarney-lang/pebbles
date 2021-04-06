@@ -1,7 +1,7 @@
 #include <nocl.h>
 
 // Use loops to reduce the thread block size
-// (and hence the number of barrier synchronisations)
+// (and hence the amount of synchronisation)
 struct Transpose : Kernel {
   Array2D<int> in, out;
   
