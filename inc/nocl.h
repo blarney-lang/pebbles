@@ -7,6 +7,7 @@
 #include <cpu.h>
 #include <simt.h>
 #include <stdint.h>
+#include <atomics.h>
 
 // Alias some useful SIMT macros
 #define nocl_aligned simt_aligned

@@ -1,8 +1,7 @@
 #include <nocl.h>
-#include <atomics.h>
 
 // Kernel for computing 256-bin histograms
-struct Histo256 : Kernel {
+struct Histogram : Kernel {
   int len;
   unsigned char* input;
   int* bins;
@@ -44,7 +43,7 @@ int main()
   }
 
   // Instantiate kernel
-  Histo256 k;
+  Histogram k;
 
   // Use single block of threads
   k.blockDim.x = SIMTLanes * SIMTWarps;
