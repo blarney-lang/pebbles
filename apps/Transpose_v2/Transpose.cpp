@@ -1,26 +1,26 @@
 #include <nocl.h>
 
-// One thread per matrix element
-// Assumption: blockDim.x == blockDim.y
+// Use loops to reduce the thread block size
+// (and hence the number of barrier synchronisations)
 struct Transpose : Kernel {
   Array2D<int> in, out;
-
+  
   void kernel() {
-    Array2D<int> block = shared.array<int>(blockDim.y, blockDim.x + 1);
-
+    Array2D<int> block = shared.array<int>(blockDim.x, blockDim.x + 1);
+    
     // Origin of block within matrix
     unsigned originX = blockIdx.x * blockDim.x;
-    unsigned originY = blockIdx.y * blockDim.y;
-
-    // Load block
-    block[threadIdx.y][threadIdx.x] =
-      in[originY + threadIdx.y][originX + threadIdx.x];
-
+    unsigned originY = blockIdx.y * blockDim.x;
+    
+    // Load block 
+    for (unsigned y = threadIdx.y; y < blockDim.x; y += blockDim.y)
+      block[y][threadIdx.x] = in[originY + y][originX + threadIdx.x];
+    
     __syncthreads();
-
+    
     // Store block
-    out[originX + threadIdx.y][originY + threadIdx.x] =
-      block[threadIdx.x][threadIdx.y];
+    for (unsigned y = threadIdx.y; y < blockDim.x; y += blockDim.y)
+      out[originX + y][originY + threadIdx.x] = block[threadIdx.x][y];
   }
 };
 
@@ -44,14 +44,18 @@ int main()
       matIn[i][j] = j;
   }
 
+  // Number of loop iterations per block.  The number of iterations
+  // times the block Y dimension must equal the block X dimension.
+  const int itersPerBlock = 4;
+
   // Instantiate kernel
   Transpose k;
 
-  // One thread per matrix element
+  // Set block/grid dimensions
   k.blockDim.x = 32;
-  k.blockDim.y = 32;
+  k.blockDim.y = 32 / itersPerBlock;
   k.gridDim.x = width / k.blockDim.x;
-  k.gridDim.y = height / k.blockDim.y;
+  k.gridDim.y = height / (itersPerBlock * k.blockDim.y);
 
   // Assign parameters
   k.in = matIn;

@@ -6,3 +6,4 @@ clean:
 	make -C VecGCD clean
 	make -C Histogram clean
 	make -C Transpose_v1 clean
+	make -C Transpose_v2 clean
