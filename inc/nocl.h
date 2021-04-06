@@ -221,7 +221,7 @@ template <typename K> __attribute__ ((noinline))
 
     // Set number of warps per block
     // (for fine-grained barrier synchronisation)
-    unsigned warpsPerBlock = k->blockDim.x >> SIMTLogLanes;
+    unsigned warpsPerBlock = threadsPerBlock >> SIMTLogLanes;
     while (!cpuSIMTCanPut()) {}
     cpuSIMTSetWarpsPerBlock(warpsPerBlock);
 
