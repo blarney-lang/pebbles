@@ -48,6 +48,8 @@ struct Dim3 {
 template <typename T> struct Array {
   T* base;
   unsigned size;
+  Array() {}
+  Array(T* ptr, unsigned n) : base(ptr), size(n) {}
   INLINE T& operator[](int index) const {
     return base[index];
   }
@@ -57,6 +59,9 @@ template <typename T> struct Array {
 template <typename T> struct Array2D {
   T* base;
   unsigned size0, size1;
+  Array2D() {}
+  Array2D(T* ptr, unsigned n0, unsigned n1) :
+    base(ptr), size0(n0), size1(n1) {}
   INLINE const Array<T> operator[](int index) const {
     Array<T> a; a.base = &base[index * size1]; a.size = size1; return a;
   }
@@ -66,6 +71,9 @@ template <typename T> struct Array2D {
 template <typename T> struct Array3D {
   T* base;
   unsigned size0, size1, size2;
+  Array3D() {}
+  Array3D(T* ptr, unsigned n0, unsigned n1, unsigned n2) :
+    base(ptr), size0(n0), size1(n1), size2(n2) {}
   INLINE const Array2D<T> operator[](int index) const {
     Array2D<T> a; a.base = &base[index * size1 * size2];
     a.size0 = size1; a.size1 = size2; return a;
@@ -162,14 +170,14 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   unsigned blockXShift = log2floor(k.blockDim.x);
   unsigned blockYShift = log2floor(k.blockDim.y);
 
-
   // Set thread index
   k.threadIdx.x = simtThreadId() & blockXMask;
   k.threadIdx.y = (simtThreadId() >> blockXShift) & blockYMask;
   k.threadIdx.z = 0;
 
   // Set initial block index
-  k.blockIdx.x = simtThreadId() >> (blockXShift + blockYShift);
+  unsigned blockIdxWithinSM = simtThreadId() >> (blockXShift + blockYShift);
+  k.blockIdx.x = blockIdxWithinSM;
   k.blockIdx.y = 0;
 
   // Set base of shared local memory (per block)
@@ -179,12 +187,13 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   // Invoke kernel
   while (k.blockIdx.y < k.gridDim.y) {
     while (k.blockIdx.x < k.gridDim.x) {
-      k.shared.top = &__localBase + localBytesPerBlock * k.blockIdx.x;
+      k.shared.top = &__localBase + localBytesPerBlock * blockIdxWithinSM;
       k.kernel();
       k.blockIdx.x += k.blocksPerSM;
       simtLocalBarrier();
     }
     simtConverge();
+    k.blockIdx.x = blockIdxWithinSM;
     k.blockIdx.y++;
   }
 
