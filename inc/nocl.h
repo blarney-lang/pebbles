@@ -162,6 +162,7 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   unsigned blockXShift = log2floor(k.blockDim.x);
   unsigned blockYShift = log2floor(k.blockDim.y);
 
+
   // Set thread index
   k.threadIdx.x = simtThreadId() & blockXMask;
   k.threadIdx.y = (simtThreadId() >> blockXShift) & blockYMask;
@@ -176,11 +177,15 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   unsigned localBytesPerBlock = localBytes / k.blocksPerSM;
 
   // Invoke kernel
-  while (k.blockIdx.x < k.gridDim.x) {
-    k.shared.top = &__localBase + localBytesPerBlock * k.blockIdx.x;
-    k.kernel();
-    k.blockIdx.x += k.blocksPerSM;
-    simtLocalBarrier();
+  while (k.blockIdx.y < k.gridDim.y) {
+    while (k.blockIdx.x < k.gridDim.x) {
+      k.shared.top = &__localBase + localBytesPerBlock * k.blockIdx.x;
+      k.kernel();
+      k.blockIdx.x += k.blocksPerSM;
+      simtLocalBarrier();
+    }
+    simtConverge();
+    k.blockIdx.y++;
   }
 
   // Issue a fence ensure all data has reached DRAM
@@ -212,12 +217,14 @@ template <typename K> __attribute__ ((noinline))
     // Constraints (some of which are simply limitations)
     cpuAssert(k->blockDim.z == 1,
       "NoCL: blockDim.z != 1 (3D thread blocks not yet supported)");
+    cpuAssert(k->gridDim.z == 1,
+      "NoCL: gridDim.z != 1 (3D grids not yet supported)");
     cpuAssert(isOneHot(k->blockDim.x) && isOneHot(k->blockDim.y),
       "NoCL: blockDim.x or blockDim.y is not a power of two");
     cpuAssert(threadsPerBlock >= SIMTLanes,
-      "NoCL: threads-per-block is not a multiple of warp size");
+      "NoCL: warp size does not divide evenly into block size");
     cpuAssert(threadsPerBlock <= SIMTWarps * SIMTLanes,
-      "NoCL: threads-per-block is too large (exceeds SIMT thread count)");
+      "NoCL: block size is too large (exceeds SIMT thread count)");
 
     // Set number of warps per block
     // (for fine-grained barrier synchronisation)
@@ -228,7 +235,7 @@ template <typename K> __attribute__ ((noinline))
     // Set number of blocks per streaming multiprocessor
     k->blocksPerSM = (SIMTWarps * SIMTLanes) / threadsPerBlock;
     cpuAssert((k->gridDim.x % k->blocksPerSM) == 0,
-      "NoCL: number of blocks is not a multiple of blocks-per-SM");
+      "NoCL: blocks-per-SM does not divide evenly into grid width");
 
     // Set address of kernel closure
     uintptr_t kernelAddr = (uintptr_t) k;
