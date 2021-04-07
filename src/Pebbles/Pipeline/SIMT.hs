@@ -42,6 +42,7 @@ import Blarney.Queue
 import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
+import Blarney.Interconnect
 
 -- General imports
 import Data.List
@@ -99,16 +100,6 @@ data SIMTPipelineOuts =
     , simtKernelAddr :: Bit 32
   }
 
--- | Format of a start pipeline command
-data StartCmd pc =
-  StartCmd {
-    start :: Bit 1
-    -- ^ Trigger to start the pipeline
-  , initialPC :: Option pc
-    -- ^ Set initial PCs? (Or leave PCs as they are, e.g. for barrier release)
-  }
-  deriving (Generic, Bits)
-
 -- | Per-thread state
 data SIMTThreadState t_logInstrs t_logMaxCallDepth =
   SIMTThreadState {
@@ -130,9 +121,10 @@ makeSIMTPipeline :: Tag tag =>
 makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
+  liftNat (2 ^ c.logNumWarps) \(_ :: Proxy t_numWarps) ->
   liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) ->
-  liftNat (c.logMaxCallDepth) \(_ :: Proxy t_logMaxCallDepth) ->
-  liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) -> do
+  liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) ->
+  liftNat (c.logMaxCallDepth) \(_ :: Proxy t_logMaxCallDepth) -> do
 
     -- Sanity check
     staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
@@ -171,6 +163,9 @@ makeSIMTPipeline c inputs =
       replicateM warpSize makeDualRAM
     regFilesB :: [RAM (Bit t_logWarps, RegId) (Bit 32)] <-
       replicateM warpSize makeDualRAM
+
+    -- Barrier bit for each warp
+    barrierBits :: [Reg (Bit 1)] <- replicateM numWarps (makeReg 0)
 
     -- Trigger for each stage
     go1 :: Reg (Bit 1) <- makeDReg false
@@ -216,15 +211,11 @@ makeSIMTPipeline c inputs =
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
-    -- Number of warps in a synchronisation barrier
-    syncCount :: Reg (Bit t_logWarps) <- makeReg 0
-
     -- Pipeline Initialisation
     -- =======================
 
     -- Register to trigger pipeline initialisation at some PC
-    startReg :: Reg (StartCmd (Bit t_logInstrs)) <-
-      makeReg (dontCare { start = false })
+    startReg :: Reg (Option (Bit t_logInstrs)) <- makeReg none
 
     -- Warp id counter, to initialise PC of each thread
     warpIdCounter :: Reg (Bit t_logWarps) <- makeReg 0
@@ -233,18 +224,17 @@ makeSIMTPipeline c inputs =
     pipelineActive :: Reg (Bit 1) <- makeReg false
 
     always do
+      let start = startReg.val
       -- When start register is valid, perform initialisation
-      when (startReg.val.start .&. kernelRespQueue.notFull) do
-        let pc = startReg.val.initialPC
+      when (start.valid .&. kernelRespQueue.notFull) do
         -- Write PC to each thread of warp
         let initState =
               SIMTThreadState {
-                simtPC = pc.val
+                simtPC = start.val
               , simtCallDepth = ones
               }
-        when (pc.valid) do
-          sequence_ [ store stateMem (warpIdCounter.val) initState
-                    | stateMem <- stateMems ]
+        sequence_ [ store stateMem (warpIdCounter.val) initState
+                  | stateMem <- stateMems ]
 
         -- Insert into warp queue
         dynamicAssert (warpQueue.notFull)
@@ -252,9 +242,9 @@ makeSIMTPipeline c inputs =
         enq warpQueue (warpIdCounter.val)
 
         -- Finish initialisation and activate pipeline
-        if (completedWarps.val + warpIdCounter.val) .==. ones
+        if warpIdCounter.val .==. ones
           then do
-            startReg <== dontCare { start = false }
+            startReg <== none
             pipelineActive <== true
             warpIdCounter <== 0
           else
@@ -263,17 +253,29 @@ makeSIMTPipeline c inputs =
     -- Stage 0: Warp Scheduling
     -- ========================
 
+    -- Queue of warps that have left a barrier (half throughput)
+    releaseQueue :: Queue (Bit t_logWarps) <-
+      makeSizedQueueConfig
+        SizedQueueConfig {
+          sizedQueueLogSize = c.logNumWarps
+        , sizedQueueBuffer = makeShiftQueue 1
+        }
+
+    -- Stream of warps to schedule next
+    warpStream <- makeGenericFairMergeTwo (makePipelineQueue 1) (const true)
+                    (toStream releaseQueue, toStream warpQueue)
+
     always do
       -- Load state for next warp on each lane
       forM_ stateMems \stateMem -> do
-        load stateMem (warpQueue.first)
+        load stateMem (warpStream.peek)
 
       -- Buffer warp id for stage 1
-      warpId1 <== warpQueue.first
+      warpId1 <== warpStream.peek
 
       -- Trigger stage 1
-      when (warpQueue.canDeq .&. pipelineActive.val) do
-        warpQueue.deq
+      when (warpStream.canPeek .&&. pipelineActive.val) do
+        warpStream.consume
         go1 <== true
 
     -- Stage 1: Active Thread Selection
@@ -375,39 +377,32 @@ makeSIMTPipeline c inputs =
       when (go5.val) do
         if inputs.simtWarpCmdWire.active
           then do
-            -- Is it a termination or barrier command?
-            let isTerm = inputs.simtWarpCmdWire.val.warpCmd_isTerminate
-            -- Handle termination command
-            when isTerm do
-              -- We assume that a terminating warp has converged
-              dynamicAssert (activeMask5.val .==. ones)
-                "SIMT pipeline: warp command issued by diverged warp"
-              completedWarps <== completedWarps.val + 1
-            -- Have all warps have terminated?
-            if completedWarps.val .==. ones
+            -- We assume that warp has converged
+            dynamicAssert (activeMask5.val .==. ones)
+              "SIMT pipeline: warp command issued by diverged warp"
+            -- Handle command
+            if inputs.simtWarpCmdWire.val.warpCmd_isTerminate
               then do
-                -- Issue kernel response to CPU
-                dynamicAssert (kernelRespQueue.notFull)
-                  "SIMT pipeline: can't issue kernel response"
-                enq kernelRespQueue (kernelSuccess.val)
-                -- Re-enter initial state
-                pipelineActive <== false
-                kernelSuccess <== true
-                syncCount <== 0
-              else do
+                completedWarps <== completedWarps.val + 1
                 -- Track kernel success
-                when isTerm do
-                  kernelSuccess <== kernelSuccess.val .&.
-                    inputs.simtWarpCmdWire.val.warpCmd_termCode
-                -- Check for barrier completion
-                if syncCount.val .==. ones
+                let success = kernelSuccess.val .&.
+                      inputs.simtWarpCmdWire.val.warpCmd_termCode
+                -- Have all warps have terminated?
+                if completedWarps.val .==. ones
                   then do
-                    -- Barrier release
-                    syncCount <== completedWarps.val
+                    -- Issue kernel response to CPU
+                    dynamicAssert (kernelRespQueue.notFull)
+                      "SIMT pipeline: can't issue kernel response"
+                    enq kernelRespQueue success
+                    -- Re-enter initial state
                     pipelineActive <== false
-                    startReg <== StartCmd { start = true, initialPC = none } 
+                    kernelSuccess <== true
                   else do
-                    syncCount <== syncCount.val + 1
+                    -- Update kernel success
+                    kernelSuccess <== success
+              else do
+                -- Enter barrier
+                barrierBits!(warpId5.val) <== true
           else do
             -- Not a SIMT command, so reschedule
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
@@ -460,7 +455,6 @@ makeSIMTPipeline c inputs =
                 let dec = decCallDepth.zeroExtendCast
                 dynamicAssert (state5.val.simtCallDepth .!=. 0)
                   "SIMT pipeliene: call depth overflow"
-                -- Update thread state
                 store stateMem (warpId5.val)
                   SIMTThreadState {
                       simtPC = pcNextWire.val
@@ -502,6 +496,30 @@ makeSIMTPipeline c inputs =
                <*> ZipList (inputs.simtIncCallDepth)
                <*> ZipList (inputs.simtDecCallDepth)
 
+    -- Handle barrier release
+    -- ======================
+
+    -- Warps per block (a block is a group of threads that synchronise
+    -- on a barrier). A value of zero indicates all warps.
+    warpsPerBlock :: Reg (Bit t_logWarps) <- makeReg 0
+
+    -- Mask that identifies a block of threads
+    barrierMask :: Reg (Bit t_numWarps) <- makeReg ones
+
+    makeBarrierReleaseUnit
+      BarrierReleaseIns {
+        relWarpsPerBlock = warpsPerBlock.val
+      , relBarrierMask = barrierMask.val
+      , relBarrierVec = fromBitList (map val barrierBits)
+      , relAction = \warpId -> do
+          -- Clear barrier bit
+          barrierBits!warpId <== false
+          -- Insert back into warp queue
+          dynamicAssert (releaseQueue.notFull)
+            "SIMT release queue overflow"
+          enq releaseQueue warpId
+      }
+
     -- Handle management requests
     -- ==========================
 
@@ -512,7 +530,7 @@ makeSIMTPipeline c inputs =
       when (inputs.simtMgmtReqs.canPeek) do
         let req = inputs.simtMgmtReqs.peek
         -- Is pipeline busy?
-        let busy = startReg.val.start .|. pipelineActive.val
+        let busy = startReg.val.valid .|. pipelineActive.val
         -- Write instruction
         when (req.simtReqCmd .==. simtCmd_WriteInstr) do
           dynamicAssert (busy.inv)
@@ -522,12 +540,17 @@ makeSIMTPipeline c inputs =
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
           when (busy.inv) do
-            startReg <== StartCmd {
-                           start = true
-                         , initialPC = some (req.simtReqAddr.fromPC)
-                         }
+            startReg <== some (req.simtReqAddr.fromPC)
             kernelAddrReg <== req.simtReqData
             inputs.simtMgmtReqs.consume
+        -- Set warps per block
+        when (req.simtReqCmd .==. simtCmd_SetWarpsPerBlock) do
+          dynamicAssert (busy.inv)
+            "SIMT pipeline: setting warps per block while pipeline busy"
+          let n :: Bit t_logWarps = req.simtReqData.truncateCast
+          warpsPerBlock <== n
+          barrierMask <== n .==. 0 ? (ones, (1 .<<. n) - 1)
+          inputs.simtMgmtReqs.consume
 
     -- Pipeline outputs
     return
@@ -536,3 +559,80 @@ makeSIMTPipeline c inputs =
       , simtCurrentWarpId = warpId5.val.zeroExtendCast
       , simtKernelAddr = kernelAddrReg.val
       }
+
+-- Barrier release unit
+-- ====================
+
+-- This logic looks for threads in a block that have all entered a
+-- barrier, and then releases them.
+
+-- | Inputs to barrier release unit
+data BarrierReleaseIns t_logWarps t_numWarps =
+  BarrierReleaseIns {
+    relWarpsPerBlock :: Bit t_logWarps
+    -- ^ Number of warps per block of synchronising threads
+  , relBarrierMask :: Bit t_numWarps
+    -- ^ Mask that identifies a block of threads
+  , relBarrierVec :: Bit t_numWarps
+    -- ^ Bit vector denoting warps currently in barrier
+  , relAction :: Bit t_logWarps -> Action ()
+    -- ^ Action to perform on a release
+  }
+
+-- | Barrier release unit
+makeBarrierReleaseUnit ::
+  (KnownNat t_logWarps, KnownNat t_numWarps) =>
+    BarrierReleaseIns t_logWarps t_numWarps -> Module ()
+makeBarrierReleaseUnit ins = do
+  -- Mask that identifies a block of threads
+  barrierMask :: Reg (Bit t_numWarps) <- makeReg ones
+
+  -- Shift register for barrier release logic
+  barrierShiftReg :: Reg (Bit t_numWarps) <- makeReg dontCare
+
+  -- For release state machine
+  releaseState :: Reg (Bit 2) <- makeReg 0
+
+  -- Warp counters for release logic
+  releaseWarpId :: Reg (Bit t_logWarps) <- makeReg dontCare
+  releaseWarpCount :: Reg (Bit t_logWarps) <- makeReg dontCare
+
+  -- Is the current block of threads ready for release?
+  releaseSuccess :: Reg (Bit 1) <- makeReg false
+
+  -- Barrier release state machine
+  always do
+    -- Load barrier bits into shift register
+    when (releaseState.val .==. 0) do
+      -- Load barrier bits into shift register
+      barrierShiftReg <== ins.relBarrierVec
+      -- Intialise warp id (for iterating over all warps)
+      releaseWarpId <== 0
+      -- Enter shift state
+      releaseState <== 1
+
+    -- Check if head block has synced
+    when (releaseState.val .==. 1) do
+      -- Have all warps in the block entered the barrier?
+      releaseSuccess <==
+        (barrierShiftReg.val .&. ins.relBarrierMask) .==. ins.relBarrierMask
+      -- Initialise warp count (for iterating over warps in a block)
+      releaseWarpCount <== 1
+      -- Move to next state
+      if barrierShiftReg.val .==. 0
+        then do releaseState <== 0
+        else do releaseState <== 2
+
+    -- Shift and release
+    when (releaseState.val .==. 2) do
+      -- Release warp
+      when (releaseSuccess.val) do
+        relAction ins (releaseWarpId.val)
+      -- Shift
+      barrierShiftReg <== barrierShiftReg.val .>>. (1 :: Bit 1)
+      -- Move to next warp
+      releaseWarpId <== releaseWarpId.val + 1
+      releaseWarpCount <== releaseWarpCount.val + 1
+      -- Move back to state 1 when finished with block
+      when (releaseWarpCount.val .==. ins.relWarpsPerBlock) do
+        releaseState <== 1

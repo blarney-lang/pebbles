@@ -10,17 +10,18 @@ import Blarney.Stream
 import Pebbles.CSRs.CSRUnit
 import Pebbles.Pipeline.SIMT.Management
 
--- +------------------+---------+--------+-----------------------------------+
--- | CSR              | Address | Access | Description                       |
--- +------------------+---------+--------+-----------------------------------+
--- | SIMTCanPut       |   0x820 | R      | Can issue SIMT request?           |
--- | SIMTInstrAddr    |   0x821 | W      | Set instruction mem address       |
--- | SIMTWriteInstr   |   0x822 | W      | Write to instruction mem          |
--- | SIMTStartKernel  |   0x823 | W      | Start all warps with given PC     |
--- | SIMTCanGet       |   0x824 | R      | Can get SIMT response?            |
--- | SIMTGet          |   0x825 | R      | Get SIMT response                 |
--- | SIMTSetKernel    |   0x826 | W      | Set address of kernel closure     |
--- +------------------+---------+--------+-----------------------------------+
+-- +----------------------+---------+--------+-------------------------------+
+-- | CSR                  | Address | Access | Description                   |
+-- +----------------------+---------+--------+-------------------------------+
+-- | SIMTCanPut           |   0x820 | R      | Can issue SIMT request?       |
+-- | SIMTInstrAddr        |   0x821 | W      | Set instruction mem address   |
+-- | SIMTWriteInstr       |   0x822 | W      | Write to instruction mem      |
+-- | SIMTStartKernel      |   0x823 | W      | Start all warps with given PC |
+-- | SIMTCanGet           |   0x824 | R      | Can get SIMT response?        |
+-- | SIMTGet              |   0x825 | R      | Get SIMT response             |
+-- | SIMTSetKernel        |   0x826 | W      | Set address of kernel closure |
+-- | SIMTSetWarpsPerBlock |   0x827 | W      | Set num of warps per block    |
+-- +----------------------+---------+--------+-------------------------------+
 
 -- Notes: SIMTWriteInstr and SIMTStartKernel must only be accessed if
 -- SIMTCanPut is true.  Similarly, SIMTGet must only be accessed if
@@ -76,7 +77,7 @@ makeCSRs_SIMTHost resps = do
                 }
         }
 
-  -- Write to instruction memory
+  -- Start kernel execution at given PC
   let csr_SIMTStartKernel =
         CSR {
           csrId = 0x823
@@ -121,6 +122,21 @@ makeCSRs_SIMTHost resps = do
             kernelAddrReg <== x
         }
 
+  -- Set warps per block
+  let csr_SIMTSetWarpsPerBlock =
+        CSR {
+          csrId = 0x827
+        , csrRead = Nothing
+        , csrWrite = Just \x -> do
+            dynamicAssert (reqs.notFull)
+              "SIMTSetWarpsPerBlock CSR: SIMTCanPut not checked"
+            enq reqs
+              SIMTReq {
+                simtReqCmd  = simtCmd_SetWarpsPerBlock
+              , simtReqAddr = dontCare
+              , simtReqData = x
+              }
+        }
 
   let csrs =
         [ csr_SIMTCanPut
@@ -130,6 +146,7 @@ makeCSRs_SIMTHost resps = do
         , csr_SIMTCanGet
         , csr_SIMTGet
         , csr_SIMTSetKernel
+        , csr_SIMTSetWarpsPerBlock
         ]
 
   return (reqs.toStream, csrs)

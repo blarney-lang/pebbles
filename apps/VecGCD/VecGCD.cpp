@@ -1,36 +1,35 @@
 #include <nocl.h>
 #include <rand.h>
-#include <cpu/io.h>
+
+// Euclid's algorithm
+int gcd(int x, int y) {
+  while (x != y) {
+    if (x > y)
+      x = x-y;
+    else
+      y = y-x;
+
+    simtConverge();
+  }
+  return x;
+}
 
 // Euclid's algorithm on vectors
 struct VecGCD : Kernel {
   int len;
-  int* a;
-  int* b;
-  int* result;
+  int *a, *b, *result;
 
   void kernel() {
-    for (int i = noclLocalId(); i < len; i += noclMaxGroupSize()) {
-      int x = a[i];
-      int y = b[i];
-      while (x != y) {
-        if (x > y) 
-          x = x-y;
-        else
-          y = y-x;
-
-        simtConverge();
-      }
-      result[i] = x;
-    }
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
+      result[i] = gcd(a[i], b[i]);
   }
 };
 
-// Vector size for benchmarking
-#define N 100
-
 int main()
 {
+  // Vector size for benchmarking
+  int N = 100;
+
   // Input and output vectors
   simt_aligned int a[N], b[N], result[N];
 
@@ -41,16 +40,30 @@ int main()
     b[i] = 1 + (rand(&seed) & 0xff);
   }
 
-  // Invoke kernel
+  // Instantiate kernel
   VecGCD k;
+
+  // Use single block of threads
+  k.blockDim.x = SIMTLanes * SIMTWarps;
+
+  // Assign parameters
   k.len = N;
   k.a = a;
   k.b = b;
   k.result = result;
+
+  // Invoke kernel
   noclRunKernel(&k);
 
+  // Check result
+  bool ok = true;
+  for (int i = 0; i < N; i++)
+    ok = ok && result[i] == gcd(a[i], b[i]);
+
   // Display result
-  for (int i = 0; i < N; i++) printf("%x\n", result[i]);
+  puts("Self test: ");
+  puts(ok ? "PASSED" : "FAILED");
+  putchar('\n');
 
   return 0;
 }

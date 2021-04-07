@@ -6,13 +6,16 @@ module Pebbles.Pipeline.SIMT.Management where
 import Blarney
 
 -- | SIMT pipeline management commands
-type SIMTCmd = Bit 1
+type SIMTCmd = Bit 2
 
 -- | Write to tightly-coupled instruction memory
 simtCmd_WriteInstr :: SIMTCmd = 0
 
 -- | Start all warps with a given PC
 simtCmd_StartPipeline :: SIMTCmd = 1
+
+-- | Set number of warps per block
+simtCmd_SetWarpsPerBlock :: SIMTCmd = 2
 
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =

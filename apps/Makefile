@@ -4,4 +4,5 @@ clean:
 	make -C TestSuite clean
 	make -C VecAdd clean
 	make -C VecGCD clean
-	make -C Histo clean
+	make -C Histogram clean
+	make -C Transpose clean

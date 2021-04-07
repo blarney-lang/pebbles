@@ -19,8 +19,6 @@ MEMORY
   /* Define max length of boot loader */
   instrs : ORIGIN = MaxBootImageBytes, LENGTH = IMEM_LENGTH
   globals : ORIGIN = DMEM_BASE, LENGTH = 1 << 20
-  local : ORIGIN = __localBase, \
-    LENGTH = 1 << (SIMTLogLanes + SIMTLogWordsPerSRAMBank+2)
 }
 
 SECTIONS
@@ -35,5 +33,4 @@ SECTIONS
   .sdata  : { *.o(.sdata*) }            > globals
   .data   : { *.o(.data*) }             > globals
   __heapBase = ALIGN(.);
-  .local_mem (NOLOAD) : { *(.local_mem*) }  > local
 }
