@@ -22,7 +22,7 @@ struct Reduce : Kernel {
       __syncthreads();
     }
 
-    // write result for this block to global mem 
+    // Write sum to global memory
     if (threadIdx.x == 0) *sum = block[0];
   }
 };
