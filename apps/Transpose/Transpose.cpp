@@ -1,26 +1,26 @@
 #include <nocl.h>
 
-// Use loops to reduce the thread block size
-// (and hence the number of barrier synchronisations)
+// Kernel for matrix transposition
+// One sub-square at a time
 struct Transpose : Kernel {
   Array2D<int> in, out;
   
   void kernel() {
-    Array2D<int> block = shared.array<int>(blockDim.x, blockDim.x + 1);
+    Array2D<int> square = shared.array<int>(blockDim.x, blockDim.x + 1);
     
-    // Origin of block within matrix
-    unsigned originX = blockIdx.x * blockDim.x;
-    unsigned originY = blockIdx.y * blockDim.x;
+    // Origin of square within matrix
+    int originX = blockIdx.x * blockDim.x;
+    int originY = blockIdx.y * blockDim.x;
     
-    // Load block 
-    for (unsigned y = threadIdx.y; y < blockDim.x; y += blockDim.y)
-      block[y][threadIdx.x] = in[originY + y][originX + threadIdx.x];
+    // Load square
+    for (int y = threadIdx.y; y < blockDim.x; y += blockDim.y)
+      square[y][threadIdx.x] = in[originY + y][originX + threadIdx.x];
     
     __syncthreads();
     
-    // Store block
-    for (unsigned y = threadIdx.y; y < blockDim.x; y += blockDim.y)
-      out[originX + y][originY + threadIdx.x] = block[threadIdx.x][y];
+    // Store square
+    for (int y = threadIdx.y; y < blockDim.x; y += blockDim.y)
+      out[originX + y][originY + threadIdx.x] = square[threadIdx.x][y];
   }
 };
 
@@ -39,10 +39,9 @@ int main()
   Array2D<int> matOut(matOutData, width, height);
 
   // Initialise inputs
-  for (int i = 0; i < height; i++) {
+  for (int i = 0; i < height; i++)
     for (int j = 0; j < width; j++)
       matIn[i][j] = j;
-  }
 
   // Number of loop iterations per block.  The number of iterations
   // times the block Y dimension must equal the block X dimension.
@@ -52,8 +51,8 @@ int main()
   Transpose k;
 
   // Set block/grid dimensions
-  k.blockDim.x = 32;
-  k.blockDim.y = 32 / itersPerBlock;
+  k.blockDim.x = SIMTLanes;
+  k.blockDim.y = SIMTLanes / itersPerBlock;
   k.gridDim.x = width / k.blockDim.x;
   k.gridDim.y = height / (itersPerBlock * k.blockDim.y);
 
@@ -64,12 +63,16 @@ int main()
   // Invoke kernel
   noclRunKernel(&k);
 
-  // Display result
-  for (int i = 0; i < width; i++) {
+  // Check result
+  bool ok = true;
+  for (int i = 0; i < width; i++)
     for (int j = 0; j < height; j++)
-      printf("%x ", matOut[i][j]);
-    printf("\n");
-  }
+      ok = ok && matOut[i][j] == i;
+
+  // Display result
+  puts("Self test: ");
+  puts(ok ? "PASSED" : "FAILED");
+  putchar('\n');
 
   return 0;
 }

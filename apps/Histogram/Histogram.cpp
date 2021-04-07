@@ -28,19 +28,19 @@ struct Histogram : Kernel {
   }
 };
 
-// Vector size for benchmarking
-#define N 3000
 
 int main()
 {
+  // Vector size for benchmarking
+  int N = 3000;
+
   // Input and output vectors
   nocl_aligned unsigned char input[N];
   nocl_aligned int bins[256];
 
   // Initialise inputs
-  for (int i = 0; i < N; i++) {
+  for (int i = 0; i < N; i++)
     input[i] = i & 0xff;
-  }
 
   // Instantiate kernel
   Histogram k;
@@ -56,8 +56,15 @@ int main()
   // Invoke kernel
   noclRunKernel(&k);
 
+  // Check result
+  bool ok = true;
+  for (int i = 0; i < 256; i++)
+    ok = ok && bins[i] == (N>>8) + (i < (N&0xff) ? 1 : 0);
+
   // Display result
-  for (int i = 0; i < 256; i++) printf("%x\n", bins[i]);
+  puts("Self test: ");
+  puts(ok ? "PASSED" : "FAILED");
+  putchar('\n');
 
   return 0;
 }

@@ -3,22 +3,19 @@
 // Kernel for adding vectors
 struct VecAdd : Kernel {
   int len;
-  int* a;
-  int* b;
-  int* result;
+  int *a, *b, *result;
 
   void kernel() {
-    for (int i = threadIdx.x; i < len; i += blockDim.x) {
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
       result[i] = a[i] + b[i];
-    }
   }
 };
 
-// Vector size for benchmarking
-#define N 3000
-
 int main()
 {
+  // Vector size for benchmarking
+  int N = 3000;
+
   // Input and output vectors
   simt_aligned int a[N], b[N], result[N];
 
@@ -43,10 +40,14 @@ int main()
   // Invoke kernel
   noclRunKernel(&k);
 
+  // Check result
+  bool ok = true;
+  for (int i = 0; i < N; i++) ok = ok && result[i] == 3*i;
+
   // Display result
-  int sum = 0;
-  for (int i = 0; i < N; i++) sum += result[i];
-  printf("%x\n", sum);
+  puts("Self test: ");
+  puts(ok ? "PASSED" : "FAILED");
+  putchar('\n');
 
   return 0;
 }

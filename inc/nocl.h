@@ -37,19 +37,19 @@ inline unsigned log2floor(unsigned x) {
 
 // Dimensions
 struct Dim3 {
-  unsigned x, y, z;
+  int x, y, z;
   Dim3() : x(1), y(1), z(1) {};
-  Dim3(unsigned xd) : x(xd), y(1), z(1) {};
-  Dim3(unsigned xd, unsigned yd) : x(xd), y(yd), z(1) {};
-  Dim3(unsigned xd, unsigned yd, unsigned zd) : x(xd), y(yd), z(zd) {};
+  Dim3(int xd) : x(xd), y(1), z(1) {};
+  Dim3(int xd, int yd) : x(xd), y(yd), z(1) {};
+  Dim3(int xd, int yd, int zd) : x(xd), y(yd), z(zd) {};
 };
 
 // 1D arrays
 template <typename T> struct Array {
   T* base;
-  unsigned size;
+  int size;
   Array() {}
-  Array(T* ptr, unsigned n) : base(ptr), size(n) {}
+  Array(T* ptr, int n) : base(ptr), size(n) {}
   INLINE T& operator[](int index) const {
     return base[index];
   }
@@ -58,9 +58,9 @@ template <typename T> struct Array {
 // 2D arrays
 template <typename T> struct Array2D {
   T* base;
-  unsigned size0, size1;
+  int size0, size1;
   Array2D() {}
-  Array2D(T* ptr, unsigned n0, unsigned n1) :
+  Array2D(T* ptr, int n0, int n1) :
     base(ptr), size0(n0), size1(n1) {}
   INLINE const Array<T> operator[](int index) const {
     Array<T> a; a.base = &base[index * size1]; a.size = size1; return a;
@@ -70,9 +70,9 @@ template <typename T> struct Array2D {
 // 3D arrays
 template <typename T> struct Array3D {
   T* base;
-  unsigned size0, size1, size2;
+  int size0, size1, size2;
   Array3D() {}
-  Array3D(T* ptr, unsigned n0, unsigned n1, unsigned n2) :
+  Array3D(T* ptr, int n0, int n1, int n2) :
     base(ptr), size0(n0), size1(n1), size2(n2) {}
   INLINE const Array2D<T> operator[](int index) const {
     Array2D<T> a; a.base = &base[index * size1 * size2];
@@ -87,52 +87,51 @@ struct SharedLocalMem {
   char* top;
 
   // Allocate memory on shared memory stack (static)
-  template <unsigned numBytes> void* alloc() {
+  template <int numBytes> void* alloc() {
     void* ptr = (void*) top;
-    constexpr unsigned bytes =
+    constexpr int bytes =
       (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
     top += bytes;
     return ptr;
   }
 
   // Allocate memory on shared memory stack (dynamic)
-  void* alloc(unsigned numBytes) {
+  void* alloc(int numBytes) {
     void* ptr = (void*) top;
-    unsigned bytes = (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
+    int bytes = (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
     top += bytes;
     return ptr;
   }
 
   // Allocate 1D array with static size
-  template <typename T, unsigned dim1> T* array() {
+  template <typename T, int dim1> T* array() {
     return (T*) alloc<dim1 * sizeof(T)>();
   }
 
   // Allocate 2D array with static size
-  template <typename T, unsigned dim1, unsigned dim2> auto array() {
+  template <typename T, int dim1, int dim2> auto array() {
     return (T (*)[dim2]) alloc<dim1 * dim2 * sizeof(T)>();
   }
 
   // Allocate 3D array with static size
-  template <typename T, unsigned dim1,
-              unsigned dim2, unsigned dim3> auto array() {
+  template <typename T, int dim1, int dim2, int dim3> auto array() {
     return (T (*)[dim2][dim3]) alloc<dim1 * dim2 * dim3 * sizeof(T)>();
   }
 
   // Allocate 1D array with dynamic size
-  template <typename T> Array<T> array(unsigned n) {
+  template <typename T> Array<T> array(int n) {
     Array<T> a; a.base = (T*) alloc(n * sizeof(T));
     a.size = n; return a;
   }
 
   // Allocate 2D array with dynamic size
-  template <typename T> Array2D<T> array(unsigned n0, unsigned n1) {
+  template <typename T> Array2D<T> array(int n0, int n1) {
     Array2D<T> a; a.base = (T*) alloc(n0 * n1 * sizeof(T));
     a.size0 = n0; a.size1 = n1; return a;
   }
 
   template <typename T> Array3D<T>
-    array(unsigned n0, unsigned n1, unsigned n2) {
+    array(int n0, int n1, int n2) {
       Array3D<T> a; a.base = (T*) alloc(n0 * n1 * n2 * sizeof(T));
       a.size0 = n0; a.size1 = n1; a.size2 = n2; return a;
     }
