@@ -62,7 +62,7 @@ INLINE void simtWarpTerminateFailure()
 // Barrier synchonrisation; assumes all threads in warp have converged
 INLINE void simtLocalBarrier()
 {
-  asm volatile("csrw " CSR_WrapCmd ", zero\n");
+  asm volatile("csrw " CSR_WrapCmd ", zero\n" : : : "memory");
   simtLocalMemFence();
 }
 
