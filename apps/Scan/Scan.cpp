@@ -8,8 +8,8 @@ struct Scan : Kernel {
 
   void kernel() {
     // Shared arrays
-    Array<int> tempIn = shared.array<int>(blockDim.x);
-    Array<int> tempOut = shared.array<int>(blockDim.x);
+    int* tempIn = shared.alloc<int>(blockDim.x);
+    int* tempOut = shared.alloc<int>(blockDim.x);
 
     // Shorthand for local thread id
     int t = threadIdx.x;

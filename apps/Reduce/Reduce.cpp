@@ -2,15 +2,15 @@
 
 // Kernel for vector summation
 struct Reduce : Kernel {
-  Array<int> in;
-  int* sum;
+  int len;
+  int *in, *sum;
   
   void kernel() {
-    Array<int> block = shared.array<int>(blockDim.x);
+    int* block = shared.alloc<int>(blockDim.x);
 
     // Sum global memory
     block[threadIdx.x] = 0;
-    for (int i = threadIdx.x; i < in.size; i += blockDim.x)
+    for (int i = threadIdx.x; i < len; i += blockDim.x)
       block[threadIdx.x] += in[i];
 
     __syncthreads();
@@ -46,8 +46,8 @@ int main()
   k.blockDim.x = SIMTWarps * SIMTLanes;
 
   // Assign parameters
-  k.in.size = N;
-  k.in.base = in;
+  k.len = N;
+  k.in = in;
   k.sum = &sum;
 
   // Invoke kernel

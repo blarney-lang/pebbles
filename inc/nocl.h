@@ -107,6 +107,11 @@ struct SharedLocalMem {
     return ptr;
   }
 
+  // Typed allocation
+  template <typename T> T* alloc(int n) {
+    return (T*) alloc(n * sizeof(T));
+  }
+
   // Allocate 1D array with static size
   template <typename T, int dim1> T* array() {
     return (T*) alloc<dim1 * sizeof(T)>();
