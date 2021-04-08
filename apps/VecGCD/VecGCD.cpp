@@ -36,8 +36,8 @@ int main()
   // Initialise inputs
   uint32_t seed = 100;
   for (int i = 0; i < N; i++) {
-    a[i] = 1 + (rand(&seed) & 0xff);
-    b[i] = 1 + (rand(&seed) & 0xff);
+    a[i] = 1 + (rand15(&seed) & 0xff);
+    b[i] = 1 + (rand15(&seed) & 0xff);
   }
 
   // Instantiate kernel

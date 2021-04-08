@@ -8,3 +8,4 @@ clean:
 	make -C Transpose clean
 	make -C Reduce clean
 	make -C Scan clean
+	make -C MatVecMul clean

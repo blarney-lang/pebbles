@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-uint32_t rand(uint32_t* seed) {
-  *seed = *seed * 1664525 + 1013904223;
-  return *seed;
+uint32_t rand15(uint32_t* seed) {
+  *seed = (*seed * 1664525 + 1013904223) & 0x7fffffff;
+  return *seed >> 16;
 }
 
 #endif
