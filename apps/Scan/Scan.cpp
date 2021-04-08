@@ -1,50 +1,37 @@
 #include <nocl.h>
 
-// Helper function
-template <typename T> INLINE void swap(T& a, T& b)
-  { T tmp = a; a = b; b = tmp; }
-
-// Kernel for computing the parallel prefix sum (inclusive scan).
-// Assumptions: (1) a single thread block; (2) the block size divides
-// evenly into the input size.
+// Kernel for computing the parallel prefix sum (inclusive scan)
+// Simple (non-work-efficient) version based on one from "GPU Gems 3"
 struct Scan : Kernel {
   int len;
   int *in, *out;
 
   void kernel() {
     // Shared arrays
-    Array<int> acc = shared.array<int>(blockDim.x);
-    Array<int> totalA = shared.array<int>(blockDim.x);
-    Array<int> totalB = shared.array<int>(blockDim.x);
-    Array<int> result = shared.array<int>(blockDim.x);
+    Array<int> tempIn = shared.array<int>(blockDim.x);
+    Array<int> tempOut = shared.array<int>(blockDim.x);
 
     // Shorthand for local thread id
     int t = threadIdx.x;
-    
-    // Initialise inter-block accumulator array
-    acc[t] = 0;
-    __syncthreads();
 
-    for (int x = t; x < len; x += blockDim.x) {
-      // Initialise arrays
-      result[t] = totalA[t] = in[x];
+    for (int x = 0; x < len; x += blockDim.x) {
+      // Load data
+      tempOut[t] = in[x+t];
       __syncthreads();
 
-      // Local scan (variant of Sklansky's algorithm)
-      for (int i = 1; i < blockDim.x; i <<= 1) {
-        int offset = i;
-        if (t&i) {
-          result[t] += totalA[t-i];
-          offset = -i;
-        }
-        totalB[t] = totalA[t] + totalA[t+offset];
-        swap(totalA, totalB);
+      // Local scan
+      for (int offset = 1; offset < blockDim.x; offset <<= 1) {
+        swap(tempIn, tempOut);
+        if (t >= offset)
+          tempOut[t] = tempIn[t] + tempIn[t - offset];
+        else
+          tempOut[t] = tempIn[t];
         __syncthreads();
       }
 
-      // Write to global memory
-      out[x] = result[t] + acc[t];
-      acc[t] += totalA[t];
+      // Store data
+      int acc = x > 0 ? out[x-1] : 0;
+      out[x+t] = tempOut[t] + acc;
     }
   }
 };
@@ -52,6 +39,7 @@ struct Scan : Kernel {
 int main()
 {
   // Vector size for benchmarking
+  // Should divide evenly by SIMT thread count
   int N = 4096;
 
   // Input and output vectors

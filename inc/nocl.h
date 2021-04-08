@@ -32,6 +32,10 @@ inline unsigned log2floor(unsigned x) {
   return count;
 }
 
+// Swap the values of two variables
+template <typename T> INLINE void swap(T& a, T& b)
+  { T tmp = a; a = b; b = tmp; }
+
 // Data types
 // ==========
 
