@@ -251,8 +251,8 @@ template <typename K> __attribute__ ((noinline))
 
     // Set number of blocks per streaming multiprocessor
     k->blocksPerSM = (SIMTWarps * SIMTLanes) / threadsPerBlock;
-    cpuAssert((k->gridDim.x % k->blocksPerSM) == 0,
-      "NoCL: blocks-per-SM does not divide evenly into grid width");
+    //cpuAssert((k->gridDim.x % k->blocksPerSM) == 0,
+    //  "NoCL: blocks-per-SM does not divide evenly into grid width");
 
     // Set address of kernel closure
     uintptr_t kernelAddr = (uintptr_t) k;
