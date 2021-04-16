@@ -132,8 +132,7 @@ makeSIMTMemSubsystem dramResps = mdo
     -- Split request streams for SRAM and DRAM
     let (memReqsSRAM, memReqsDRAM) = unzip
           [ let isSRAM = isBankedSRAMAccess (reqs.peek) in
-              ( reqs { canPeek = isSRAM .&. reqs.canPeek
-                     , peek = mapBankedSRAMAccess (reqs.peek) }
+              ( reqs { canPeek = isSRAM .&. reqs.canPeek }
               , reqs { canPeek = inv isSRAM .&. reqs.canPeek } )
           | reqs <- map (mapSource prepareReq) memReqs ]
 
@@ -163,6 +162,12 @@ makeSIMTMemSubsystem dramResps = mdo
           }
     let memResps1 = map (mapSource processResp) memResps
 
+    -- Ensure that the SRAM base address is suitably aligned
+    -- (If so, remapping SRAM addresses is unecessary)
+    if sramBase `mod` sramSize /= 0
+      then error "SRAM base address not suitably aligned"
+      else return ()
+
     return (simtMemUnits, dramReqs)
 
   where
@@ -181,8 +186,3 @@ makeSIMTMemSubsystem dramResps = mdo
            addr .<. fromInteger simtStacksStart .&&.
              addr .>=. fromInteger sramBase)
       where addr = req.memReqAddr
-
-    -- Map address when accessing banked SRAMs
-    mapBankedSRAMAccess :: MemReq t_id -> MemReq t_id
-    mapBankedSRAMAccess req =
-        req { memReqAddr = req.memReqAddr - fromInteger sramBase }
