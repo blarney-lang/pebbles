@@ -1,30 +1,31 @@
 # Pebbles
 
-Pebbles is a RISC-V processor framework supporting plugable pipelines.
-The [instruction set](src/Pebbles/Instructions) and
-[pipelines](src/Pebbles/Pipeline) are defined separately, allowing
-different pipelines to share the same instruction set definition. 
-We do this with the help of a modern HDL called
+Pebbles is a RISC-V processor framework supporting *plugable
+pipelines*.  Different [pipeline
+implementations](src/Pebbles/Pipeline) may be connected to the same
+[instruction set implementation](src/Pebbles/Instructions) by way of a
+common [pipeline interface](src/Pebbles/Pipeline/Inteface.hs).
+Pebbles is written in a modern HDL called
 [Blarney](https://github.com/blarney-lang/blarney).
 
-Currently, Pebbles supports the RV32IMA instruction set and provides
-two pipelines:
+Currently, Pebbles supports the RV32IMA instruction set and two
+pipelines:
 
-  * A standard 5-stage in-order [scalar pipeline](src/Pebbles/Pipeline/Scalar.hs).
+  * A 5-stage in-order [scalar pipeline](src/Pebbles/Pipeline/Scalar.hs).
 
-  * A 9-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT.hs)
+  * A 9-stage [Single Instruction Multiple Thread (SIMT) pipeline](src/Pebbles/Pipeline/SIMT.hs)
     with a parameterisable number of warps and warp size.
 
-A sample SoC is included which by default contains a scalar CPU, a
-data cache, a 32-lane 64-warp SIMT accelerator, a coalescing unit, and
-shared DRAM.
+A sample SoC is included which contains a scalar CPU, a data cache, a
+32-lane 64-warp SIMT accelerator, a coalescing unit, and shared DRAM.
 
 <img src="doc/SoC.svg" width="450">
 
 The SoC is optimised for a high MIPS/LUT on FPGA.  Sample projects are
-provided for the DE5-Net and DE10-Pro development boards.  We also
-have the beginnings of a basic CUDA-like library for writing
-accelerator kernels.
+provided for the [DE5-Net](http://de5-net.terasic.com) and
+[DE10-Pro](http://de10-pro.terasic.com) development boards.  There is
+also a [CUDA-like library](inc/nocl.h) and a set of sample [compute
+kernels](apps/).
 
 ## Build instructions
 
