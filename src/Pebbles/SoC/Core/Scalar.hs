@@ -10,6 +10,7 @@ import Blarney.Interconnect
 
 -- Pebbles imports
 import Pebbles.CSRs.CSRUnit
+import Pebbles.CSRs.CycleCount
 import Pebbles.CSRs.Custom.Simulate
 import Pebbles.CSRs.Custom.UART
 import Pebbles.CSRs.Custom.InstrMem
@@ -72,12 +73,16 @@ makeScalarCore config inputs = mdo
   -- SIMT management CSRs
   (simtReqs, simtCSRs) <- makeCSRs_SIMTHost (inputs.scalarSIMTResps)
 
+  -- Cycle count CSRs
+  cycleCSRs <- makeCSR_CycleCount
+
   -- CSR unit
   csrUnit <- makeCSRUnit $
        csrs_Sim
     ++ uartCSRs
     ++ imemCSRs
     ++ simtCSRs
+    ++ cycleCSRs
  
   -- Multiplier
   mulUnit <- makeHalfMulUnit

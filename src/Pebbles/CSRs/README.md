@@ -5,6 +5,8 @@
   Name              | CSR    | R/W | Function
   ----------------- | ------ | --- | --------
   `HartId`          | 0xf14  | R   | Get hardware thread id
+  `Cycle`           | 0xc00  | R   | Cycle count (lower 32 bits)
+  `CycleH`          | 0xc80  | R   | Cycle count (upper 32 bits)
 
 ## Custom Simulation CSRs
 
