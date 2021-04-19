@@ -4,7 +4,7 @@ Pebbles is a RISC-V processor framework supporting *plugable
 pipelines*.  Different [pipeline
 implementations](src/Pebbles/Pipeline) may be connected to the same
 [instruction set implementation](src/Pebbles/Instructions) by way of a
-common [pipeline interface](src/Pebbles/Pipeline/Inteface.hs).
+common [pipeline interface](src/Pebbles/Pipeline/Interface.hs).
 Pebbles is written in a modern HDL called
 [Blarney](https://github.com/blarney-lang/blarney).
 
