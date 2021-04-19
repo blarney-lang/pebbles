@@ -22,6 +22,8 @@
 #define CSR_SIMTGet              "0x825"
 #define CSR_SIMTSetKernel        "0x826"
 #define CSR_SIMTSetWarpsPerBlock "0x827"
+#define CSR_CycleCount           "0xc00"
+#define CSR_CycleCountH          "0xc80"
 
 #define INLINE inline __attribute__((always_inline))
 
@@ -162,6 +164,35 @@ INLINE void cpuAssert(int cond, const char* msg)
     putchar('\n');
     while (1) {};
   }
+}
+
+// Read cycle count (low bits)
+INLINE unsigned cpuGetCycleCountL()
+{
+  unsigned x;
+  asm volatile ("csrrw %0, " CSR_CycleCount ", zero" : "=r"(x));
+  return x;
+}
+
+// Read cycle count (high bits)
+INLINE unsigned cpuGetCycleCountH()
+{
+  unsigned x;
+  asm volatile ("csrrw %0, " CSR_CycleCountH ", zero" : "=r"(x));
+  return x;
+}
+
+// Read cycle count (64 bits)
+INLINE uint64_t cpuGetCycleCount()
+{
+  uint32_t low, high, high2;
+  do {
+    high = cpuGetCycleCountH();
+    low = cpuGetCycleCountL();
+    high2 = cpuGetCycleCountH();
+  } while (high != high2);
+  uint64_t x = (uint64_t) high << 32;
+  return x | low;
 }
 
 #endif
