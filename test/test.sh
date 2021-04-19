@@ -84,14 +84,14 @@ cleanup() {
 
 # Compile and run the circuit generator
 echo -n "Pebbles build: "
-make -s -C .. src
+make -s -C .. src > /dev/null
 assert $?
 
 # Prepare simulator
 SIM_PID=
 if [ "$TestSim" != "" ]; then
   echo -n "Simulator build: "
-  make -s -C .. sim
+  make -s -C .. sim > /dev/null
   assert $?
   echo -n "Starting simulator: "
   pushd . > /dev/null
