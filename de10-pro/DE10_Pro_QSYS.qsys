@@ -13109,7 +13109,7 @@
                         </entry>
                         <entry>
                             <key>maximumPendingReadTransactions</key>
-                            <value>12</value>
+                            <value>34</value>
                         </entry>
                         <entry>
                             <key>maximumPendingWriteTransactions</key>
@@ -13447,7 +13447,7 @@
                     <consumedSystemInfos>
                         <entry>
                             <key>ADDRESS_WIDTH</key>
-                            <value>32</value>
+                            <value>10</value>
                         </entry>
                     </consumedSystemInfos>
                 </value>
@@ -13690,20 +13690,16 @@
             <assignments>
                 <assignmentValueMap>
                     <entry>
-                        <key>embeddedsw.configuration.isFlash</key>
-                        <value>0</value>
-                    </entry>
-                    <entry>
                         <key>embeddedsw.configuration.isMemoryDevice</key>
-                        <value>0</value>
+                        <value>false</value>
                     </entry>
                     <entry>
                         <key>embeddedsw.configuration.isNonVolatileStorage</key>
-                        <value>0</value>
+                        <value>false</value>
                     </entry>
                     <entry>
                         <key>embeddedsw.configuration.isPrintableDevice</key>
-                        <value>0</value>
+                        <value>false</value>
                     </entry>
                 </assignmentValueMap>
             </assignments>
@@ -13743,11 +13739,10 @@
                     </entry>
                     <entry>
                         <key>bridgedAddressOffset</key>
-                        <value>0</value>
                     </entry>
                     <entry>
                         <key>bridgesToMaster</key>
-                        <value>mm_clockcross_DDR4.m0</value>
+                        <value>DE10_Pro_QSYS_mm_clockcross_DDR4.m0</value>
                     </entry>
                     <entry>
                         <key>burstOnBurstBoundariesOnly</key>
@@ -13795,7 +13790,7 @@
                     </entry>
                     <entry>
                         <key>maximumPendingReadTransactions</key>
-                        <value>12</value>
+                        <value>34</value>
                     </entry>
                     <entry>
                         <key>maximumPendingWriteTransactions</key>
