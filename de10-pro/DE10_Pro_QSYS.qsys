@@ -13109,7 +13109,7 @@
                         </entry>
                         <entry>
                             <key>maximumPendingReadTransactions</key>
-                            <value>34</value>
+                            <value>64</value>
                         </entry>
                         <entry>
                             <key>maximumPendingWriteTransactions</key>
@@ -13790,7 +13790,7 @@
                     </entry>
                     <entry>
                         <key>maximumPendingReadTransactions</key>
-                        <value>34</value>
+                        <value>64</value>
                     </entry>
                     <entry>
                         <key>maximumPendingWriteTransactions</key>
