@@ -154,6 +154,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , instrMemLogNumInstrs = config.simtCoreInstrMemLogNumInstrs
         , logNumWarps = SIMTLogWarps
         , logMaxCallDepth = SIMTLogMaxCallDepth
+        , enableStatCounters = SIMTEnableStatCounters == 1
         , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeCallDepth
         , executeStage =
             [ exec

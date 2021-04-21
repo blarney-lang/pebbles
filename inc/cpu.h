@@ -22,8 +22,13 @@
 #define CSR_SIMTGet              "0x825"
 #define CSR_SIMTSetKernel        "0x826"
 #define CSR_SIMTSetWarpsPerBlock "0x827"
+#define CSR_SIMTAskStats         "0x828"
 #define CSR_CycleCount           "0xc00"
 #define CSR_CycleCountH          "0xc80"
+
+// SIMT stat counter ids
+#define STAT_SIMT_CYCLES         0
+#define STAT_SIMT_INSTRS         1
 
 #define INLINE inline __attribute__((always_inline))
 
@@ -109,6 +114,12 @@ INLINE void cpuSIMTSetWarpsPerBlock(uint32_t n)
 INLINE void cpuSIMTStartKernel(uint32_t pc)
 {
   asm volatile("csrw " CSR_SIMTStartKernel ", %0\n" : : "r"(pc));
+}
+
+// Ask for the value of the given stat counter
+INLINE void cpuSIMTAskStats(uint32_t id)
+{
+  asm volatile("csrw " CSR_SIMTAskStats ", %0\n" : : "r"(id));
 }
 
 // Can receive response from SIMT core?

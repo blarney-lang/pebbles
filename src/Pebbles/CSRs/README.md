@@ -43,6 +43,7 @@
   `SIMTGet`              | 0x825  | R   | Get SIMT response
   `SIMTSetKernel`        | 0x826  | W   | Set address of kernel closure
   `SIMTSetWarpsPerBlock` | 0x827  | W   | Set num of warps per block
+  `SIMTAskStats`         | 0x828  | W   | Request a given stat counter
 
 ## Custom SIMT Device CSRs
 

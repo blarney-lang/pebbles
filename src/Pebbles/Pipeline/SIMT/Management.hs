@@ -6,16 +6,30 @@ module Pebbles.Pipeline.SIMT.Management where
 import Blarney
 
 -- | SIMT pipeline management commands
-type SIMTCmd = Bit 2
+data SIMTCmd = SIMTCmd (Bit 2)
+  deriving (Generic, Bits, Cmp)
 
 -- | Write to tightly-coupled instruction memory
-simtCmd_WriteInstr :: SIMTCmd = 0
+simtCmd_WriteInstr = SIMTCmd 0
 
 -- | Start all warps with a given PC
-simtCmd_StartPipeline :: SIMTCmd = 1
+simtCmd_StartPipeline = SIMTCmd 1
 
 -- | Set number of warps per block
-simtCmd_SetWarpsPerBlock :: SIMTCmd = 2
+simtCmd_SetWarpsPerBlock = SIMTCmd 2
+
+-- | Read stats from SIMT core
+simtCmd_AskStats = SIMTCmd 3
+
+-- | Id of a performance stat counter
+data SIMTStatId = SIMTStatId (Bit 1)
+  deriving (Generic, Bits, Cmp)
+
+-- | Cycle count
+simtStat_Cycles = SIMTStatId 0
+
+-- | Instruction count
+simtStat_Instrs = SIMTStatId 1
 
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
@@ -26,7 +40,4 @@ data SIMTReq =
   } deriving (Generic, Bits)
 
 -- | SIMT pipeline management response (to CPU)
-type SIMTResp = SIMTReturnCode
-
--- True on success, false otherwise
-type SIMTReturnCode = Bit 1
+type SIMTResp = Bit 32
