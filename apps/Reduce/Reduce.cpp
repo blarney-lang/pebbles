@@ -1,12 +1,12 @@
 #include <nocl.h>
 
 // Kernel for vector summation
-struct Reduce : Kernel {
+template <int BlockSize> struct Reduce : Kernel {
   int len;
   int *in, *sum;
   
   void kernel() {
-    int* block = shared.alloc<int>(blockDim.x);
+    int* block = shared.array<int, BlockSize>();
 
     // Sum global memory
     block[threadIdx.x] = 0;
@@ -29,18 +29,25 @@ struct Reduce : Kernel {
 
 int main()
 {
+  // Are we in simulation?
+  bool isSim = cpuUartBlockingGet();
+
   // Vector size for benchmarking
-  int N = 3000;
+  int N = isSim ? 3000 : 1000000;
 
   // Input and outputs
   simt_aligned int in[N];
   int sum;
 
   // Initialise inputs
-  for (int i = 0; i < N; i++) in[i] = i;
+  int acc = 0;
+  for (int i = 0; i < N; i++) {
+    in[i] = i;
+    acc += i;
+  }
 
   // Instantiate kernel
-  Reduce k;
+  Reduce<SIMTWarps * SIMTLanes> k;
 
   // Use a single block of threads
   k.blockDim.x = SIMTWarps * SIMTLanes;
@@ -51,10 +58,10 @@ int main()
   k.sum = &sum;
 
   // Invoke kernel
-  noclRunKernel(&k);
+  noclRunKernelAndDumpStats(&k);
 
   // Check result
-  bool ok = sum == (N*(N-1))/2;
+  bool ok = sum == acc;
 
   // Display result
   puts("Self test: ");

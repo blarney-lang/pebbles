@@ -74,6 +74,13 @@ INLINE int cpuUartGet()
   return x;
 }
 
+// Blocking receive from UART
+INLINE int cpuUartBlockingGet()
+{
+  while (!cpuUartCanGet()) {}
+  return cpuUartGet();
+}
+
 // Write to instruction memory
 INLINE void cpuWriteInstr(uint32_t addr, uint32_t instr)
 {

@@ -20,6 +20,7 @@ NC='\033[0m'
 
 TestSim=
 TestFPGA=
+NoPgm=
 
 # Arguments
 # =========
@@ -31,6 +32,7 @@ do
       echo "Run test-suite and Pebbles examples"
       echo "  --sim      run in simuatlion (verilator)"
       echo "  --fpga     run on FPGA (de10-pro)"
+      echo "  --no-pgm   don't reprogram FPGA"
       exit
       ;;
     --sim)
@@ -38,6 +40,9 @@ do
       ;;
     --fpga)
       TestFPGA=yup
+      ;;
+    --no-pgm)
+      NoPgm=yup
       ;;
     -?*)
       printf 'Ignoring unknown flag: %s\n' "$1" >&2
@@ -65,11 +70,15 @@ assert() {
     echo -ne "$2"
   fi
   if [ $1 != 0 ]; then
-    echo -e "${RED}FAILED${NC}"
+    echo -ne "${RED}FAILED${NC}"
     exit -1
   else
-    echo -e "${GREEN}ok${NC}"
+    echo -ne "${GREEN}ok${NC}"
   fi
+  if [ "$3" != "" ]; then
+    echo -ne "$3"
+  fi
+  echo
 }
 
 # Kill simulator if running
@@ -124,9 +133,11 @@ if [ "$TestFPGA" != "" ] ; then
   test "$JTAG_CABLE" != ""
   assert $?
   # Program FPGA
-  echo -n "Programming FPGA: "
-  make -s -C ../de10-pro download-sof > /dev/null
-  assert $?
+  if [ "$NoPgm" == "" ]; then
+    echo -n "Programming FPGA: "
+    make -s -C ../de10-pro download-sof > /dev/null
+    assert $?
+  fi
   echo
 fi
 
@@ -194,9 +205,14 @@ if [ "$TestFPGA" != "" ] ; then
     make -s -C ../apps/$APP Run
     assert $?
     echo -n "$APP (run): "
-    OK=$(cd ../apps/$APP && ./Run | grep "Self test: PASSED")
+    tmpLog=$(mktemp -t pebbles-$APP-XXXX.log)
+    $(cd ../apps/$APP && ./Run > $tmpLog)
+    OK=$(grep "Self test: PASSED" $tmpLog)
+    CYCLES=$(grep Cycles: $tmpLog | cut -d' ' -f2)
+    INSTRS=$(grep Instrs: $tmpLog | cut -d' ' -f2)
+    IPC=$(python -c "print('%.2f' % (float(0x${INSTRS}) / 0x${CYCLES}))")
     test "$OK" != ""
-    assert $?
+    assert $? "" " [IPC=$IPC]"
   done
 fi
 

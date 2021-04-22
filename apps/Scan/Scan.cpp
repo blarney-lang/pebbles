@@ -2,14 +2,14 @@
 
 // Kernel for computing the parallel prefix sum (inclusive scan)
 // Simple (non-work-efficient) version based on one from "GPU Gems 3"
-struct Scan : Kernel {
+template <int BlockSize> struct Scan : Kernel {
   int len;
   int *in, *out;
 
   void kernel() {
     // Shared arrays
-    int* tempIn = shared.alloc<int>(blockDim.x);
-    int* tempOut = shared.alloc<int>(blockDim.x);
+    int* tempIn = shared.array<int, BlockSize>();
+    int* tempOut = shared.array<int, BlockSize>();
 
     // Shorthand for local thread id
     int t = threadIdx.x;
@@ -38,9 +38,12 @@ struct Scan : Kernel {
 
 int main()
 {
+  // Are we in simulation?
+  bool isSim = cpuUartBlockingGet();
+
   // Vector size for benchmarking
   // Should divide evenly by SIMT thread count
-  int N = 4096;
+  int N = isSim ? 4096 : 1024000;
 
   // Input and output vectors
   simt_aligned int in[N], out[N];
@@ -49,7 +52,7 @@ int main()
   for (int i = 0; i < N; i++) in[i] = i;
 
   // Instantiate kernel
-  Scan k;
+  Scan<SIMTWarps * SIMTLanes> k;
 
   // Use a single block of threads
   k.blockDim.x = SIMTWarps * SIMTLanes;
@@ -60,7 +63,7 @@ int main()
   k.out = out;
 
   // Invoke kernel
-  noclRunKernel(&k);
+  noclRunKernelAndDumpStats(&k);
 
   // Check result
   bool ok = true;

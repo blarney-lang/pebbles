@@ -100,7 +100,7 @@ struct SharedLocalMem {
   }
 
   // Allocate memory on shared memory stack (dynamic)
-  void* alloc(int numBytes) {
+  INLINE void* alloc(int numBytes) {
     void* ptr = (void*) top;
     int bytes = (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
     top += bytes;

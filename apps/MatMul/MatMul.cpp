@@ -31,18 +31,18 @@
 
 // Matrix multiplication C = A * B
 // (wA is A's width and wB is B's width)
-template <int BLOCK_SIZE> struct MatMul : Kernel {
+template <int BlockSize> struct MatMul : Kernel {
   int *A, *B, *C;
   int wA, wB;
 
   void kernel() {
     // Declaration of the shared memory array As used to
     // store the sub-matrix of A
-    auto As = shared.array<int, BLOCK_SIZE, BLOCK_SIZE>();
+    auto As = shared.array<int, BlockSize, BlockSize>();
   
     // Declaration of the shared memory array Bs used to
     // store the sub-matrix of B
-    auto Bs = shared.array<int, BLOCK_SIZE, BLOCK_SIZE>();
+    auto Bs = shared.array<int, BlockSize, BlockSize>();
 
     // Block index
     int bx = blockIdx.x;
@@ -53,19 +53,19 @@ template <int BLOCK_SIZE> struct MatMul : Kernel {
     int ty = threadIdx.y;
 
     // Index of the first sub-matrix of A processed by the block
-    int aBegin = wA * BLOCK_SIZE * by;
+    int aBegin = wA * BlockSize * by;
 
     // Index of the last sub-matrix of A processed by the block
     int aEnd   = aBegin + wA - 1;
 
     // Step size used to iterate through the sub-matrices of A
-    int aStep  = BLOCK_SIZE;
+    int aStep  = BlockSize;
 
     // Index of the first sub-matrix of B processed by the block
-    int bBegin = BLOCK_SIZE * bx;
+    int bBegin = BlockSize * bx;
 
     // Step size used to iterate through the sub-matrices of B
-    int bStep  = BLOCK_SIZE * wB;
+    int bStep  = BlockSize * wB;
 
     // Csub is used to store the element of the block sub-matrix
     // that is computed by the thread
@@ -89,7 +89,7 @@ template <int BLOCK_SIZE> struct MatMul : Kernel {
       // Multiply the two matrices together;
       // each thread computes one element
       // of the block sub-matrix
-      for (int k = 0; k < BLOCK_SIZE; ++k) {
+      for (int k = 0; k < BlockSize; ++k) {
         Csub += As[ty][k] * Bs[k][tx];
       }
 
@@ -101,16 +101,19 @@ template <int BLOCK_SIZE> struct MatMul : Kernel {
 
     // Write the block sub-matrix to device memory;
     // each thread writes one element
-    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+    int c = wB * BlockSize * by + BlockSize * bx;
     C[c + wB * ty + tx] = Csub;
   }
 };
 
 int main()
 {
+  // Are we in simulation?
+  bool isSim = cpuUartBlockingGet();
+
   // Matrix dimensions for benchmarking
   // (Must be a multiple of SIMTLanes)
-  int size = 32;
+  int size = isSim ? 32 : 256;
 
   // Input and outputs
   simt_aligned int matA[size*size], matB[size*size],
@@ -142,7 +145,7 @@ int main()
   k.C = matC;
 
   // Invoke kernel
-  noclRunKernel(&k);
+  noclRunKernelAndDumpStats(&k);
 
   // Check result
   bool ok = true;

@@ -2,13 +2,13 @@
 #include <rand.h>
 
 // Kernel for matrix-vector multipliation
-struct MatVecMul : Kernel {
+template <int BlockSize> struct MatVecMul : Kernel {
   int width, height;
   int *mat, *vecIn, *vecOut;
   
   void kernel() {
     // Partial dot products stored in shared local memory
-    int* partial = shared.alloc<int>(blockDim.x);
+    int* partial = shared.array<int, BlockSize>();
 
     for (int y = blockIdx.x; y < height; y += gridDim.x) {
       // Row processed by this block
@@ -36,9 +36,12 @@ struct MatVecMul : Kernel {
 
 int main()
 {
+  // Are we in simulation?
+  bool isSim = cpuUartBlockingGet();
+
   // Vector and matrix dimensions for benchmarking
-  int width = 128;
-  int height = 64;
+  int width = isSim ? 128 : 512;
+  int height = isSim ? 64 : 512;
 
   // Input and outputs
   simt_aligned int mat[height*width], vecIn[width], vecOut[height];
@@ -53,7 +56,7 @@ int main()
   }
 
   // Instantiate kernel
-  MatVecMul k;
+  MatVecMul<SIMTLanes> k;
 
   // One block of threads per matrix row
   k.blockDim.x = SIMTLanes;
@@ -67,7 +70,7 @@ int main()
   k.vecOut = vecOut;
 
   // Invoke kernel
-  noclRunKernel(&k);
+  noclRunKernelAndDumpStats(&k);
 
   // Check result
   bool ok = true;

@@ -2,11 +2,11 @@
 
 // Kernel for matrix transposition
 // One sub-square at a time
-struct Transpose : Kernel {
+template <int SquareSize> struct Transpose : Kernel {
   Array2D<int> in, out;
   
   void kernel() {
-    Array2D<int> square = shared.array<int>(blockDim.x, blockDim.x + 1);
+    auto square = shared.array<int, SquareSize, SquareSize+1>();
     
     // Origin of square within matrix
     int originX = blockIdx.x * blockDim.x;
@@ -26,9 +26,12 @@ struct Transpose : Kernel {
 
 int main()
 {
+  // Are we in simulation?
+  bool isSim = cpuUartBlockingGet();
+
   // Matrix size for benchmarking
-  const int width = 256;
-  const int height = 64;
+  int width = isSim ? 256 : 512;
+  int height = isSim ? 64 : 512;
 
   // Input and output matrix data
   nocl_aligned int matInData[width*height];
@@ -48,7 +51,7 @@ int main()
   const int itersPerBlock = 4;
 
   // Instantiate kernel
-  Transpose k;
+  Transpose<SIMTLanes> k;
 
   // Set block/grid dimensions
   k.blockDim.x = SIMTLanes;
@@ -61,7 +64,7 @@ int main()
   k.out = matOut;
 
   // Invoke kernel
-  noclRunKernel(&k);
+  noclRunKernelAndDumpStats(&k);
 
   // Check result
   bool ok = true;

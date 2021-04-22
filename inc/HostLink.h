@@ -9,6 +9,12 @@
 #include <HostLink/JTAGUARTBuffer.h>
 #include <HostLink/MemFileReader.h>
 
+#ifdef SIMULATE
+#define IsSimulation 1
+#else
+#define IsSimulation 0
+#endif
+
 class HostLink {
 
  public:
