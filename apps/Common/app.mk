@@ -8,7 +8,7 @@ RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 
 # Compiler and linker flags for code running on the SoC
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -Os \
+CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 \
           -I $(PEBBLES_ROOT)/inc \
           -static -mcmodel=medany \
           -fvisibility=hidden -nostdlib -nostartfiles \
