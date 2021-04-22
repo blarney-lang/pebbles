@@ -31,8 +31,11 @@ struct Histogram : Kernel {
 
 int main()
 {
+  // Are we in simulation?
+  bool isSim = cpuUartBlockingGet();
+
   // Vector size for benchmarking
-  int N = 3000;
+  int N = isSim ? 3000 : 1000000;
 
   // Input and output vectors
   nocl_aligned unsigned char input[N];
@@ -54,7 +57,7 @@ int main()
   k.bins = bins;
 
   // Invoke kernel
-  noclRunKernel(&k);
+  noclRunKernelAndDumpStats(&k);
 
   // Check result
   bool ok = true;

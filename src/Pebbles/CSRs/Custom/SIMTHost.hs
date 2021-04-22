@@ -21,6 +21,7 @@ import Pebbles.Pipeline.SIMT.Management
 -- | SIMTGet              |   0x825 | R      | Get SIMT response             |
 -- | SIMTSetKernel        |   0x826 | W      | Set address of kernel closure |
 -- | SIMTSetWarpsPerBlock |   0x827 | W      | Set num of warps per block    |
+-- | SIMTAskStats         |   0x828 | W      | Request a given stat counter  |
 -- +----------------------+---------+--------+-------------------------------+
 
 -- Notes: SIMTWriteInstr and SIMTStartKernel must only be accessed if
@@ -138,6 +139,24 @@ makeCSRs_SIMTHost resps = do
               }
         }
 
+  -- Command to request a stat counter
+  let csr_SIMTAskStats =
+        CSR {
+          csrId = 0x828
+        , csrRead = Nothing
+        , csrWrite = Just \x -> do
+            dynamicAssert (reqs.notFull)
+              "SIMTAskStats CSR: SIMTCanPut not checked"
+            when (reqs.notFull) do
+              enq reqs
+                SIMTReq {
+                  simtReqCmd  = simtCmd_AskStats
+                , simtReqAddr = x
+                , simtReqData = dontCare
+                }
+        }
+
+
   let csrs =
         [ csr_SIMTCanPut
         , csr_SIMTInstrAddr
@@ -147,6 +166,7 @@ makeCSRs_SIMTHost resps = do
         , csr_SIMTGet
         , csr_SIMTSetKernel
         , csr_SIMTSetWarpsPerBlock
+        , csr_SIMTAskStats
         ]
 
   return (reqs.toStream, csrs)

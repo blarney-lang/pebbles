@@ -100,7 +100,7 @@ struct SharedLocalMem {
   }
 
   // Allocate memory on shared memory stack (dynamic)
-  void* alloc(int numBytes) {
+  INLINE void* alloc(int numBytes) {
     void* ptr = (void*) top;
     int bytes = (numBytes & 3) ? (numBytes & ~3) + 4 : numBytes;
     top += bytes;
@@ -264,12 +264,34 @@ template <typename K> __attribute__ ((noinline))
 
     // Start kernel on SIMT core
     uintptr_t entryAddr = (uintptr_t) _noclSIMTEntry_<K>;
-    while (! cpuSIMTCanPut()) {}
+    while (!cpuSIMTCanPut()) {}
     cpuSIMTStartKernel(entryAddr);
 
     // Wait for kernel response
     while (!cpuSIMTCanGet()) {}
     return cpuSIMTGet();
+  }
+
+// Trigger SIMT kernel execution from CPU, and dump performance stats
+template <typename K> __attribute__ ((noinline))
+  int noclRunKernelAndDumpStats(K* k) {
+    unsigned ret = noclRunKernel(k);
+
+    // Get number of cycles taken
+    while (!cpuSIMTCanPut()) {}
+    cpuSIMTAskStats(STAT_SIMT_CYCLES);
+    while (!cpuSIMTCanGet()) {}
+    unsigned numCycles = cpuSIMTGet();
+    puts("Cycles: "); puthex(numCycles); putchar('\n');
+
+    // Get number of instructions executed
+    while (!cpuSIMTCanPut()) {}
+    cpuSIMTAskStats(STAT_SIMT_INSTRS);
+    while (!cpuSIMTCanGet()) {}
+    unsigned numInstrs = cpuSIMTGet();
+    puts("Instrs: "); puthex(numInstrs); putchar('\n');
+
+    return ret;
   }
 
 // Barrier synchronisation

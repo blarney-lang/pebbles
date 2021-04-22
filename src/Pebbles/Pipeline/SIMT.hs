@@ -59,65 +59,67 @@ import Pebbles.Pipeline.SIMT.Management
 -- | SIMT pipeline configuration
 data SIMTPipelineConfig tag =
   SIMTPipelineConfig {
-    -- | Instruction memory initialisation file
     instrMemInitFile :: Maybe String
-    -- | Instuction memory size (in number of instructions)
+    -- ^ Instruction memory initialisation file
   , instrMemLogNumInstrs :: Int
-    -- | Number of warps
+    -- ^ Instuction memory size (in number of instructions)
   , logNumWarps :: Int
-    -- | Number of bits used to track function call depth
+    -- ^ Number of warps
   , logMaxCallDepth :: Int
-    -- | Decode table
+    -- ^ Number of bits used to track function call depth
+  , enableStatCounters :: Bool
+    -- ^ Are stat counters enabled?
   , decodeStage :: [(String, tag)]
-    -- | List of execute stages, one per lane
-    -- The size of this list is the warp size
+    -- ^ Decode table
   , executeStage :: [State -> Module ExecuteStage]
+    -- ^ List of execute stages, one per lane
+    -- The size of this list is the warp size
   }
 
 -- | SIMT pipeline inputs
 data SIMTPipelineIns =
   SIMTPipelineIns {
-      -- | Stream of pipeline management requests
       simtMgmtReqs :: Stream SIMTReq
-      -- | When this wire is active, the warp currently in the execute
-      -- stage (assumed to be converged) is issuing a warp command
+      -- ^ Stream of pipeline management requests
     , simtWarpCmdWire :: Wire WarpCmd
-      -- | A pulse on these wires indicates that current instruction (in
-      -- execute) is incrementing/decrementing the function call
-      -- depth; one bit per lane
+      -- ^ When this wire is active, the warp currently in the execute
+      -- stage (assumed to be converged) is issuing a warp command
     , simtIncCallDepth :: [Bit 1]
     , simtDecCallDepth :: [Bit 1]
+      -- ^ A pulse on these wires indicates that current instruction (in
+      -- execute) is incrementing/decrementing the function call
+      -- depth; one bit per lane
   }
 
 -- | SIMT pipeline outputs
 data SIMTPipelineOuts =
   SIMTPipelineOuts {
-      -- | Stream of pipeline management responses
       simtMgmtResps :: Stream SIMTResp
-      -- | Warp id of instruction currently in execute stage
+      -- ^ Stream of pipeline management responses
     , simtCurrentWarpId :: Bit 32
-      -- | Address of kernel closure as set by CPU
+      -- ^ Warp id of instruction currently in execute stage
     , simtKernelAddr :: Bit 32
+      -- ^ Address of kernel closure as set by CPU
   }
 
 -- | Per-thread state
 data SIMTThreadState t_logInstrs t_logMaxCallDepth =
   SIMTThreadState {
-    -- | Program counter
     simtPC :: Bit t_logInstrs
-    -- | Function call depth (smaller is deeper)
+    -- ^ Program counter
   , simtCallDepth :: Bit t_logMaxCallDepth
+    -- ^ Function call depth (smaller is deeper)
   }
   deriving (Generic, Bits)
 
 -- | SIMT pipeline module
 makeSIMTPipeline :: Tag tag =>
-     -- | SIMT configuration options
      SIMTPipelineConfig tag
-     -- | SIMT pipeline inputs
+     -- ^ SIMT configuration options
   -> SIMTPipelineIns
-     -- | SIMT pipeline outputs
+     -- ^ SIMT pipeline inputs
   -> Module SIMTPipelineOuts
+     -- ^ SIMT pipeline outputs
 makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
@@ -211,6 +213,13 @@ makeSIMTPipeline c inputs =
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
+    -- Stat counters
+    cycleCount :: Reg (Bit 32) <- makeReg 0
+    instrCount :: Reg (Bit 32) <- makeReg 0
+
+    -- Triggers from each lane to increment instruciton count
+    incInstrCountRegs :: [Reg (Bit 1)] <- replicateM warpSize (makeDReg 0)
+
     -- Pipeline Initialisation
     -- =======================
 
@@ -247,8 +256,28 @@ makeSIMTPipeline c inputs =
             startReg <== none
             pipelineActive <== true
             warpIdCounter <== 0
+            cycleCount <== 0
+            instrCount <== 0
           else
             warpIdCounter <== warpIdCounter.val + 1
+
+    -- Stat counters
+    -- =============
+
+    if c.enableStatCounters
+      then
+        always do
+          when (pipelineActive.val) do
+            -- Increment cycle count
+            cycleCount <== cycleCount.val + 1
+
+            -- Increment instruction count
+            let instrIncs :: [Bit 32] =
+                  map zeroExtend (map val incInstrCountRegs)
+            let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
+            instrCount <== instrCount.val + instrInc
+      else
+        return ()
 
     -- Stage 0: Warp Scheduling
     -- ========================
@@ -393,7 +422,7 @@ makeSIMTPipeline c inputs =
                     -- Issue kernel response to CPU
                     dynamicAssert (kernelRespQueue.notFull)
                       "SIMT pipeline: can't issue kernel response"
-                    enq kernelRespQueue success
+                    enq kernelRespQueue (zeroExtend success)
                     -- Re-enter initial state
                     pipelineActive <== false
                     kernelSuccess <== true
@@ -410,7 +439,8 @@ makeSIMTPipeline c inputs =
 
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
-                 regFileB stateMem incCallDepth decCallDepth = do
+                 regFileB stateMem incCallDepth decCallDepth 
+                 incInstrCount = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
@@ -461,6 +491,8 @@ makeSIMTPipeline c inputs =
                       -- Remember, lower is deeper
                     , simtCallDepth = (state5.val.simtCallDepth - inc) + dec
                     }
+                -- Increment instruction count
+                incInstrCount <== true
 
               -- Update suspension bits
               when (suspWire.val) do
@@ -495,6 +527,7 @@ makeSIMTPipeline c inputs =
                <*> ZipList stateMems
                <*> ZipList (inputs.simtIncCallDepth)
                <*> ZipList (inputs.simtDecCallDepth)
+               <*> ZipList incInstrCountRegs
 
     -- Handle barrier release
     -- ======================
@@ -551,6 +584,14 @@ makeSIMTPipeline c inputs =
           warpsPerBlock <== n
           barrierMask <== n .==. 0 ? (ones, (1 .<<. n) - 1)
           inputs.simtMgmtReqs.consume
+        -- Read stat counter
+        when (req.simtReqCmd .==. simtCmd_AskStats) do
+          let getStatId req = req.simtReqAddr.truncate.unpack
+          when (pipelineActive.val.inv .&&. kernelRespQueue.notFull) do
+            let resp = (req.getStatId .==. simtStat_Cycles) ?
+                         (cycleCount.val, instrCount.val)
+            enq kernelRespQueue resp
+            inputs.simtMgmtReqs.consume
 
     -- Pipeline outputs
     return
