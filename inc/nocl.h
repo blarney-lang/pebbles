@@ -168,6 +168,8 @@ struct Kernel {
 // SIMT main function
 // Support only 1D blocks for now
 template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
+  simtPush();
+
   // Get pointer to kernel closure
   K* kernelPtr = (K*) simtGetKernelClosureAddr();
   K k = *kernelPtr;
@@ -177,6 +179,7 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   unsigned blockYMask = k.blockDim.y - 1;
   unsigned blockXShift = log2floor(k.blockDim.x);
   unsigned blockYShift = log2floor(k.blockDim.y);
+  simtConverge();
 
   // Set thread index
   k.threadIdx.x = simtThreadId() & blockXMask;
@@ -197,8 +200,9 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
     while (k.blockIdx.x < k.gridDim.x) {
       k.shared.top = &__localBase + localBytesPerBlock * blockIdxWithinSM;
       k.kernel();
-      k.blockIdx.x += k.blocksPerSM;
+      simtConverge();
       simtLocalBarrier();
+      k.blockIdx.x += k.blocksPerSM;
     }
     simtConverge();
     k.blockIdx.x = blockIdxWithinSM;
@@ -296,6 +300,7 @@ template <typename K> __attribute__ ((noinline))
 
 // Barrier synchronisation
 INLINE void __syncthreads() {
+  simtConverge();
   simtLocalBarrier();
 }
 

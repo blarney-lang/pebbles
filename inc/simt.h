@@ -16,6 +16,9 @@
 // Arrays should be aligned to support coalescing unit
 #define simt_aligned __attribute__ ((aligned (SIMTLanes * 4)))
 
+// All threads in a warp entering a block together will exit together
+#define simtBlock(block) { simtPush(); block; simtPop(); }
+
 // Base address of shared local memory
 extern char __localBase;
 
@@ -29,6 +32,30 @@ INLINE void simtEmit(unsigned int x)
 INLINE void simtFinish()
 {
   asm volatile("csrw " CSR_SimFinish ", zero\n" : :);
+}
+
+// All threads (in a warp) entering a simtPush() together will exit the
+// corresponding simtPop() together
+INLINE void simtPush()
+{
+  // Custom instruction
+  // Opcode: 0000000 rs2 rs1 000 rd 0001001, with rd=0, rs1=0, rs2=0
+  asm volatile(".word 0x00050009\n");
+}
+
+// All threads (in a warp) entering a simtPush() together will exit the
+// corresponding simtPop() together
+INLINE void simtPop()
+{
+  // Custom instruction
+  // Opcode: 0000000 rs2 rs1 001 rd 0001001, with rd=0, rs1=0, rs2=0
+  asm volatile(".word 0x00051009\n");
+}
+
+// Mark a convergence point
+INLINE void simtConverge() {
+  simtPop();
+  simtPush();
 }
 
 // Local memory fence
@@ -80,13 +107,6 @@ INLINE uint32_t simtGetKernelClosureAddr()
   uint32_t x;
   asm volatile("csrrw %0, " CSR_WrapGetKernel ", zero" : "=r"(x));
   return x;
-}
-
-// Explicitly mark a point the the program that must be executed;
-// useful for marking convergence points in the presence of certain
-// compiler optimisations
-INLINE void simtConverge() {
-  asm volatile("");
 }
 
 #endif

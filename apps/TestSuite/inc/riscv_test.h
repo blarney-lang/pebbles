@@ -27,7 +27,11 @@
   csrr a0, mhartid;                                                     \
   1: bnez a0, 1b
 
-#define RVTEST_CODE_BEGIN
+#ifdef _TEST_SIMT_
+  #define RVTEST_CODE_BEGIN SIMT_Push
+#else
+  #define RVTEST_CODE_BEGIN
+#endif
 
 //-----------------------------------------------------------------------
 // End Macro
@@ -63,9 +67,18 @@
 
 #else
 
+#define SIMT_Push .word 0x00050009
+#define SIMT_Pop .word 0x00051009
 #define CSR_WarpCmd 0x830
 
+#ifdef _TEST_SIMT_
+  #define CONVERGE SIMT_Pop
+#else
+  #define CONVERGE
+#endif
+
 #define RVTEST_PASS                                                     \
+        CONVERGE;                                                       \
         li TESTNUM, 3;                                                  \
         csrw CSR_WarpCmd, TESTNUM;
 
