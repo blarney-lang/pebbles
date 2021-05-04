@@ -1,21 +1,35 @@
 PEBBLES_ROOT ?= $(realpath ../..)
 
-# Binary utilities
-RV_ARCH    = rv32ima
+# RISC-V subset
+RV_ARCH = rv32ima
+
+# Can use Clang or GCC
+USE_CLANG ?= false
+
+ifeq ($(USE_CLANG), true)
+CFLAGS     = --target=riscv64-unknown -ffunction-sections
+LDFLAGS    = --entry _Z4mainv
+RV_C       = clang-11
+RV_CC      = clang++-11
+RV_LD      = ld.lld-11
+RV_OBJCOPY = riscv64-unknown-elf-objcopy
+else
+CFLAGS     = 
+LDFLAGS    = --entry main
 RV_C       = riscv64-unknown-elf-gcc
 RV_CC      = riscv64-unknown-elf-g++
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
+endif
 
 # Compiler and linker flags for code running on the SoC
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 \
-          -I $(PEBBLES_ROOT)/inc \
-          -static -mcmodel=medany \
-          -fvisibility=hidden -nostdlib -nostartfiles \
-          -fsingle-precision-constant -fno-builtin-printf \
-          -ffp-contract=off -fno-builtin -ffreestanding \
-          -fno-reorder-blocks
-LDFLAGS = -melf32lriscv -G 0 
+CFLAGS := $(CFLAGS) -mabi=ilp32 -march=$(RV_ARCH) -O2 \
+         -I $(PEBBLES_ROOT)/inc \
+         -static -mcmodel=medany \
+         -fvisibility=hidden -nostdlib \
+         -fno-builtin-printf -ffp-contract=off \
+         -fno-builtin -ffreestanding
+LDFLAGS := $(LDFLAGS) -melf32lriscv -G 0
 
 OFILES = $(patsubst %.cpp,%.o,$(APP_CPP)) \
          $(PEBBLES_ROOT)/lib/cpu/io.o \
