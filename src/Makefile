@@ -2,14 +2,16 @@ PEBBLES_ROOT = $(realpath ..)
 BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 BLC = $(BLARNEY_ROOT)/Scripts/blc
 BLC_INC = $(PEBBLES_ROOT)/inc
+BUILD_DIR = $(PEBBLES_ROOT)/src/build
 
 .PHONY: all
 all:
-	$(BLC) $(BLC_FLAGS) -I$(BLC_INC) Main.hs -o Main
+	$(BLC) $(BLC_FLAGS) -I$(BLC_INC) \
+    -hidir $(BUILD_DIR) -odir $(BUILD_DIR) Main.hs -o Main
 	./Main
 
 clean:
-	rm -rf *.o *.hi
-	rm -f $(shell find Pebbles -regex ".*\.\(hi\|o\)$$")
+	rm -rf $(BUILD_DIR)
 	rm -f Main
 	rm -f Pebbles.v SIMTExecuteStage.v
+	#rm -f $(shell find Pebbles -regex ".*\.\(hi\|o\)$$")
