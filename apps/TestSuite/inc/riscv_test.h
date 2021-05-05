@@ -28,9 +28,9 @@
   1: bnez a0, 1b
 
 #ifdef _TEST_SIMT_
-  #define RVTEST_CODE_BEGIN SIMT_Push
+  #define RVTEST_CODE_BEGIN .global _start; _start: SIMT_Push
 #else
-  #define RVTEST_CODE_BEGIN
+  #define RVTEST_CODE_BEGIN .global _start; _start:
 #endif
 
 //-----------------------------------------------------------------------
