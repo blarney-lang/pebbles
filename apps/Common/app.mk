@@ -9,15 +9,13 @@ USE_CLANG ?= false
 ifeq ($(USE_CLANG), true)
 CFLAGS     = --target=riscv64-unknown -ffunction-sections
 LDFLAGS    = --entry _Z4mainv
-RV_C       = clang-11
-RV_CC      = clang++-11
+RV_CC      = clang-11
 RV_LD      = ld.lld-11
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 else
 CFLAGS     = 
 LDFLAGS    = --entry main
-RV_C       = riscv64-unknown-elf-gcc
-RV_CC      = riscv64-unknown-elf-g++
+RV_CC      = riscv64-unknown-elf-gcc
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 endif
@@ -49,7 +47,7 @@ app.elf: $(OFILES) link.ld
 	$(RV_LD) $(LDFLAGS) -T link.ld -o app.elf $(OFILES)
 
 $(PEBBLES_ROOT)/lib/baremetal.o: $(PEBBLES_ROOT)/lib/baremetal.c
-	$(RV_C) $(CFLAGS) -I $(PEBBLES_ROOT)/inc -Wall -c -o $@ $<
+	$(RV_CC) $(CFLAGS) -I $(PEBBLES_ROOT)/inc -Wall -c -o $@ $<
 
 %.o: %.cpp $(APP_HDR)
 	$(RV_CC) $(CFLAGS) -I $(PEBBLES_ROOT)/inc -Wall -c -o $@ $<
