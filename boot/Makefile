@@ -27,7 +27,7 @@ CFLAGS := $(CFLAGS) -mabi=ilp32 -march=$(RV_ARCH) -Os \
          -fvisibility=hidden -nostdlib \
          -fno-builtin-printf -ffp-contract=off \
          -fno-builtin -ffreestanding
-LDFLAGS := --entry main -melf32lriscv -G 0
+LDFLAGS := -melf32lriscv -G 0
 
 # C files to compile
 CFILES = boot.c
