@@ -57,3 +57,14 @@ pipelinedTree1 n f xs
       | n == d = tree (d+1) ns (map buffer ys)
       | otherwise = tree (d+1) (n:ns) ys
       where ys = level f xs
+
+-- | Binary encoder
+encodeList :: [Bit 1] -> [Bit 1]
+encodeList ins = enc paddedIns
+  where
+    n = length ins
+    paddedIns = ins ++ replicate (log2ceil n - n) 0
+
+    enc [a] = []
+    enc as = zipWith (.|.) (enc ls) (enc rs) ++ [orList rs]
+      where (ls, rs) = splitAt (length as `div` 2) as

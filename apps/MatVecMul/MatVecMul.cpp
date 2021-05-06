@@ -30,6 +30,8 @@ template <int BlockSize> struct MatVecMul : Kernel {
 
       // Write dot product to global memory
       if (threadIdx.x == 0) vecOut[y] = partial[0];
+
+      simtConverge();
     }
   }
 };

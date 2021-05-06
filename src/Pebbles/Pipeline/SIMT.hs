@@ -8,13 +8,13 @@ module Pebbles.Pipeline.SIMT
   , makeSIMTPipeline
   ) where
 
--- Simple 32-bit SIMT pipeline, with implicit thread convergence (a la
--- Simty) and a configurable number of warps and warp size.
+-- Simple 32-bit SIMT pipeline with a configurable number of warps and
+-- warp size.
 --
--- There are 9 pipeline stages:
+-- There are 8 pipeline stages:
 --
 --  0. Warp Scheduling
---  1. Active Thread Selection (consists of 3 sub-stages)
+--  1. Active Thread Selection (consists of 2 sub-stages)
 --  2. Instruction Fetch
 --  3. Operand Fetch
 --  4. Operand Latch
@@ -53,8 +53,8 @@ import Control.Applicative hiding (some)
 -- Pebbles imports
 import Pebbles.Util.List
 import Pebbles.Pipeline.Interface
-import Pebbles.CSRs.Custom.SIMTDevice
 import Pebbles.Pipeline.SIMT.Management
+import Pebbles.CSRs.Custom.SIMTDevice
 
 -- | SIMT pipeline configuration
 data SIMTPipelineConfig tag =
@@ -65,8 +65,8 @@ data SIMTPipelineConfig tag =
     -- ^ Instuction memory size (in number of instructions)
   , logNumWarps :: Int
     -- ^ Number of warps
-  , logMaxCallDepth :: Int
-    -- ^ Number of bits used to track function call depth
+  , logMaxNestLevel :: Int
+    -- ^ Number of bits used to track divergence nesting level
   , enableStatCounters :: Bool
     -- ^ Are stat counters enabled?
   , decodeStage :: [(String, tag)]
@@ -74,6 +74,9 @@ data SIMTPipelineConfig tag =
   , executeStage :: [State -> Module ExecuteStage]
     -- ^ List of execute stages, one per lane
     -- The size of this list is the warp size
+  , simtPushTag :: tag
+  , simtPopTag :: tag
+    -- ^ Tags for SIMT explicit convergence instructions
   }
 
 -- | SIMT pipeline inputs
@@ -84,11 +87,6 @@ data SIMTPipelineIns =
     , simtWarpCmdWire :: Wire WarpCmd
       -- ^ When this wire is active, the warp currently in the execute
       -- stage (assumed to be converged) is issuing a warp command
-    , simtIncCallDepth :: [Bit 1]
-    , simtDecCallDepth :: [Bit 1]
-      -- ^ A pulse on these wires indicates that current instruction (in
-      -- execute) is incrementing/decrementing the function call
-      -- depth; one bit per lane
   }
 
 -- | SIMT pipeline outputs
@@ -103,11 +101,11 @@ data SIMTPipelineOuts =
   }
 
 -- | Per-thread state
-data SIMTThreadState t_logInstrs t_logMaxCallDepth =
+data SIMTThreadState t_logInstrs t_logMaxNestLevel =
   SIMTThreadState {
     simtPC :: Bit t_logInstrs
     -- ^ Program counter
-  , simtCallDepth :: Bit t_logMaxCallDepth
+  , simtNestLevel :: Bit t_logMaxNestLevel
     -- ^ Function call depth (smaller is deeper)
   }
   deriving (Generic, Bits)
@@ -126,7 +124,7 @@ makeSIMTPipeline c inputs =
   liftNat (2 ^ c.logNumWarps) \(_ :: Proxy t_numWarps) ->
   liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) ->
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) ->
-  liftNat (c.logMaxCallDepth) \(_ :: Proxy t_logMaxCallDepth) -> do
+  liftNat (c.logMaxNestLevel) \(_ :: Proxy t_logMaxNestLevel) -> do
 
     -- Sanity check
     staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
@@ -149,7 +147,7 @@ makeSIMTPipeline c inputs =
 
     -- One block RAM of thread states per lane
     stateMems ::  [RAM (Bit t_logWarps)
-                       (SIMTThreadState t_logInstrs t_logMaxCallDepth) ] <-
+                       (SIMTThreadState t_logInstrs t_logMaxNestLevel) ] <-
       replicateM warpSize makeDualRAM
 
     -- Instruction memory
@@ -181,14 +179,14 @@ makeSIMTPipeline c inputs =
     warpId4 :: Reg (Bit t_logWarps) <- makeReg dontCare
     warpId5 :: Reg (Bit t_logWarps) <- makeReg dontCare
 
-    -- Call depth register, for each stage
-    state2 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+    -- Thread state, for each stage
+    state2 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
       makeReg dontCare
-    state3 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+    state3 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
       makeReg dontCare
-    state4 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+    state4 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
       makeReg dontCare
-    state5 :: Reg (SIMTThreadState t_logInstrs t_logMaxCallDepth) <-
+    state5 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
       makeReg dontCare
 
     -- Active thread mask
@@ -240,7 +238,7 @@ makeSIMTPipeline c inputs =
         let initState =
               SIMTThreadState {
                 simtPC = start.val
-              , simtCallDepth = ones
+              , simtNestLevel = 0
               }
         sequence_ [ store stateMem (warpIdCounter.val) initState
                   | stateMem <- stateMems ]
@@ -311,13 +309,11 @@ makeSIMTPipeline c inputs =
     -- ================================
 
     -- For timing, we split this stage over several cycles
-    let stage1Substages = 3
+    let stage1Substages = 2
 
-    -- Active threads are those with the max call depth,
-    -- and on a tie, the min PC
-    let packState s = s.simtCallDepth # s.simtPC
-    let minOf a b = if packState a .<. packState b then a else b
-    let state2 = pipelinedTree1 stage1Substages minOf
+    -- Active threads are those with the max nesting level,
+    let maxOf a b = if a.simtNestLevel .>. b.simtNestLevel then a else b
+    let state2 = pipelinedTree1 stage1Substages maxOf
                    [mem.out | mem <- stateMems]
 
     -- Trigger stage 2
@@ -437,10 +433,13 @@ makeSIMTPipeline c inputs =
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             enq warpQueue (warpId5.val)
 
+    -- Is it a SIMT convergence instruction?
+    let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
+    let isSIMTPop = Map.findWithDefault false (c.simtPopTag) tagMap5
+
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
-                 regFileB stateMem incCallDepth decCallDepth 
-                 incInstrCount = do
+                 regFileB stateMem incInstrCount = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
@@ -481,15 +480,17 @@ makeSIMTPipeline c inputs =
               -- Only update PC if not retrying
               when (retryWire.val.inv) do
                 -- Compute new call depth increment
-                let inc = incCallDepth.zeroExtendCast
-                let dec = decCallDepth.zeroExtendCast
-                dynamicAssert (state5.val.simtCallDepth .!=. 0)
-                  "SIMT pipeliene: call depth overflow"
+                let inc = isSIMTPush.zeroExtendCast
+                let dec = isSIMTPop.zeroExtendCast
+                let nestLevel = state5.val.simtNestLevel
+                dynamicAssert (isSIMTPop .==>. nestLevel .!=. 0)
+                    "SIMT pipeliene: SIMT nest level underflow"
+                dynamicAssert (isSIMTPush .==>. nestLevel .!=. ones)
+                    "SIMT pipeliene: SIMT nest level overflow"
                 store stateMem (warpId5.val)
                   SIMTThreadState {
                       simtPC = pcNextWire.val
-                      -- Remember, lower is deeper
-                    , simtCallDepth = (state5.val.simtCallDepth - inc) + dec
+                    , simtNestLevel = (nestLevel + inc) - dec
                     }
                 -- Increment instruction count
                 incInstrCount <== true
@@ -525,8 +526,6 @@ makeSIMTPipeline c inputs =
                <*> ZipList regFilesA
                <*> ZipList regFilesB
                <*> ZipList stateMems
-               <*> ZipList (inputs.simtIncCallDepth)
-               <*> ZipList (inputs.simtDecCallDepth)
                <*> ZipList incInstrCountRegs
 
     -- Handle barrier release

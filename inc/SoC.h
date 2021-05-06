@@ -32,8 +32,8 @@ NOTE("Number of warps per SIMT core")
 #define SIMTWarps 64
 #define SIMTLogWarps 6
 
-NOTE("Number of bits used to track function call depth")
-#define SIMTLogMaxCallDepth 5
+NOTE("Number of bits used to track divergence nesting level")
+#define SIMTLogMaxNestLevel 5
 
 NOTE("Stack size (in bytes) for each SIMT thread")
 #define SIMTLogBytesPerStack 19

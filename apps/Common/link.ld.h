@@ -25,6 +25,7 @@ SECTIONS
 {
   .text   :
      {
+       *(.text._Z4mainv);
        *(.text.startup);
        *(.text*);
      }                                  > instrs
@@ -32,5 +33,6 @@ SECTIONS
   .rodata : { *.o(.rodata*) }           > globals
   .sdata  : { *.o(.sdata*) }            > globals
   .data   : { *.o(.data*) }             > globals
-  __heapBase = ALIGN(.);
+  .eh_frame : ONLY_IF_RW { KEEP (*(.eh_frame)) *(.eh_frame.*) } > globals
+  __heapBase = ALIGN(4);
 }

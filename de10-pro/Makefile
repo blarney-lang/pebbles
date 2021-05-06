@@ -1,12 +1,16 @@
 PEBBLES_ROOT ?= $(realpath ..)
 QPF = DE10_Pro.qpf
 
-.PHONY: all
-all: checkenv qsys
+.PHONY: one
+one: checkenv qsys
+	quartus_sh --flow compile $(QPF)
+
+.PHONY: many
+many: checkenv qsys
 	quartus_dse $(QPF)            \
     --num-seeds 15              \
     --launcher local            \
-    --num-concurrent 4
+    --num-concurrent 2
 	quartus_dse $(QPF) --report utilization
 	quartus_dse $(QPF) --report fmax_summary
 
@@ -15,10 +19,6 @@ qsys: checkenv
 	make -C $(PEBBLES_ROOT)/src
 	make -C $(PEBBLES_ROOT)/boot
 	qsys-generate -syn DE10_Pro_QSYS.qsys --quartus-project=$(QPF)
-
-.PHONY: one
-one: checkenv qsys
-	quartus_sh --flow compile $(QPF)
 
 .PHONY: report
 report: checkenv

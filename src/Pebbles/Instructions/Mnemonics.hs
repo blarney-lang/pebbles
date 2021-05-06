@@ -45,9 +45,9 @@ data Mnemonic =
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE
 
-    -- Custom extension (Call Depth Tracking)
-  | CALL_DEPTH_INC
-  | CALL_DEPTH_DEC
+    -- Custom extension (SIMT convergence)
+  | SIMT_PUSH
+  | SIMT_POP
 
   deriving (Bounded, Enum, Show, Ord, Eq)
 

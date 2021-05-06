@@ -1,4 +1,5 @@
-entry:
+.global _start
+_start:
 
 # Set stack pointer
 la sp, __stackBase

@@ -3,14 +3,16 @@
 
 // Euclid's algorithm
 int gcd(int x, int y) {
-  while (x != y) {
-    if (x > y)
-      x = x-y;
-    else
-      y = y-x;
-
-    simtConverge();
-  }
+  simtBlock (
+    while (x != y) {
+      simtBlock (
+        if (x > y)
+          x = x-y;
+        else
+          y = y-x;
+      )
+    }
+  )
   return x;
 }
 

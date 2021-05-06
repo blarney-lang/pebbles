@@ -210,9 +210,10 @@ if [ "$TestFPGA" != "" ] ; then
     OK=$(grep "Self test: PASSED" $tmpLog)
     CYCLES=$(grep Cycles: $tmpLog | cut -d' ' -f2)
     INSTRS=$(grep Instrs: $tmpLog | cut -d' ' -f2)
+    DCYCLES=$(python -c "print('%d' % (0x${CYCLES}))")
     IPC=$(python -c "print('%.2f' % (float(0x${INSTRS}) / 0x${CYCLES}))")
     test "$OK" != ""
-    assert $? "" " [IPC=$IPC]"
+    assert $? "" " [IPC=$IPC,Cycles=$DCYCLES]"
   done
 fi
 

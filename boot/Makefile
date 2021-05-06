@@ -2,20 +2,32 @@ PEBBLES_ROOT ?= $(realpath ..)
 
 SIM = $(PEBBLES_ROOT)/sim
 
-# Binary utilities
-RV_ARCH    = rv32i
+# RISC-V subset
+RV_ARCH = rv32i
+
+# Can use Clang or GCC
+USE_CLANG ?= false
+
+ifeq ($(USE_CLANG), true)
+CFLAGS     = --target=riscv64-unknown
+RV_CC      = clang-11
+RV_LD      = ld.lld-11
+RV_OBJCOPY = riscv64-unknown-elf-objcopy
+else
+CFLAGS     = 
 RV_CC      = riscv64-unknown-elf-gcc
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
+endif
 
-# Compiler and linker flags
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -Os \
-          -I $(PEBBLES_ROOT)/inc \
-          -static -mcmodel=medany \
-          -fvisibility=hidden -nostdlib -nostartfiles \
-          -fsingle-precision-constant -fno-builtin-printf \
-          -ffp-contract=off -fno-builtin -ffreestanding
-LDFLAGS = -melf32lriscv -G 0 
+# Compiler and linker flags for code running on the SoC
+CFLAGS := $(CFLAGS) -mabi=ilp32 -march=$(RV_ARCH) -Os \
+         -I $(PEBBLES_ROOT)/inc \
+         -static -mcmodel=medany \
+         -fvisibility=hidden -nostdlib \
+         -fno-builtin-printf -ffp-contract=off \
+         -fno-builtin -ffreestanding
+LDFLAGS := -melf32lriscv -G 0
 
 # C files to compile
 CFILES = boot.c

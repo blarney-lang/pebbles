@@ -28,9 +28,10 @@ import Pebbles.SoC.DRAM.Interface
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.RV32_A
+import Pebbles.Instructions.Mnemonics
 import Pebbles.Instructions.Units.MulUnit
 import Pebbles.Instructions.Units.DivUnit
-import Pebbles.Instructions.Custom.CallDepth
+import Pebbles.Instructions.Custom.SIMT
 
 -- Haskell imports
 import Data.List
@@ -49,10 +50,6 @@ data SIMTExecuteIns =
   , execKernelAddr :: Bit 32
     -- | Wire containing warp command
   , execWarpCmd :: Wire WarpCmd
-    -- | Pulse wire for call depth increment
-  , execCallDepthInc :: PulseWire
-    -- | Pulse wire for call depth decrement
-  , execCallDepthDec :: PulseWire
     -- | Memory unit interface for lane
   , execMemUnit :: MemUnit InstrInfo
   } deriving (Generic, Interface)
@@ -93,7 +90,6 @@ makeSIMTExecuteStage ins s = do
         executeI csrUnit (ins.execMemUnit) s
         executeM mulUnit divUnit s
         executeA (ins.execMemUnit) s
-        executeCallDepth (ins.execCallDepthInc) (ins.execCallDepthDec) s
     , resumeReqs = resumeQueue.toStream
     }
 
@@ -134,10 +130,6 @@ makeSIMTCore config mgmtReqs memUnits = mdo
   -- Apply stack address interleaving
   let memUnits' = interleaveStacks memUnits
 
-  -- Wires for tracking function call depth
-  incCallDepths <- replicateM SIMTLanes makePulseWire
-  decCallDepths <- replicateM SIMTLanes makePulseWire
-
   -- Wire for warp command
   warpCmdWire :: Wire WarpCmd <- makeWire dontCare
 
@@ -153,9 +145,9 @@ makeSIMTCore config mgmtReqs memUnits = mdo
           instrMemInitFile = config.simtCoreInstrMemInitFile
         , instrMemLogNumInstrs = config.simtCoreInstrMemLogNumInstrs
         , logNumWarps = SIMTLogWarps
-        , logMaxCallDepth = SIMTLogMaxCallDepth
+        , logMaxNestLevel = SIMTLogMaxNestLevel
         , enableStatCounters = SIMTEnableStatCounters == 1
-        , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeCallDepth
+        , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeSIMT
         , executeStage =
             [ exec
                 SIMTExecuteIns {
@@ -163,12 +155,11 @@ makeSIMTCore config mgmtReqs memUnits = mdo
                 , execWarpId = pipelineOuts.simtCurrentWarpId.truncate
                 , execKernelAddr = pipelineOuts.simtKernelAddr
                 , execWarpCmd = warpCmdWire
-                , execCallDepthInc = incCD
-                , execCallDepthDec = decCD
                 , execMemUnit = memUnit
                 }
-            | (memUnit, incCD, decCD, i) <-
-                zip4 memUnits' incCallDepths decCallDepths [0..] ]
+            | (memUnit, i) <- zip memUnits' [0..] ]
+        , simtPushTag = SIMT_PUSH
+        , simtPopTag = SIMT_POP
         }
 
   -- Pipeline instantiation
@@ -176,8 +167,6 @@ makeSIMTCore config mgmtReqs memUnits = mdo
     SIMTPipelineIns {
       simtMgmtReqs = mgmtReqs
     , simtWarpCmdWire = warpCmdWire
-    , simtIncCallDepth = map val incCallDepths
-    , simtDecCallDepth = map val decCallDepths
     }
 
   return (pipelineOuts.simtMgmtResps)
