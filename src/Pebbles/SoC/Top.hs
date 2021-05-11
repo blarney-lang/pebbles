@@ -128,26 +128,11 @@ makeSIMTMemSubsystem dramResps = mdo
                 }
               )
           }
-
-    -- Split request streams for SRAM and DRAM
-    let (memReqsSRAM, memReqsDRAM) = unzip
-          [ let isSRAM = isBankedSRAMAccess (reqs.peek) in
-              ( reqs { canPeek = isSRAM .&. reqs.canPeek }
-              , reqs { canPeek = inv isSRAM .&. reqs.canPeek } )
-          | reqs <- map (mapSource prepareReq) memReqs ]
+    let memReqs1 = map (mapSource prepareReq) memReqs
 
     -- Coalescing unit
-    (memRespsDRAM, dramReqs) <- makeCoalescingUnit memReqsDRAM dramResps
-
-    -- Banked SRAMs
-    memRespsSRAM <- makeBankedSRAMs memReqsSRAM
-
-    -- Merge responses
-    memResps <- sequence
-      [ do q <- makePipelineQueue 1
-           makeConnection s (q.toSink)
-           return (q.toStream)
-      | s <- zipWith mergeTwo memRespsSRAM memRespsDRAM ]
+    (memResps, dramReqs) <-
+      makeCoalescingUnit isBankedSRAMAccess memReqs1 dramResps
 
     -- Process response from memory subsystem
     let processResp resp =

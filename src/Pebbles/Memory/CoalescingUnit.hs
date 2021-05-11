@@ -12,12 +12,14 @@ import Blarney
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.SourceSink
+import Blarney.Interconnect
 import qualified Blarney.Vector as V
 
 -- Pebbles imports
 import Pebbles.Util.List
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
+import Pebbles.Memory.BankedSRAMs
 import Pebbles.SoC.DRAM.Interface
 
 -- Haskell imports
@@ -34,39 +36,50 @@ type DRAMReqId = ()
 -- | Info for inflight DRAM requests (internal to this module)
 data CoalescingInfo t_id =
   CoalescingInfo {
-    -- | Use the SameBlock stategy?  (Otherwise, use SameAddress strategy)
     coalInfoUseSameBlock :: Bit 1
-    -- | Coalescing mask (lanes participating in coalesced access)
+    -- ^ Use the SameBlock stategy?  (Otherwise, use SameAddress strategy)
   , coalInfoMask :: Bit SIMTLanes
-    -- | Request id for each lane
+    -- ^ Coalescing mask (lanes participating in coalesced access)
   , coalInfoReqIds :: V.Vec SIMTLanes t_id
-    -- | Mode for SameBlock strategy
+    -- ^ Request id for each lane
   , coalInfoSameBlockMode :: Bit 2
-    -- | Lower bits of address
+    -- ^ Mode for SameBlock strategy
   , coalInfoAddr :: Bit DRAMBeatLogBytes
-    -- | Burst length
+    -- ^ Lower bits of address
   , coalInfoBurstLen :: DRAMBurst
+    -- ^ Burst length
   } deriving (Generic, Bits)
+
+-- | SRAM bank request info
+data BankInfo t_id =
+  BankInfo {
+    bankReqId :: t_id
+    -- ^ Request id
+  , bankLaneId :: Bit SIMTLogLanes
+    -- ^ Id of issuing lane
+  , bankMulticastResp :: Bit 1
+    -- ^ Response should be multicast to multiple lanes
+  }
+  deriving (Generic, Bits)
 
 -- Implementation
 -- ==============
 
 -- | The coalescing unit takes memory requests from multiple SIMT
--- lanes and coalesces them where possible into a single DRAM request
+-- lanes and coalesces them where possible into a single memory request
 -- using two strategies: (1) SameBlock: multiple accesses to the same
 -- DRAM block, where the lower bits of each address equal the SIMT
 -- lane id, are satisfied by a single DRAM burst; (2) SameAddress:
 -- mutliple accesses to the same address are satisifed by a single
--- DRAM access. The second strategy (which always makes progress)
--- is used if the first fails.  We employ a seven stage pipeline:
+-- DRAM/SRAM access. We employ a seven stage pipeline:
 --
 --   0. Consume requests and feed pipeline
 --   1. Pick one SIMT lane as a leader 
 --   2. Determine the leader's request with a mux
 --   3. Evaluate coalescing strategies
 --   4. Choose coalescing strategy and feed back unsatisifed reqs to stage 1
---   5. Issue DRAM requests
---   6. Consume DRAM responses and issue load responses
+--   5. Issue DRAM/SRAM requests
+--   6. Consume DRAM/SRAM responses and issue load responses
 --
 -- Notes:
 --   * The number of SIMT lanes is assumed to be equal to the
@@ -78,13 +91,15 @@ data CoalescingInfo t_id =
 --     ignored but the response signifies that all preceeding stores
 --     have reached DRAM).
 makeCoalescingUnit :: Bits t_id =>
-     -- | Stream of memory requests per lane
-     [Stream (MemReq t_id)]
-     -- | Responses from DRAM
+     (MemReq t_id -> Bit 1)
+     -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
+  -> [Stream (MemReq t_id)]
+     -- ^ Stream of memory requests per lane
   -> Stream (DRAMResp DRAMReqId)
-     -- | Outputs: memory responses per lane and a stream of DRAM requests
+     -- ^ Responses from DRAM
   -> Module ([Stream (MemResp t_id)], Stream (DRAMReq DRAMReqId))
-makeCoalescingUnit memReqs dramResps = do
+     -- ^ Outputs: memory responses per lane and a stream of DRAM requests
+makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
@@ -95,14 +110,16 @@ makeCoalescingUnit memReqs dramResps = do
   go2 :: Reg (Bit 1) <- makeDReg false
   go3 :: Reg (Bit 1) <- makeDReg false
   go4 :: Reg (Bit 1) <- makeDReg false
-  go5 :: Reg (Bit 1) <- makeReg false
+  go5DRAM :: Reg (Bit 1) <- makeReg false
+  go5SRAM :: Reg (Bit 1) <- makeReg false
 
   -- Requests for each pipeline stage
   memReqs1 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
   memReqs2 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
   memReqs3 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
   memReqs4 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
-  memReqs5 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
+  memReqs5DRAM :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
+  memReqs5SRAM :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
 
   -- Pending request mask for each pipeline stage
   pending1 :: Reg (Bit SIMTLanes) <- makeReg dontCare
@@ -119,18 +136,19 @@ makeCoalescingUnit memReqs dramResps = do
   leader2 :: Reg (Bit SIMTLanes) <- makeReg 0
   leader3 :: Reg (Bit SIMTLanes) <- makeReg 0
   leader4 :: Reg (Bit SIMTLanes) <- makeReg 0
+  leader5SRAM :: Reg (Bit SIMTLanes) <- makeReg 0
 
   -- DRAM request queue
   dramReqQueue :: Queue (DRAMReq DRAMReqId) <- makePipelineQueue 1
 
-  -- Inflight requests
+  -- Inflight DRAM requests
   inflightQueue :: Queue (CoalescingInfo t_id) <-
     makeSizedQueue DRAMLogMaxInFlight
 
-  -- Response queues
+  -- DRAM response queues
   -- There's a lot of logic feeding these queues, so let's use a
   -- multi-level shift queue
-  respQueues :: [Queue (MemResp t_id)] <-
+  dramRespQueues :: [Queue (MemResp t_id)] <-
     replicateM SIMTLanes (makeShiftQueue 2)
 
   -- Stage 0: consume requests and feed pipeline
@@ -173,13 +191,6 @@ makeCoalescingUnit memReqs dramResps = do
     when (go1.val .&. stallWire.val.inv) do
       -- Select first pending request as leader
       leader2 <== pending1.val .&. (pending1.val.inv + 1)
-      -- Check that atomics are not in use
-      sequence_
-        [ do dynamicAssert (req.memReqOp .!=. memAtomicOp)
-               "Atomics not yet supported by CoalescingUnit"
-             dynamicAssert (req.memReqOp .!=. memLocalFenceOp)
-               "Local fence not supported by CoalescingUnit"
-        | req <- map val memReqs1 ]
       -- Trigger stage 2
       go2 <== true
       zipWithM_ (<==) memReqs2 (map val memReqs1)
@@ -209,6 +220,9 @@ makeCoalescingUnit memReqs dramResps = do
   sameBlockMode4 :: Reg (Bit 2) <- makeReg dontCare
   sameBlockMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
   sameAddrMask4  :: Reg (Bit SIMTLanes) <- makeReg dontCare
+  sramMask4      :: Reg (Bit SIMTLanes) <- makeReg dontCare
+  sramAllLoads4  :: Reg (Bit 1) <- makeReg dontCare
+  isSRAMAccess4  :: Reg (Bit 1) <- makeReg dontCare
 
   always do
     -- Which requests can be satisfied by SameBlock strategy?
@@ -266,6 +280,11 @@ makeCoalescingUnit memReqs dramResps = do
               .&. (r.memReqAccessWidth .==. leaderReq3.val.memReqAccessWidth)
           | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
 
+    -- Requests destined for banked SRAMs
+    let sramMask = 
+          [ p .&. isBankedSRAMAccess r
+          | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
+
     -- State update
     when (go3.val .&. stallWire.val.inv) do
       -- SameAddress strategy should at least allow the leader to progress
@@ -290,6 +309,12 @@ makeCoalescingUnit memReqs dramResps = do
             else do
               sameBlockMode4 <== 0
               sameBlockMask4 <== byteModeMask
+      -- Is leader accessing banked SRAMs?
+      isSRAMAccess4 <== leaderReq3.val.isBankedSRAMAccess
+      sramMask4 <== fromBitList sramMask
+      sramAllLoads4 <== andList 
+        [ b .==. (req.memReqOp .==. memLoadOp)
+        | (b, req) <- zip sramMask (map val memReqs3) ]
       -- Trigger stage 4
       go4 <== true
       zipWithM_ (<==) memReqs4 (map val memReqs3)
@@ -309,6 +334,12 @@ makeCoalescingUnit memReqs dramResps = do
   -- Which lanes are participating in the strategy
   coalMask :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
+  -- Use SameAddress strategy on SRAM path
+  useSameAddrSRAM :: Reg (Bit 1) <- makeReg dontCare
+
+  -- Which lanes have requests for SRAM
+  sramMask5 :: Reg (Bit SIMTLanes) <- makeReg dontCare
+
   always do
     -- Use SameBlock strategy if it satisfies leader's request and at
     -- least one other request.  Otherwise use SameAddr strategy,
@@ -317,23 +348,42 @@ makeCoalescingUnit memReqs dramResps = do
           ((sameBlockMask4.val .&. leader3.val) .==. leader3.val) .&.
             ((sameBlockMask4.val .&. leader3.val.inv) .!=. 0)
     -- Requests participating in strategy
-    let mask = useSameBlock ? (sameBlockMask4.val, sameAddrMask4.val)
+    let mask = isSRAMAccess4.val ? (sramMask4.val,
+                 useSameBlock ? (sameBlockMask4.val, sameAddrMask4.val))
     -- Try to trigger next stage
     when (go4.val) do
+      let busy = isSRAMAccess4.val ? (go5SRAM.val, go5DRAM.val)
       -- Check if stage 5 is currently busy
-      if go5.val
+      if busy
         then do
           -- If so, stall pipeline
           stallWire <== true
         else do
           -- Otherwise, setup and trigger next stage
-          go5 <== true
-          coalSameBlockStrategy <== useSameBlock
-          coalSameBlockMode <== sameBlockMode4.val
-          coalMask <== mask
-          leaderReq5 <== leaderReq4.val
-          forM_ (zip memReqs4 memReqs5) \(r4, r5) -> do
-            r5 <== r4.val
+          if isSRAMAccess4.val
+            then do
+              go5SRAM <== true
+              sramMask5 <== sramMask4.val
+              leader5SRAM <== leader4.val
+              forM_ (zip memReqs4 memReqs5SRAM) \(r4, r5) -> do
+                r5 <== r4.val
+              -- Use same address strategy if all SRAM accesses are
+              -- loads to the same address
+              useSameAddrSRAM <== sramAllLoads4.val .&&.
+                sramMask4.val .==. sameAddrMask4.val
+            else do
+              go5DRAM <== true
+              coalSameBlockStrategy <== useSameBlock
+              coalSameBlockMode <== sameBlockMode4.val
+              coalMask <== mask
+              leaderReq5 <== leaderReq4.val
+              forM_ (zip memReqs4 memReqs5DRAM) \(r4, r5) -> do
+                r5 <== r4.val
+              -- Check that atomics are not in use
+              dynamicAssert (leaderReq4.val.memReqOp .!=. memAtomicOp)
+                "Atomics not yet supported on DRAM path"
+              dynamicAssert (leaderReq4.val.memReqOp .!=. memLocalFenceOp)
+                "Local fence not supported on DRAM path"
           -- Determine any remaining pending requests
           let remaining = pending4.val .&. inv mask
           -- If there are any, feed them back
@@ -343,8 +393,8 @@ makeCoalescingUnit memReqs dramResps = do
             zipWithM_ (<==) memReqs1 (map val memReqs4)
             pending1 <== remaining
 
-  -- Stage 5: Issue DRAM requests
-  -- ============================
+  -- Stage 5 (DRAM): Issue DRAM requests
+  -- ===================================
 
   -- Count register for burst store
   storeCount :: Reg DRAMBurst <- makeReg 0
@@ -373,14 +423,14 @@ makeCoalescingUnit memReqs dramResps = do
                slice @15 @8 (r2.val.memReqData),
                slice @23 @16 (r3.val.memReqData),
                slice @31 @24 (r4.val.memReqData)]
-            | [r1, r2, r3, r4] <- groupsOf 4 memReqs5]
+            | [r1, r2, r3, r4] <- groupsOf 4 memReqs5DRAM]
     let sameBlockData16 :: V.Vec DRAMBeatHalfs (Bit 16) =
           V.fromList $ concat $
             [ [r1.val.memReqData.lower, r2.val.memReqData.upper]
-            | [r1, r2] <- groupsOf 2 memReqs5 ]
+            | [r1, r2] <- groupsOf 2 memReqs5DRAM ]
     let sameBlockData32 :: V.Vec DRAMBeatWords (Bit 32) =
           V.fromList $ selectHalf (storeCount.val.truncate)
-            [r.val.memReqData | r <- memReqs5]
+            [r.val.memReqData | r <- memReqs5DRAM]
     let sameBlockData :: DRAMBeat =
           [pack sameBlockData8,
              pack sameBlockData16,
@@ -404,7 +454,7 @@ makeCoalescingUnit memReqs dramResps = do
                   genByteEnable
                     (r.val.memReqAccessWidth)
                     (r.val.memReqAddr)
-              | (en, r) <- zip (mask.toBitList) memReqs5 ]
+              | (en, r) <- zip (mask.toBitList) memReqs5DRAM ]
     let sameBlockBE = [sameBlockBE8, sameBlockBE16, sameBlockBE32] !
            sameBlockMode
     -- DRAM byte enable field for SameAddress strategy
@@ -426,7 +476,7 @@ makeCoalescingUnit memReqs dramResps = do
           , dramReqBurst = burstLen
           }
     -- Try to issue DRAM request
-    when (go5.val) do
+    when (go5DRAM.val) do
       -- Check that we can make a DRAM request
       when (inflightQueue.notFull .&. dramReqQueue.notFull) do
         -- Issue DRAM request
@@ -436,7 +486,7 @@ makeCoalescingUnit memReqs dramResps = do
               CoalescingInfo {
                 coalInfoUseSameBlock = useSameBlock
               , coalInfoMask = mask
-              , coalInfoReqIds = V.fromList [r.val.memReqId | r <- memReqs5]
+              , coalInfoReqIds = V.fromList [r.val.memReqId | r <- memReqs5DRAM]
               , coalInfoSameBlockMode = sameBlockMode
               , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
               , coalInfoBurstLen = burstLen - 1
@@ -446,19 +496,80 @@ makeCoalescingUnit memReqs dramResps = do
                         .||. leaderReq5.val.memReqOp .==. memGlobalFenceOp
         when hasResp do
           enq inflightQueue info
-          go5 <== false
+          go5DRAM <== false
         -- Handle store: increment burst count
         when (leaderReq5.val.memReqOp .==. memStoreOp) do
           let newStoreCount = storeCount.val + 1
           if newStoreCount .==. burstLen
             then do
               storeCount <== 0
-              go5 <== false
+              go5DRAM <== false
             else do
               storeCount <== newStoreCount
 
-  -- Stage 6: Handle DRAM responses
-  -- ==============================
+  -- Stage 5 (SRAM): Issue SRAM requests
+  -- ===================================
+
+  -- Multicast queue for SameAddress strategy on SRAM, i.e. a queue of
+  -- bit vectors denoting lanes that wish to receive each response
+  let sramMcastQueueLogSize = 5
+  sramMulticastQueue :: Queue (Bit SIMTLanes) <-
+    makeSizedQueue sramMcastQueueLogSize
+
+  -- Wires indicating when SRAM requests have been consumed
+  sramConsumeWires <- replicateM SIMTLanes (makeWire false)
+
+  -- Request stream per SRAM bank
+  let sramReqs = 
+        [ Source {
+            -- For SameAddress strategy, only the leader makes a request
+            canPeek = go5SRAM.val .&&.
+                        (useSameAddrSRAM.val ?
+                          (isLeader .&&. sramMulticastQueue.notFull, valid))
+          , peek = req {
+              memReqId =
+                BankInfo {
+                  bankReqId = req.memReqId
+                  -- When using the SameAddress strategy, arrange for
+                  -- the response to come back via lane 0
+                , bankLaneId = useSameAddrSRAM.val ? (0, fromInteger i)
+                  -- For SameAddress strategy, mark a multicast response
+                , bankMulticastResp = useSameAddrSRAM.val
+                }
+            }
+          , consume = consumeWire <== true
+          }
+        | (req, valid, consumeWire, isLeader, i) <-
+            zip5 (map val memReqs5SRAM)
+                 (sramMask5.val.toBitList)
+                 sramConsumeWires
+                 (leader5SRAM.val.toBitList)
+                 [0..]
+        ]
+
+  -- Instantiate banked SRAMs
+  let sramRoute info = info.bankLaneId
+  sramResps <- makeBankedSRAMs sramRoute sramReqs
+
+  always do
+    when (go5SRAM.val) do
+      -- Bit vector of streams being consumed
+      let sramConsumeVec :: Bit SIMTLanes = fromBitList
+            (map val sramConsumeWires)
+      -- Remove consumed requests from bit mask
+      sramMask5 <== sramMask5.val .&. inv sramConsumeVec
+      -- Have all requests been consumed?
+      let done = useSameAddrSRAM.val ?
+                   (sramConsumeVec .==. leader5SRAM.val,
+                    sramConsumeVec .==. sramMask5.val)
+      when (done) do
+        go5SRAM <== false
+        -- Record multicast response in queue
+        when (useSameAddrSRAM.val) do
+          enq sramMulticastQueue (sramMask5.val)
+
+  -- Stage 6 (DRAM): Handle responses
+  -- ================================
 
   -- Count register for burst load
   loadCount :: Reg DRAMBurst <- makeReg 0
@@ -489,7 +600,7 @@ makeCoalescingUnit memReqs dramResps = do
     -- Are needed response queues ready?
     let respQueuesReady =
           andList [ active .<=. q.notFull
-                  | (active, q) <- zip activeAny respQueues
+                  | (active, q) <- zip activeAny dramRespQueues
                   ]
     -- Determine items of data response
     let beatBytes :: V.Vec DRAMBeatBytes (Bit 8) = unpack (resp.dramRespData)
@@ -527,7 +638,7 @@ makeCoalescingUnit memReqs dramResps = do
           loadCount <== loadCount.val + 1
 
       -- Response info for each SIMT lane
-      let respInfo = zip4 respQueues activeAny
+      let respInfo = zip4 dramRespQueues activeAny
                           (V.toList (info.coalInfoReqIds))
                           (V.toList sameBlockData)
 
@@ -537,4 +648,46 @@ makeCoalescingUnit memReqs dramResps = do
           let respData = useSameBlock ? (d, sameAddrData)
           enq respQueue (MemResp id respData)
 
-  return (map toStream respQueues, toStream dramReqQueue)
+  -- Stage 6 (SRAM): Handle responses
+  -- ================================
+
+  -- SRAM response queues
+  sramRespQueues :: [Queue (MemResp t_id)] <-
+    replicateM SIMTLanes (makeShiftQueue 1)
+
+  always do
+    -- Helper to drop bank info from SRAM response id
+    let untag resp = resp { memRespId = resp.memRespId.bankReqId }
+
+    -- Look for multicast responses (which always return via lane 0)
+    -- that need to be delivered to multiple lanes
+    let respStream0 = sramResps.head
+    let resp0 = respStream0.peek
+    when (sramMulticastQueue.canDeq .&&.
+            respStream0.canPeek .&&.
+              resp0.memRespId.bankMulticastResp) do
+      let mcastMask = sramMulticastQueue.first
+      let guardedQueues = zip (mcastMask.toBitList) sramRespQueues
+      -- Check that all receivers are ready
+      let allReady = andList [g .==>. q.notFull | (g, q) <- guardedQueues]
+      when allReady do
+        sramMulticastQueue.deq
+        sequence_ [ when g do
+                      enq q (respStream0.peek.untag)
+                      respStream0.consume
+                  | (g, q) <- guardedQueues ]
+
+    -- Handle non-multicast responses
+    when (respStream0.canPeek .==>. resp0.memRespId.bankMulticastResp.inv) do
+      sequence_ [ when (s.canPeek .&&. q.notFull) do
+                    enq q (s.peek.untag)
+                    s.consume
+                | (s, q) <- zip sramResps sramRespQueues ]
+
+  -- Merge SRAM and DRAM responses
+  finalResps <- sequence
+    [ makeGenericFairMergeTwo (makePipelineQueue 1) (const true)
+       (toStream q0, toStream q1)
+    | (q0, q1) <- zip dramRespQueues sramRespQueues ]
+
+  return (finalResps, toStream dramReqQueue)
