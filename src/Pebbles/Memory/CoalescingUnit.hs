@@ -313,7 +313,7 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
       isSRAMAccess4 <== leaderReq3.val.isBankedSRAMAccess
       sramMask4 <== fromBitList sramMask
       sramAllLoads4 <== andList 
-        [ b .==. (req.memReqOp .==. memLoadOp)
+        [ b .==>. (req.memReqOp .==. memLoadOp)
         | (b, req) <- zip sramMask (map val memReqs3) ]
       -- Trigger stage 4
       go4 <== true
