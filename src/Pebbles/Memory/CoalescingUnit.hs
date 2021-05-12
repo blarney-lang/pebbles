@@ -510,12 +510,6 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
   -- Stage 5 (SRAM): Issue SRAM requests
   -- ===================================
 
-  -- Multicast queue for SameAddress strategy on SRAM, i.e. a queue of
-  -- bit vectors denoting lanes that wish to receive each response
-  let sramMcastQueueLogSize = 5
-  sramMulticastQueue :: Queue (Bit SIMTLanes) <-
-    makeSizedQueue sramMcastQueueLogSize
-
   -- Wires indicating when SRAM requests have been consumed
   sramConsumeWires <- replicateM SIMTLanes (makeWire false)
 
@@ -524,8 +518,7 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
         [ Source {
             -- For SameAddress strategy, only the leader makes a request
             canPeek = go5SRAM.val .&&.
-                        (useSameAddrSRAM.val ?
-                          (isLeader .&&. sramMulticastQueue.notFull, valid))
+                        (useSameAddrSRAM.val ? (isLeader, valid))
           , peek = req {
               memReqId =
                 BankInfo {
@@ -564,9 +557,6 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
                     sramConsumeVec .==. sramMask5.val)
       when (done) do
         go5SRAM <== false
-        -- Record multicast response in queue
-        when (useSameAddrSRAM.val) do
-          enq sramMulticastQueue (sramMask5.val)
 
   -- Stage 6 (DRAM): Handle responses
   -- ================================
@@ -663,19 +653,14 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
     -- that need to be delivered to multiple lanes
     let respStream0 = sramResps.head
     let resp0 = respStream0.peek
-    when (sramMulticastQueue.canDeq .&&.
-            respStream0.canPeek .&&.
-              resp0.memRespId.bankMulticastResp) do
-      let mcastMask = sramMulticastQueue.first
-      let guardedQueues = zip (mcastMask.toBitList) sramRespQueues
+    when (respStream0.canPeek .&&.
+            resp0.memRespId.bankMulticastResp) do
       -- Check that all receivers are ready
-      let allReady = andList [g .==>. q.notFull | (g, q) <- guardedQueues]
+      let allReady = andList [q.notFull | q <- sramRespQueues]
       when allReady do
-        sramMulticastQueue.deq
-        sequence_ [ when g do
-                      enq q (respStream0.peek.untag)
-                      respStream0.consume
-                  | (g, q) <- guardedQueues ]
+        respStream0.consume
+        sequence_ [ enq q (respStream0.peek.untag)
+                  | q <- sramRespQueues ]
 
     -- Handle non-multicast responses
     when (respStream0.canPeek .==>. resp0.memRespId.bankMulticastResp.inv) do
