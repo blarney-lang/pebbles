@@ -370,7 +370,8 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
               -- Use same address strategy if all SRAM accesses are
               -- loads to the same address
               useSameAddrSRAM <== sramAllLoads4.val .&&.
-                sramMask4.val .==. sameAddrMask4.val
+                sramMask4.val .==. ones .&&.
+                  sameAddrMask4.val .==. ones
             else do
               go5DRAM <== true
               coalSameBlockStrategy <== useSameBlock
