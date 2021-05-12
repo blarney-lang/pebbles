@@ -495,8 +495,8 @@ makeSIMTPipeline c inputs =
               store stateMem (warpId5.val)
                 SIMTThreadState {
                     -- Only update PC if not retrying
-                    simtPC = retryWire.val.inv ?
-                      (pcNextWire.val, state5.val.simtPC)
+                    simtPC = retryWire.val ?
+                      (state5.val.simtPC, pcNextWire.val)
                   , simtNestLevel = (nestLevel + nestInc) - nestDec
                   , simtRetry = retryWire.val
                   }
