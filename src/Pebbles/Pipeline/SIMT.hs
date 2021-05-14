@@ -182,8 +182,6 @@ makeSIMTPipeline c inputs =
     warpId5 :: Reg (Bit t_logWarps) <- makeReg dontCare
 
     -- Thread state, for each stage
-    state2 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
-      makeReg dontCare
     state3 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
       makeReg dontCare
     state4 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
@@ -510,7 +508,7 @@ makeSIMTPipeline c inputs =
                 suspMask!(warpId5.val) <== true
 
             -- Writeback stage
-            if resultWire.active.old
+            if delay false (resultWire.active)
               then do
                 let idx = (warpId5.val.old, instr5.val.dst.old)
                 let value = resultWire.val.old

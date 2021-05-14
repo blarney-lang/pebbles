@@ -42,8 +42,8 @@ int main()
   bool isSim = cpuUartBlockingGet();
 
   // Vector and matrix dimensions for benchmarking
-  int width = isSim ? 128 : 512;
-  int height = isSim ? 64 : 512;
+  int width = isSim ? 128 : 1024;
+  int height = isSim ? 64 : 1024;
 
   // Input and outputs
   simt_aligned int mat[height*width], vecIn[width], vecOut[height];

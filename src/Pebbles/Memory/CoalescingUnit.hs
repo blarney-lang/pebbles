@@ -1,4 +1,4 @@
--- Simple coalescing unit connecting SIMT lanes to DRAM
+-- Simple coalescing unit connecting SIMT lanes to DRAM and banked SRAMs
 
 module Pebbles.Memory.CoalescingUnit 
   ( makeCoalescingUnit
@@ -11,6 +11,7 @@ module Pebbles.Memory.CoalescingUnit
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+import Blarney.Option
 import Blarney.SourceSink
 import Blarney.Interconnect
 import qualified Blarney.Vector as V
@@ -57,7 +58,7 @@ data BankInfo t_id =
     -- ^ Request id
   , bankLaneId :: Bit SIMTLogLanes
     -- ^ Id of issuing lane
-  , bankMulticastResp :: Bit 1
+  , bankMcastId :: Option (Bit SIMTMcastIdSize)
     -- ^ Response should be multicast to multiple lanes
   }
   deriving (Generic, Bits)
@@ -370,8 +371,7 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
               -- Use same address strategy if all SRAM accesses are
               -- loads to the same address
               useSameAddrSRAM <== sramAllLoads4.val .&&.
-                sramMask4.val .==. ones .&&.
-                  sameAddrMask4.val .==. ones
+                sramMask4.val .==. sameAddrMask4.val
             else do
               go5DRAM <== true
               coalSameBlockStrategy <== useSameBlock
@@ -514,12 +514,24 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
   -- Wires indicating when SRAM requests have been consumed
   sramConsumeWires <- replicateM SIMTLanes (makeWire false)
 
+  -- Multicast array for same-address coalescing of banked SRAMs
+  -- (Banked SRAM responses are out-of-order)
+  mcastArray :: RAM (Bit SIMTMcastIdSize) (Bit SIMTLanes) <- makeDualRAM
+  mcastIdNext :: Reg (Bit SIMTMcastIdSize) <- makeReg 0
+  mcastIdsInUse :: [Reg (Bit 1)] <- replicateM (2^SIMTMcastIdSize) (makeReg 0)
+
+  -- Is the next multicast id available?
+  -- (Buffer this signal as obtaining ids is not latency critical)
+  let mcastIdAvailable =
+        delay false (inv (map val mcastIdsInUse ! mcastIdNext.val))
+
   -- Request stream per SRAM bank
   let sramReqs = 
         [ Source {
             -- For SameAddress strategy, only the leader makes a request
             canPeek = go5SRAM.val .&&.
-                        (useSameAddrSRAM.val ? (isLeader, valid))
+                        (useSameAddrSRAM.val ?
+                           (isLeader .&&. mcastIdAvailable, valid))
           , peek = req {
               memReqId =
                 BankInfo {
@@ -528,7 +540,8 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
                   -- the response to come back via lane 0
                 , bankLaneId = useSameAddrSRAM.val ? (0, fromInteger i)
                   -- For SameAddress strategy, mark a multicast response
-                , bankMulticastResp = useSameAddrSRAM.val
+                , bankMcastId =
+                    Option (useSameAddrSRAM.val) (mcastIdNext.val)
                 }
             }
           , consume = consumeWire <== true
@@ -558,6 +571,11 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
                     sramConsumeVec .==. sramMask5.val)
       when (done) do
         go5SRAM <== false
+        -- Record multicast response in array
+        when (useSameAddrSRAM.val) do
+          store mcastArray (mcastIdNext.val) (sramMask5.val)
+          (mcastIdsInUse ! mcastIdNext.val) <== true
+          mcastIdNext <== mcastIdNext.val + 1
 
   -- Stage 6 (DRAM): Handle responses
   -- ================================
@@ -646,29 +664,44 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
   sramRespQueues :: [Queue (MemResp t_id)] <-
     replicateM SIMTLanes (makeShiftQueue 1)
 
+  -- SRAM response state
+  -- State 0: process non-multicast response
+  -- State 1: process multicast response
+  sramRespState :: Reg (Bit 1) <- makeReg 0
+
+  -- Multicast SRAM response register
+  mcastResp <- makeReg dontCare
+
+  -- Helper to drop bank info from SRAM response id
+  let sramUntag resp = resp { memRespId = resp.memRespId.bankReqId }
+
   always do
-    -- Helper to drop bank info from SRAM response id
-    let untag resp = resp { memRespId = resp.memRespId.bankReqId }
+    when (sramRespState.val .==. 0) do
+      -- Look for multicast responses (which always return via lane 0)
+      -- that need to be delivered to multiple lanes
+      let respStream0 = sramResps.head
+      let resp0 = respStream0.peek
+      if respStream0.canPeek .&&. resp0.memRespId.bankMcastId.valid
+        then do
+          let allReady = andList [q.notFull | q <- sramRespQueues]
+          when allReady do
+            load mcastArray (resp0.memRespId.bankMcastId.val)
+            respStream0.consume
+            mcastResp <== resp0
+            sramRespState <== 1
+        else do
+          -- Handle non-multicast responses
+          sequence_ [ when (s.canPeek .&&. q.notFull) do
+                        enq q (s.peek.sramUntag)
+                        s.consume
+                    | (s, q) <- zip sramResps sramRespQueues ]
 
-    -- Look for multicast responses (which always return via lane 0)
-    -- that need to be delivered to multiple lanes
-    let respStream0 = sramResps.head
-    let resp0 = respStream0.peek
-    when (respStream0.canPeek .&&.
-            resp0.memRespId.bankMulticastResp) do
-      -- Check that all receivers are ready
-      let allReady = andList [q.notFull | q <- sramRespQueues]
-      when allReady do
-        respStream0.consume
-        sequence_ [ enq q (respStream0.peek.untag)
-                  | q <- sramRespQueues ]
-
-    -- Handle non-multicast responses
-    when (respStream0.canPeek .==>. resp0.memRespId.bankMulticastResp.inv) do
-      sequence_ [ when (s.canPeek .&&. q.notFull) do
-                    enq q (s.peek.untag)
-                    s.consume
-                | (s, q) <- zip sramResps sramRespQueues ]
+    -- Perform multicast
+    when (sramRespState.val .==. 1) do
+      (mcastIdsInUse ! mcastResp.val.memRespId.bankMcastId.val) <== false
+      sequence_ [ when cond do enq q (mcastResp.val.sramUntag)
+                | (cond, q) <- zip (mcastArray.out.toBitList) sramRespQueues ]
+      sramRespState <== 0
 
   -- Merge SRAM and DRAM responses
   finalResps <- sequence
