@@ -14,11 +14,10 @@ create_clock -period 20 [get_ports CLK_50_B3C]
 create_clock -period 20 [get_ports CLK_50_B3I]
 create_clock -period 20 [get_ports CLK_50_B3L]
 
-create_clock -period "166.667 MHz" [get_ports DDR4A_REFCLK_p]
-create_clock -period "166.667 MHz" [get_ports DDR4B_REFCLK_p]
-create_clock -period "166.667 MHz" [get_ports DDR4C_REFCLK_p]
-create_clock -period "166.667 MHz" [get_ports DDR4D_REFCLK_p]
-
+create_clock -period "266.666666 MHz" [get_ports DDR4A_REFCLK_p]
+create_clock -period "166.666666 MHz" [get_ports DDR4B_REFCLK_p]
+create_clock -period "166.666666 MHz" [get_ports DDR4C_REFCLK_p]
+create_clock -period "166.666666 MHz" [get_ports DDR4D_REFCLK_p]
 
 #**************************************************************
 # Create Generated Clock

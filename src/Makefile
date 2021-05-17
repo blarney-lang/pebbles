@@ -6,7 +6,7 @@ BUILD_DIR = $(PEBBLES_ROOT)/src/build
 
 .PHONY: all
 all:
-	$(BLC) $(BLC_FLAGS) -I$(BLC_INC) \
+	$(BLC) -fno-cpr-anal $(BLC_FLAGS) -I$(BLC_INC) \
     -hidir $(BUILD_DIR) -odir $(BUILD_DIR) Main.hs -o Main
 	./Main
 

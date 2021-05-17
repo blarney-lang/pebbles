@@ -106,7 +106,9 @@ data SIMTThreadState t_logInstrs t_logMaxNestLevel =
     simtPC :: Bit t_logInstrs
     -- ^ Program counter
   , simtNestLevel :: Bit t_logMaxNestLevel
-    -- ^ Function call depth (smaller is deeper)
+    -- ^ SIMT divergence nesting level
+  , simtRetry :: Bit 1
+    -- ^ The last thing this thread did was a retry
   }
   deriving (Generic, Bits)
 
@@ -180,8 +182,6 @@ makeSIMTPipeline c inputs =
     warpId5 :: Reg (Bit t_logWarps) <- makeReg dontCare
 
     -- Thread state, for each stage
-    state2 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
-      makeReg dontCare
     state3 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
       makeReg dontCare
     state4 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
@@ -239,6 +239,7 @@ makeSIMTPipeline c inputs =
               SIMTThreadState {
                 simtPC = start.val
               , simtNestLevel = 0
+              , simtRetry = false
               }
         sequence_ [ store stateMem (warpIdCounter.val) initState
                   | stateMem <- stateMems ]
@@ -311,8 +312,11 @@ makeSIMTPipeline c inputs =
     -- For timing, we split this stage over several cycles
     let stage1Substages = 2
 
-    -- Active threads are those with the max nesting level,
-    let maxOf a b = if a.simtNestLevel .>. b.simtNestLevel then a else b
+    -- Active threads are those with the max nesting level
+    -- On a tie, favour instructions undergoing a retry
+    let maxOf a b =
+          if (a.simtNestLevel # a.simtRetry) .>.
+             (b.simtNestLevel # b.simtRetry) then a else b
     let state2 = pipelinedTree1 stage1Substages maxOf
                    [mem.out | mem <- stateMems]
 
@@ -332,8 +336,9 @@ makeSIMTPipeline c inputs =
       activeMask3 <== activeMask
 
       -- Assert that at least one thread in the warp must be active
-      dynamicAssert (activeList.orList)
-        "SIMT pipeline error: no active threads in warp"
+      when go2 do
+        dynamicAssert (activeList.orList)
+          "SIMT pipeline error: no active threads in warp"
 
       -- Issue load to instruction memory
       load instrMem (state2.simtPC)
@@ -477,22 +482,25 @@ makeSIMTPipeline c inputs =
               -- Trigger execute stage
               execStage.execute
 
-              -- Only update PC if not retrying
+              -- Update thread state
+              let nestInc = isSIMTPush.zeroExtendCast
+              let nestDec = isSIMTPop.zeroExtendCast
+              let nestLevel = state5.val.simtNestLevel
+              dynamicAssert (isSIMTPop .==>. nestLevel .!=. 0)
+                  "SIMT pipeliene: SIMT nest level underflow"
+              dynamicAssert (isSIMTPush .==>. nestLevel .!=. ones)
+                  "SIMT pipeliene: SIMT nest level overflow"
+              store stateMem (warpId5.val)
+                SIMTThreadState {
+                    -- Only update PC if not retrying
+                    simtPC = retryWire.val ?
+                      (state5.val.simtPC, pcNextWire.val)
+                  , simtNestLevel = (nestLevel + nestInc) - nestDec
+                  , simtRetry = retryWire.val
+                  }
+
+              -- Increment instruction count
               when (retryWire.val.inv) do
-                -- Compute new call depth increment
-                let inc = isSIMTPush.zeroExtendCast
-                let dec = isSIMTPop.zeroExtendCast
-                let nestLevel = state5.val.simtNestLevel
-                dynamicAssert (isSIMTPop .==>. nestLevel .!=. 0)
-                    "SIMT pipeliene: SIMT nest level underflow"
-                dynamicAssert (isSIMTPush .==>. nestLevel .!=. ones)
-                    "SIMT pipeliene: SIMT nest level overflow"
-                store stateMem (warpId5.val)
-                  SIMTThreadState {
-                      simtPC = pcNextWire.val
-                    , simtNestLevel = (nestLevel + inc) - dec
-                    }
-                -- Increment instruction count
                 incInstrCount <== true
 
               -- Update suspension bits
@@ -500,7 +508,7 @@ makeSIMTPipeline c inputs =
                 suspMask!(warpId5.val) <== true
 
             -- Writeback stage
-            if resultWire.active.old
+            if delay false (resultWire.active)
               then do
                 let idx = (warpId5.val.old, instr5.val.dst.old)
                 let value = resultWire.val.old

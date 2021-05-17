@@ -105,7 +105,7 @@ if [ "$TestSim" != "" ]; then
   echo -n "Starting simulator: "
   pushd . > /dev/null
   cd ../sim
-  ./sim &
+  ./sim +verilator+rand+reset+2 &
   SIM_PID=$!
   sleep 1
   popd > /dev/null

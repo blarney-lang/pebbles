@@ -56,12 +56,12 @@ link.ld: $(PEBBLES_ROOT)/apps/Common/link.ld.h
 	cpp -P -I $(PEBBLES_ROOT)/inc $< > link.ld
 
 Run: checkenv code.v data.v $(RUN_CPP) $(RUN_H)
-	gcc -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o Run $(RUN_CPP) \
+	g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o Run $(RUN_CPP) \
     -fno-exceptions -ljtag_atlantic -ljtag_client \
     -L $(QUARTUS_ROOTDIR)/linux64/ -Wl,-rpath,$(QUARTUS_ROOTDIR)/linux64
 
 RunSim: code.v data.v $(RUN_CPP) $(RUN_H)
-	gcc -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc -o RunSim $(RUN_CPP)
+	g++ -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc -o RunSim $(RUN_CPP)
 
 # Raise error if QUARTUS_ROOTDIR not set
 .PHONY: checkenv

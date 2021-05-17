@@ -44,6 +44,9 @@ NOTE("Size of each SRAM bank (in words)")
 NOTE("Enable SIMT stat counters")
 #define SIMTEnableStatCounters 1
 
+NOTE("Size of SRAM multicast id in coalescing unit")
+#define SIMTMcastIdSize 4
+
 NOTE("CPU configuration")
 NOTE("=================")
 

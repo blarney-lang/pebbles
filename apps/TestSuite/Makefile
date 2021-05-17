@@ -64,20 +64,22 @@ link.ld: $(PEBBLES_ROOT)/apps/Common/link.ld.h
 	@$(RV_CC) -D_TEST_SIMT_ $(CFLAGS) -Wall -c -o $@ $<
 
 TestCPU: checkenv TestCPU.cpp
-	@gcc -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o TestCPU TestCPU.cpp \
+	@g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o TestCPU TestCPU.cpp \
     -fno-exceptions -ljtag_atlantic -ljtag_client \
     -L $(QUARTUS_ROOTDIR)/linux64/ -Wl,-rpath,$(QUARTUS_ROOTDIR)/linux64
 
 TestCPUSim: TestCPU.cpp
-	@gcc -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc -o TestCPUSim TestCPU.cpp
+	@g++ -std=c++11 -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc \
+    -o TestCPUSim TestCPU.cpp
 
 TestSIMT: checkenv TestSIMT.cpp
-	@gcc -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o TestSIMT TestSIMT.cpp \
+	@g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o TestSIMT TestSIMT.cpp \
     -fno-exceptions -ljtag_atlantic -ljtag_client \
     -L $(QUARTUS_ROOTDIR)/linux64/ -Wl,-rpath,$(QUARTUS_ROOTDIR)/linux64
 
 TestSIMTSim: TestSIMT.cpp
-	@gcc -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc -o TestSIMTSim TestSIMT.cpp
+	@g++ -std=c++11 -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc \
+    -o TestSIMTSim TestSIMT.cpp
 
 .PHONY: test-cpu
 test-cpu: v-files TestCPU
