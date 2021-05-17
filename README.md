@@ -71,3 +71,14 @@ $ cd apps/VecAdd
 $ make RunSim
 $ ./RunSim
 ```
+
+To run all tests and benchmarks, use the test script.  This script
+will launch the simulator automatically, so first make sure it's not
+already running.
+
+```sh
+$ killall sim
+$ cd test
+$ ./test.sh            # Run in simulation
+$ ./test.sh --fpga     # Run on FPGA (DE10-Pro)
+```
