@@ -12,6 +12,5 @@ all:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f Main
-	rm -f Pebbles.v SIMTExecuteStage.v
+	rm -f Main *.v
 	#rm -f $(shell find Pebbles -regex ".*\.\(hi\|o\)$$")

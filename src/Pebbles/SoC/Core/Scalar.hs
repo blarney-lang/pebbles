@@ -44,7 +44,7 @@ data ScalarCoreIns =
   , scalarMemUnit :: MemUnit InstrInfo
     -- | Management responses from SIMT core
   , scalarSIMTResps :: Stream SIMTResp
-  }
+  } deriving (Generic, Interface)
 
 -- | Scalar core outputs
 data ScalarCoreOuts =
@@ -53,7 +53,7 @@ data ScalarCoreOuts =
     scalarUartOut :: Stream (Bit 8)
     -- | Management requests to SIMT core
   , scalarSIMTReqs :: Stream SIMTReq
-  }
+  } deriving (Generic, Interface)
 
 -- | RV32IM core with UART input and output channels
 makeScalarCore ::

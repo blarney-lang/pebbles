@@ -21,6 +21,7 @@ import Pebbles.Util.List
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
 import Pebbles.Memory.BankedSRAMs
+import Pebbles.Pipeline.Interface
 import Pebbles.SoC.DRAM.Interface
 
 -- Haskell imports
@@ -94,13 +95,15 @@ data BankInfo t_id =
 makeCoalescingUnit :: Bits t_id =>
      (MemReq t_id -> Bit 1)
      -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
-  -> [Stream (MemReq t_id)]
+  -> V.Vec SIMTLanes (Stream (MemReq t_id))
      -- ^ Stream of memory requests per lane
   -> Stream (DRAMResp DRAMReqId)
      -- ^ Responses from DRAM
-  -> Module ([Stream (MemResp t_id)], Stream (DRAMReq DRAMReqId))
+  -> Module (V.Vec SIMTLanes (Stream (MemResp t_id)), Stream (DRAMReq DRAMReqId))
      -- ^ Outputs: memory responses per lane and a stream of DRAM requests
-makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
+makeCoalescingUnit isBankedSRAMAccess memReqsVec dramResps = do
+  let memReqs = V.toList memReqsVec
+
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
@@ -556,7 +559,8 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
 
   -- Instantiate banked SRAMs
   let sramRoute info = info.bankLaneId
-  sramResps <- makeBankedSRAMs sramRoute sramReqs
+  sramRespsVec <- makeBankedSRAMs sramRoute (V.fromList sramReqs)
+  let sramResps = V.toList sramRespsVec
 
   always do
     when (go5SRAM.val) do
@@ -709,4 +713,4 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
        (toStream q0, toStream q1)
     | (q0, q1) <- zip dramRespQueues sramRespQueues ]
 
-  return (finalResps, toStream dramReqQueue)
+  return (V.fromList finalResps, toStream dramReqQueue)

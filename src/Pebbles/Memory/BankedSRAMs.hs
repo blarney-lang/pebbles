@@ -8,6 +8,7 @@ import Blarney
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.Interconnect
+import Blarney.Vector (Vec, toList, fromList)
 
 -- Pebbles imports
 import Pebbles.Util.Counter
@@ -20,13 +21,12 @@ import Pebbles.Memory.Alignment
 makeBankedSRAMs :: forall t_id. Bits t_id =>
      (t_id -> Bit SIMTLogLanes)
      -- ^ Routing function
-  -> [Stream (MemReq t_id)]
+  -> Vec SIMTLanes (Stream (MemReq t_id))
      -- ^ Stream of memory requests per lane
-  -> Module [Stream (MemResp t_id)]
+  -> Module (Vec SIMTLanes (Stream (MemResp t_id)))
      -- ^ Stream of memory responses per lane
-makeBankedSRAMs route reqStreams = do
-  staticAssert (length reqStreams == SIMTLanes)
-    "makeBankedSRAMs: number of streams /= number of lanes"
+makeBankedSRAMs route reqStreamsVec = do
+  let reqStreams = toList reqStreamsVec
 
   -- On a fence, ensure one request per bank
   let remap (laneId :: Bit SIMTLogLanes) req =
@@ -51,7 +51,7 @@ makeBankedSRAMs route reqStreams = do
   let switchResp = makeFairExchange (makeShiftQueue 1)
   respStreams1 <- makeShuffleExchange switchResp routeResp respStreams0
 
-  return respStreams1
+  return (fromList respStreams1)
 
 -- | Create SRAM bank
 makeSRAMBank :: Bits t_id =>
