@@ -3,7 +3,7 @@ QPF = DE10_Pro.qpf
 
 .PHONY: one
 one: checkenv qsys
-	quartus_sh --flow compile $(QPF)
+	time quartus_sh --flow compile $(QPF)
 
 .PHONY: many
 many: checkenv qsys
