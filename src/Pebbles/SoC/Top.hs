@@ -12,7 +12,7 @@ import Blarney.Stream
 import Blarney.SourceSink
 import Blarney.Connectable
 import Blarney.Interconnect
-import Blarney.Vector (Vec, toList, fromList)
+import Blarney.Vector (Vec, toList, fromList, genWith)
 
 -- Pebbles imports
 import Pebbles.SoC.JTAGUART
@@ -146,8 +146,13 @@ makeSIMTMemSubsystem dramResps = mdo
     let memReqs1 = map (mapSource prepareReq) memReqs
 
     -- Coalescing unit
-    (memResps, dramReqs) <-
-      makeSIMTCoalescingUnit isBankedSRAMAccess (fromList memReqs1) dramResps
+    (memResps, sramReqs, dramReqs) <-
+      makeSIMTCoalescingUnit isBankedSRAMAccess
+        (fromList memReqs1) dramResps sramResps
+
+    -- Banked SRAMs
+    let sramRoute info = info.bankLaneId
+    sramResps <- makeSIMTBankedSRAMs sramRoute sramReqs
 
     -- Process response from memory subsystem
     let processResp resp =
@@ -191,3 +196,8 @@ makeSIMTMemSubsystem dramResps = mdo
 makeSIMTCoalescingUnit isBankedSRAMAccess =
   makeBoundary "SIMTCoalescingUnit"
     (makeCoalescingUnit @SIMTMemReqId isBankedSRAMAccess)
+
+-- Banked SRAMs (synthesis boundary)
+makeSIMTBankedSRAMs route =
+  makeBoundary "SIMTBankedSRAMs"
+    (makeBankedSRAMs @(BankInfo (InstrInfo, MemReqInfo)) route)
