@@ -7,7 +7,7 @@ import Blarney
 
 -- | SIMT pipeline management commands
 data SIMTCmd = SIMTCmd (Bit 2)
-  deriving (Generic, Bits, Cmp)
+  deriving (Generic, Interface, Bits, Cmp)
 
 -- | Write to tightly-coupled instruction memory
 simtCmd_WriteInstr = SIMTCmd 0
@@ -23,7 +23,7 @@ simtCmd_AskStats = SIMTCmd 3
 
 -- | Id of a performance stat counter
 data SIMTStatId = SIMTStatId (Bit 1)
-  deriving (Generic, Bits, Cmp)
+  deriving (Generic, Interface, Bits, Cmp)
 
 -- | Cycle count
 simtStat_Cycles = SIMTStatId 0
@@ -37,7 +37,7 @@ data SIMTReq =
     simtReqCmd :: SIMTCmd
   , simtReqAddr :: Bit 32
   , simtReqData :: Bit 32
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | SIMT pipeline management response (to CPU)
 type SIMTResp = Bit 32

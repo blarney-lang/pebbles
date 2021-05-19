@@ -13,6 +13,7 @@ import Blarney.PulseWire
 import Blarney.SourceSink
 import Blarney.Connectable
 import Blarney.Interconnect
+import Blarney.Vector (Vec, toList)
 
 -- Pebbles imports
 import Pebbles.CSRs.Hart
@@ -56,7 +57,7 @@ data SIMTExecuteIns =
 
 -- | Execute stage for a SIMT lane (synthesis boundary)
 makeSIMTExecuteStage :: SIMTExecuteIns -> State -> Module ExecuteStage
-makeSIMTExecuteStage ins s = do
+makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
   -- Multiplier per vector lane
   mulUnit <- makeFullMulUnit
 
@@ -93,11 +94,6 @@ makeSIMTExecuteStage ins s = do
     , resumeReqs = resumeQueue.toStream
     }
 
--- | Generate verilog for execute stage
-genSIMTExecuteStage :: String -> IO ()
-genSIMTExecuteStage dir =
-  writeVerilogModule makeSIMTExecuteStage "SIMTExecuteStage" dir
-
 -- Core
 -- ====
 
@@ -119,25 +115,17 @@ makeSIMTCore ::
      -- | SIMT management requests
   -> Stream SIMTReq
      -- | Memory unit per vector lane
-  -> [MemUnit InstrInfo]
+  -> Vec SIMTLanes (MemUnit InstrInfo)
      -- | SIMT management responses
   -> Module (Stream SIMTResp)
-makeSIMTCore config mgmtReqs memUnits = mdo
-  -- Sanity check
-  staticAssert (length memUnits == SIMTLanes)
-    "makeSIMTCore: number of memory units doesn't match number of lanes"
+makeSIMTCore config mgmtReqs memUnitsVec = mdo
+  let memUnits = toList memUnitsVec
 
   -- Apply stack address interleaving
   let memUnits' = interleaveStacks memUnits
 
   -- Wire for warp command
   warpCmdWire :: Wire WarpCmd <- makeWire dontCare
-
-  -- Synthesis boundary on execute stage?
-  let exec = if config.simtCoreExecBoundary
-               then makeInstanceWithTypeOf makeSIMTExecuteStage
-                      "SIMTExecuteStage"
-               else makeSIMTExecuteStage
 
   -- Pipeline configuration
   let pipelineConfig =
@@ -149,7 +137,7 @@ makeSIMTCore config mgmtReqs memUnits = mdo
         , enableStatCounters = SIMTEnableStatCounters == 1
         , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeSIMT
         , executeStage =
-            [ exec
+            [ makeSIMTExecuteStage
                 SIMTExecuteIns {
                   execLaneId = fromInteger i
                 , execWarpId = pipelineOuts.simtCurrentWarpId.truncate

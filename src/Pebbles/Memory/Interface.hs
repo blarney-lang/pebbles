@@ -105,7 +105,7 @@ data MemReqInfo =
   , memReqInfoIsUnsigned :: Bit 1
     -- ^ Is it an unsigned load?
   }
-  deriving (Generic, Bits)
+  deriving (Generic, Interface, Bits)
 
 -- Helper functions
 -- ================

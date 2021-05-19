@@ -12,6 +12,7 @@ import Blarney.Stream
 import Blarney.SourceSink
 import Blarney.Connectable
 import Blarney.Interconnect
+import Blarney.Vector (Vec, toList, fromList, genWith)
 
 -- Pebbles imports
 import Pebbles.SoC.JTAGUART
@@ -19,6 +20,7 @@ import Pebbles.SoC.Core.SIMT
 import Pebbles.SoC.Core.Scalar
 import Pebbles.SoC.DRAM.DualPort
 import Pebbles.SoC.DRAM.Interface
+import Pebbles.Pipeline.Interface
 import Pebbles.Memory.SBDCache
 import Pebbles.Memory.Alignment
 import Pebbles.Memory.Interface
@@ -56,12 +58,7 @@ data SoCOuts =
 makeTop :: SoCIns -> Module SoCOuts
 makeTop socIns = mdo
   -- Scalar core
-  let cpuConfig =
-        ScalarCoreConfig {
-          scalarCoreInstrMemInitFile = Just "boot.mif"
-        , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
-      }
-  cpuOuts <- makeScalarCore cpuConfig
+  cpuOuts <- makeCPUCore
     ScalarCoreIns {
       scalarUartIn = fromUART
     , scalarMemUnit = cpuMemUnit
@@ -69,16 +66,10 @@ makeTop socIns = mdo
     }
 
   -- Data cache
-  (cpuMemUnit, dramReqs0) <- makeSBDCache dramResps0
+  (cpuMemUnit, dramReqs0) <- makeCPUDataCache dramResps0
 
   -- SIMT core
-  let simtConfig =
-        SIMTCoreConfig {
-          simtCoreInstrMemInitFile = Nothing
-        , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
-        , simtCoreExecBoundary = True
-        }
-  simtMgmtResps <- makeSIMTCore simtConfig
+  simtMgmtResps <- makeSIMTAccelerator
     (cpuOuts.scalarSIMTReqs)
     simtMemUnits
 
@@ -100,14 +91,38 @@ makeTop socIns = mdo
     , socDRAMOuts = avlDRAMOuts
     }
 
+-- CPU core (synthesis boundary)
+makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
+  where
+    config =
+      ScalarCoreConfig {
+        scalarCoreInstrMemInitFile = Just "boot.mif"
+      , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+      }
+
+-- CPU data cache (synthesis boundary)
+makeCPUDataCache = makeBoundary "CPUDataCache" (makeSBDCache @InstrInfo)
+
+-- SIMT accelerator (synthesis boundary)
+makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
+  where
+    config =
+      SIMTCoreConfig {
+        simtCoreInstrMemInitFile = Nothing
+      , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+      , simtCoreExecBoundary = True
+      }
+
 -- SIMT memory subsystem
 -- =====================
 
-makeSIMTMemSubsystem :: Bits t_id =>
+type SIMTMemReqId = (InstrInfo, MemReqInfo)
+
+makeSIMTMemSubsystem ::
      -- | DRAM responses
      Stream (DRAMResp ())
      -- | DRAM requests and per-lane mem units
-  -> Module ([MemUnit t_id], Stream (DRAMReq ()))
+  -> Module (Vec SIMTLanes (MemUnit InstrInfo), Stream (DRAMReq ()))
 makeSIMTMemSubsystem dramResps = mdo
     -- Warp preserver
     (memReqs, simtMemUnits) <- makeWarpPreserver memResps1
@@ -131,8 +146,13 @@ makeSIMTMemSubsystem dramResps = mdo
     let memReqs1 = map (mapSource prepareReq) memReqs
 
     -- Coalescing unit
-    (memResps, dramReqs) <-
-      makeCoalescingUnit isBankedSRAMAccess memReqs1 dramResps
+    (memResps, sramReqs, dramReqs) <-
+      makeSIMTCoalescingUnit isBankedSRAMAccess
+        (fromList memReqs1) dramResps sramResps
+
+    -- Banked SRAMs
+    let sramRoute info = info.bankLaneId
+    sramResps <- makeSIMTBankedSRAMs sramRoute sramReqs
 
     -- Process response from memory subsystem
     let processResp resp =
@@ -145,7 +165,7 @@ makeSIMTMemSubsystem dramResps = mdo
               (resp.memRespId.snd.memReqInfoAccessWidth)
               (resp.memRespId.snd.memReqInfoIsUnsigned)
           }
-    let memResps1 = map (mapSource processResp) memResps
+    let memResps1 = map (mapSource processResp) (toList memResps)
 
     -- Ensure that the SRAM base address is suitably aligned
     -- (If so, remapping SRAM addresses is unecessary)
@@ -153,7 +173,7 @@ makeSIMTMemSubsystem dramResps = mdo
       then error "SRAM base address not suitably aligned"
       else return ()
 
-    return (simtMemUnits, dramReqs)
+    return (fromList simtMemUnits, dramReqs)
 
   where
     -- SRAM-related addresses
@@ -171,3 +191,13 @@ makeSIMTMemSubsystem dramResps = mdo
            addr .<. fromInteger simtStacksStart .&&.
              addr .>=. fromInteger sramBase)
       where addr = req.memReqAddr
+
+-- Coalescing unit (synthesis boundary)
+makeSIMTCoalescingUnit isBankedSRAMAccess =
+  makeBoundary "SIMTCoalescingUnit"
+    (makeCoalescingUnit @SIMTMemReqId isBankedSRAMAccess)
+
+-- Banked SRAMs (synthesis boundary)
+makeSIMTBankedSRAMs route =
+  makeBoundary "SIMTBankedSRAMs"
+    (makeBankedSRAMs @(BankInfo (InstrInfo, MemReqInfo)) route)

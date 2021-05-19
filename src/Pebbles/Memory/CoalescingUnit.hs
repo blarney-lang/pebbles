@@ -2,6 +2,7 @@
 
 module Pebbles.Memory.CoalescingUnit 
   ( makeCoalescingUnit
+  , BankInfo(..)
   ) where
 
 -- SoC parameters
@@ -20,7 +21,7 @@ import qualified Blarney.Vector as V
 import Pebbles.Util.List
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
-import Pebbles.Memory.BankedSRAMs
+import Pebbles.Pipeline.Interface
 import Pebbles.SoC.DRAM.Interface
 
 -- Haskell imports
@@ -61,7 +62,7 @@ data BankInfo t_id =
   , bankMcastId :: Option (Bit SIMTMcastIdSize)
     -- ^ Response should be multicast to multiple lanes
   }
-  deriving (Generic, Bits)
+  deriving (Generic, Interface, Bits)
 
 -- Implementation
 -- ==============
@@ -94,13 +95,22 @@ data BankInfo t_id =
 makeCoalescingUnit :: Bits t_id =>
      (MemReq t_id -> Bit 1)
      -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
-  -> [Stream (MemReq t_id)]
+  -> V.Vec SIMTLanes (Stream (MemReq t_id))
      -- ^ Stream of memory requests per lane
   -> Stream (DRAMResp DRAMReqId)
      -- ^ Responses from DRAM
-  -> Module ([Stream (MemResp t_id)], Stream (DRAMReq DRAMReqId))
-     -- ^ Outputs: memory responses per lane and a stream of DRAM requests
-makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
+  -> V.Vec SIMTLanes (Stream (MemResp (BankInfo t_id)))
+     -- ^ Responses from SRAM, per lane/bank
+  -> Module ( V.Vec SIMTLanes (Stream (MemResp t_id))
+            , V.Vec SIMTLanes (Stream (MemReq (BankInfo t_id)))
+            , Stream (DRAMReq DRAMReqId)
+            )
+     -- ^ Outputs: memory responses per lane, SRAM requests per
+     -- lane/bank, and DRAM requests
+makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
+  let memReqs = V.toList memReqsVec
+  let sramResps = V.toList sramRespsVec
+
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
@@ -283,7 +293,7 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
 
     -- Requests destined for banked SRAMs
     let sramMask = 
-          [ p .&. isBankedSRAMAccess r
+          [ p .&. isSRAMAccess r
           | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
 
     -- State update
@@ -311,7 +321,7 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
               sameBlockMode4 <== 0
               sameBlockMask4 <== byteModeMask
       -- Is leader accessing banked SRAMs?
-      isSRAMAccess4 <== leaderReq3.val.isBankedSRAMAccess
+      isSRAMAccess4 <== leaderReq3.val.isSRAMAccess
       sramMask4 <== fromBitList sramMask
       sramAllLoads4 <== andList 
         [ b .==>. (req.memReqOp .==. memLoadOp)
@@ -554,10 +564,6 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
                  [0..]
         ]
 
-  -- Instantiate banked SRAMs
-  let sramRoute info = info.bankLaneId
-  sramResps <- makeBankedSRAMs sramRoute sramReqs
-
   always do
     when (go5SRAM.val) do
       -- Bit vector of streams being consumed
@@ -709,4 +715,4 @@ makeCoalescingUnit isBankedSRAMAccess memReqs dramResps = do
        (toStream q0, toStream q1)
     | (q0, q1) <- zip dramRespQueues sramRespQueues ]
 
-  return (finalResps, toStream dramReqQueue)
+  return (V.fromList finalResps, V.fromList sramReqs, toStream dramReqQueue)

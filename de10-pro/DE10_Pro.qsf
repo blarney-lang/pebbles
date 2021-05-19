@@ -1713,6 +1713,7 @@ set_global_assignment -name ENABLE_ED_CRC_CHECK ON
 set_global_assignment -name MINIMUM_SEU_INTERVAL 0
 set_global_assignment -name ACTIVE_SERIAL_CLOCK AS_FREQ_100MHZ
 set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 1
+set_global_assignment -name VERILOG_FILE ../src/Pebbles.v
 set_global_assignment -name IP_FILE reset_release.ip
 set_global_assignment -name MIF_FILE boot.mif
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAM.v
@@ -1721,8 +1722,6 @@ set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMTrueD
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMBE.v
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMDualBE.v
 set_global_assignment -name VERILOG_FILE ../blarney/Verilog/Altera/BlockRAMTrueDualBE.v
-set_global_assignment -name VERILOG_FILE ../src/Pebbles.v
-set_global_assignment -name VERILOG_FILE ../src/SIMTExecuteStage.v
 set_global_assignment -name QSYS_FILE DE10_Pro_QSYS.qsys
 set_global_assignment -name SDC_FILE DE10_Pro.sdc
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_emif_s10_ddr4.ip
@@ -1738,3 +1737,4 @@ set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_clock_in.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_jtag_uart_0.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_Pebbles_0.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_mm_clockcross_DDR4.ip
+set_global_assignment -name SEARCH_PATH ../src
