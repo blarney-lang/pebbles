@@ -7,8 +7,8 @@ import Blarney.SourceSink
 -- Local imports
 import Pebbles.Pipeline.Interface
 
--- Processor/memory interface
--- ==========================
+-- Interface to memory subsystem
+-- =============================
 
 -- | Memory operation
 type MemReqOp = Bit 3
@@ -37,6 +37,7 @@ data AMOInfo =
 type AtomicOp = Bit 5
 
 -- | Atomic opcodes (use the RISC-V encoding)
+-- Atomic operations are only valid for word-sized accesses
 amoLROp   :: AtomicOp = 0b00010
 amoSCOp   :: AtomicOp = 0b00011
 amoSwapOp :: AtomicOp = 0b00001
@@ -52,7 +53,7 @@ amoMaxUOp :: AtomicOp = 0b11100
 -- | Memory access width (bytes = 2 ^ AccessWidth)
 type AccessWidth = Bit 2
 
--- | Byte, half-word, or word access?
+-- | Byte, half-word, or word word access?
 isByteAccess, isHalfAccess, isWordAccess :: AccessWidth -> Bit 1
 isByteAccess = (.==. 0b00)
 isHalfAccess = (.==. 0b01)
@@ -75,6 +76,8 @@ data MemReq id =
     -- ^ Data to store
   , memReqIsUnsigned :: Bit 1
     -- ^ Is it an unsigned load?
+  , memReqIsFinal :: Bit 1
+    -- ^ Is this the final request of an atomic transaction?
   } deriving (Generic, Interface, Bits)
 
 -- | Memory responses to the processor
@@ -86,7 +89,7 @@ data MemResp id =
     -- ^ Response data
   } deriving (Generic, Interface, Bits)
 
--- | Memory unit interface
+-- | Interface to the memory unit
 data MemUnit id =
   MemUnit {
     memReqs :: Sink (MemReq id)

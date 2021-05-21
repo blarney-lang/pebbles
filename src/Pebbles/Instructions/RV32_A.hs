@@ -65,5 +65,6 @@ executeA memUnit s = do
           , memReqAddr = s.opA
           , memReqData = s.opB
           , memReqIsUnsigned = true
+          , memReqIsFinal = true
           }
       else s.retry

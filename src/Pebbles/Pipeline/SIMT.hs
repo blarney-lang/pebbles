@@ -291,7 +291,7 @@ makeSIMTPipeline c inputs =
 
     -- Stream of warps to schedule next
     warpStream <- makeGenericFairMergeTwo (makePipelineQueue 1) (const true)
-                    (toStream releaseQueue, toStream warpQueue)
+                    (const true) (toStream releaseQueue, toStream warpQueue)
 
     always do
       -- Load state for next warp on each lane

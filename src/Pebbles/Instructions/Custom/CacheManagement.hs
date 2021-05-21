@@ -38,5 +38,6 @@ executeCacheMgmt memUnit s = do
           , memReqAddr = s.opA
           , memReqData = dontCare
           , memReqIsUnsigned = dontCare
+          , memReqIsFinal = true
           }
       else s.retry

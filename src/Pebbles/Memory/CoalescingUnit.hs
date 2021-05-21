@@ -476,15 +476,21 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           V.fromList [ subWord .==. fromInteger i ? (leaderBE, 0)
                      | i <- [0..DRAMBeatWords-1] ]
     let sameAddrBE :: Bit DRAMBeatBytes = pack sameAddrBEVec
+    -- Is it a DRAM store request?
+    let isStore = leaderReq5.val.memReqOp .==. memStoreOp
+    -- Is it the final store in a transaction?
+    let newStoreCount = storeCount.val + 1
+    let isFinalStore = newStoreCount .==. burstLen
     -- Formulate DRAM request
     let dramReq =
           DRAMReq {
             dramReqId = ()
-          , dramReqIsStore = leaderReq5.val.memReqOp .==. memStoreOp
+          , dramReqIsStore = isStore
           , dramReqAddr = dramAddr.truncate .&. addrMask.zeroExtend.inv
           , dramReqData = useSameBlock ? (sameBlockData, sameAddrData)
           , dramReqByteEn = useSameBlock ? (sameBlockBE, sameAddrBE)
           , dramReqBurst = burstLen
+          , dramReqIsFinal = isStore .==>. isFinalStore
           }
     -- Try to issue DRAM request
     when (go5DRAM.val) do
@@ -510,8 +516,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           go5DRAM <== false
         -- Handle store: increment burst count
         when (leaderReq5.val.memReqOp .==. memStoreOp) do
-          let newStoreCount = storeCount.val + 1
-          if newStoreCount .==. burstLen
+          if isFinalStore
             then do
               storeCount <== 0
               go5DRAM <== false
@@ -712,7 +717,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
   -- Merge SRAM and DRAM responses
   finalResps <- sequence
     [ makeGenericFairMergeTwo (makePipelineQueue 1) (const true)
-       (toStream q0, toStream q1)
+       (const true) (toStream q0, toStream q1)
     | (q0, q1) <- zip dramRespQueues sramRespQueues ]
 
   return (V.fromList finalResps, V.fromList sramReqs, toStream dramReqQueue)

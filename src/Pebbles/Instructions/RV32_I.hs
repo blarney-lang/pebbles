@@ -160,6 +160,7 @@ executeI csrUnit memUnit s = do
           , memReqAddr = memAddr
           , memReqData = s.opB
           , memReqIsUnsigned = s.instr.getIsUnsignedLoad
+          , memReqIsFinal = true
           }
       else s.retry
 
