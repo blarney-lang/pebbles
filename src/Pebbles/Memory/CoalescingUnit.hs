@@ -232,10 +232,23 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
   sameBlockMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
   sameAddrMask4  :: Reg (Bit SIMTLanes) <- makeReg dontCare
   sramMask4      :: Reg (Bit SIMTLanes) <- makeReg dontCare
-  sramAllLoads4  :: Reg (Bit 1) <- makeReg dontCare
   isSRAMAccess4  :: Reg (Bit 1) <- makeReg dontCare
 
   always do
+    -- We assume that inputs to the coalescing unit have passed
+    -- through the warp preserver, which means that all requests being
+    -- processed simultaneously have arisen from the same instruction.
+    -- This implies that they all have the same access width and
+    -- memory operation.
+    let sameOpAndAccessWidth = andList
+          [ valid .==>.
+              (leaderReq3.val.memReqAccessWidth .==. req.val.memReqAccessWidth
+                .&&. leaderReq3.val.memReqOp .==. req.val.memReqOp)
+          | (req, valid) <- zip memReqs3 (pending3.val.toBitList) ]
+    when (go3.val) do
+      dynamicAssert sameOpAndAccessWidth
+        "Coalescining unit: requests have different op or access width"
+
     -- Which requests can be satisfied by SameBlock strategy?
     -- ------------------------------------------------------
 
@@ -248,28 +261,23 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
     -- allows efficient sub-word stack access, where stacks are
     -- interleaved at the word level.
     let sameBlockMatch req (laneId :: Bit SIMTLogLanes) =
-            [ sameOpAndBlock .&. byteMatch
-            , sameOpAndBlock .&. halfMatch
-            , sameOpAndBlock .&. wordMatch ]
+            [ sameBlock .&&. byteMatch
+            , sameBlock .&&. halfMatch
+            , sameBlock .&&. wordMatch ]
           where
             a1 = req.memReqAddr
             a2 = leaderReq3.val.memReqAddr
-            aw1 = req.memReqAccessWidth
-            aw2 = leaderReq3.val.memReqAccessWidth
-            sameOpAndBlock =
-                  (req.memReqOp .==. leaderReq3.val.memReqOp)
-              .&. (slice @31 @(SIMTLogLanes+2) a1 .==.
-                     slice @31 @(SIMTLogLanes+2) a2)
-            byteMatch = aw1.isByteAccess .&. aw2.isByteAccess
-                    .&. (slice @(SIMTLogLanes-1) @0 a1 .==. laneId)
-                    .&. (slice @(SIMTLogLanes+1) @SIMTLogLanes a1 .==.
-                           slice @(SIMTLogLanes+1) @SIMTLogLanes a2)
-            halfMatch = aw1.isHalfAccess .&. aw2.isHalfAccess
-                    .&. (slice @SIMTLogLanes @1 a1 .==. laneId)
-                    .&. (at @(SIMTLogLanes+1) a1 .==. at @(SIMTLogLanes+1) a2)
-            wordMatch = (aw1 .==. aw2)
-                    .&. (slice @1 @0 a1 .==. slice @1 @0 a2)
-                    .&. (slice @(SIMTLogLanes+1) @2 a1 .==. laneId)
+            aw = leaderReq3.val.memReqAccessWidth
+            sameBlock =
+              slice @31 @(SIMTLogLanes+2) a1 .==.
+                slice @31 @(SIMTLogLanes+2) a2
+            byteMatch = slice @(SIMTLogLanes-1) @0 a1 .==. laneId
+                   .&&. slice @(SIMTLogLanes+1) @SIMTLogLanes a1 .==.
+                          slice @(SIMTLogLanes+1) @SIMTLogLanes a2
+            halfMatch = slice @SIMTLogLanes @1 a1 .==. laneId
+                   .&&. at @(SIMTLogLanes+1) a1 .==. at @(SIMTLogLanes+1) a2
+            wordMatch = slice @1 @0 a1 .==. slice @1 @0 a2
+                   .&&. slice @(SIMTLogLanes+1) @2 a1 .==. laneId
 
     -- Which requests satisfy each SameBlock mode?
     let sameBlockMasks :: [Bit SIMTLanes] =
@@ -286,9 +294,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
 
     -- Requests satisfied by SameAddress strategy
     let sameAddrMaskVal :: Bit SIMTLanes = fromBitList
-          [ p .&. (r.memReqOp .==. leaderReq3.val.memReqOp)
-              .&. (r.memReqAddr .==. leaderReq3.val.memReqAddr)
-              .&. (r.memReqAccessWidth .==. leaderReq3.val.memReqAccessWidth)
+          [ p .&&. r.memReqAddr .==. leaderReq3.val.memReqAddr
           | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
 
     -- Requests destined for banked SRAMs
@@ -323,9 +329,6 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
       -- Is leader accessing banked SRAMs?
       isSRAMAccess4 <== leaderReq3.val.isSRAMAccess
       sramMask4 <== fromBitList sramMask
-      sramAllLoads4 <== andList 
-        [ b .==>. (req.memReqOp .==. memLoadOp)
-        | (b, req) <- zip sramMask (map val memReqs3) ]
       -- Trigger stage 4
       go4 <== true
       zipWithM_ (<==) memReqs4 (map val memReqs3)
@@ -380,7 +383,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
                 r5 <== r4.val
               -- Use same address strategy if all SRAM accesses are
               -- loads to the same address
-              useSameAddrSRAM <== sramAllLoads4.val .&&.
+              useSameAddrSRAM <== leaderReq4.val.memReqOp .==. memLoadOp .&&.
                 sramMask4.val .==. sameAddrMask4.val
             else do
               go5DRAM <== true
