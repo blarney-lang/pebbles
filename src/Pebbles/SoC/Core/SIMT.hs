@@ -88,7 +88,7 @@ makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
   return
     ExecuteStage {
       execute = do
-        executeI csrUnit (ins.execMemUnit) s
+        executeI (Just mulUnit) csrUnit (ins.execMemUnit) s
         executeM mulUnit divUnit s
         executeA (ins.execMemUnit) s
     , resumeReqs = resumeQueue.toStream

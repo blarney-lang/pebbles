@@ -99,7 +99,7 @@ makeScalarCore config inputs = mdo
     , executeStage = \s -> return
         ExecuteStage {
           execute = do
-            executeI csrUnit (inputs.scalarMemUnit) s
+            executeI Nothing csrUnit (inputs.scalarMemUnit) s
             executeM mulUnit divUnit s
             executeCacheMgmt (inputs.scalarMemUnit) s
         , resumeReqs = mergeTree
