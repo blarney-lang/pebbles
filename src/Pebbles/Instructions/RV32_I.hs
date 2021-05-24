@@ -148,7 +148,7 @@ executeI shiftUnit csrUnit memUnit s = do
               , mulReqUnsignedA = s.opcode `is` [SRL, SLL] .||. noShift
               , mulReqUnsignedB = true
               }
-        else s.retry
+          else s.retry
 
   let branch =
         orList [
