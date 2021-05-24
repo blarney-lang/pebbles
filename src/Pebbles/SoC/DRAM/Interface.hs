@@ -17,29 +17,31 @@ type DRAMByteEn = Bit DRAMBeatBytes
 -- | DRAM request
 data DRAMReq id = 
   DRAMReq {
-    -- | Request id
     dramReqId :: id
-    -- | Store operation?
+    -- ^ Request id
   , dramReqIsStore :: Bit 1
-    -- | Address
+    -- ^ Store operation?
   , dramReqAddr :: DRAMAddr
-    -- | Data to store
+    -- ^ Address
   , dramReqData :: DRAMBeat
-    -- | Byte enable of store
+    -- ^ Data to store
   , dramReqByteEn :: DRAMByteEn
-    -- | Burst
+    -- ^ Byte enable of store
   , dramReqBurst :: DRAMBurst
+    -- ^ Burst
+  , dramReqIsFinal :: Bit 1
+    -- ^ Is this the final request in an atomic transaction?
   } deriving (Generic, FShow, Bits, Interface)
 
 -- | DRAM response
 data DRAMResp id =
   DRAMResp {
-    -- | Response id
     dramRespId :: id
-    -- | Beat id for burst
+    -- ^ Response id
   , dramRespBurstId :: DRAMBurst
-    -- | Result of load operation
+    -- ^ Beat id for burst
   , dramRespData :: DRAMBeat
+    -- ^ Result of load operation
   } deriving (Generic, FShow, Bits, Interface)
 
 -- Avalon DRAM interface

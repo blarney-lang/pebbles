@@ -39,17 +39,20 @@ makeBankedSRAMs route reqStreamsVec = do
                     | (s, id) <- zip reqStreams [0..] ]
 
   -- Shuffle-exchange network on requests
-  let routeReq req = slice @(SIMTLogLanes+1) @2 (req.memReqAddr)
   let switchReq = makeFairExchange (makeShiftQueue 1)
-  reqStreams2 <- makeShuffleExchange switchReq routeReq reqStreams1
+  let routeReq req = slice @(SIMTLogLanes+1) @2 (req.memReqAddr)
+  let isFinalReq req = req.memReqIsFinal
+  reqStreams2 <- makeShuffleExchange switchReq routeReq isFinalReq reqStreams1
 
   -- Instantiate SRAM banks
   respStreams0 <- mapM makeSRAMBank reqStreams2
 
   -- Shuffle-exchange network on responses
-  let routeResp resp = resp.memRespId.route
   let switchResp = makeFairExchange (makeShiftQueue 1)
-  respStreams1 <- makeShuffleExchange switchResp routeResp respStreams0
+  let routeResp resp = resp.memRespId.route
+  let isFinalResp resp = true
+  respStreams1 <- makeShuffleExchange switchResp routeResp
+                    isFinalResp respStreams0
 
   return (fromList respStreams1)
 

@@ -201,6 +201,7 @@ makeSBDCache dramResps = do
                     , dramReqData = dataMem.outBE
                     , dramReqByteEn = ones
                     , dramReqBurst = 1
+                    , dramReqIsFinal = true
                     }
               -- Issue writeback
               when (tagMem.out.lineValid .&. tagMem.out.lineDirty) do
@@ -235,6 +236,7 @@ makeSBDCache dramResps = do
               , dramReqData = dontCare
               , dramReqByteEn = 0
               , dramReqBurst = 1
+              , dramReqIsFinal = true
               }
         -- Issue writeback
         enq dramReqQueue dramReq

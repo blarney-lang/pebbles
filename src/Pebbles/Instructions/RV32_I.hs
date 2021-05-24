@@ -14,6 +14,7 @@ import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.Mnemonics
 import Pebbles.Instructions.Units.AddUnit
+import Pebbles.Instructions.Units.MulUnit
 
 -- Decode stage
 -- ============
@@ -74,8 +75,17 @@ getFenceFlags = makeFieldSelector decodeI "fence"
 -- Execute stage
 -- =============
 
-executeI :: CSRUnit -> MemUnit InstrInfo -> State -> Action ()
-executeI csrUnit memUnit s = do
+executeI ::
+     Maybe MulUnit
+     -- ^ Optionally use multiplier to implement shifts
+  -> CSRUnit
+     -- ^ Access to CSRs
+  -> MemUnit InstrInfo
+     -- ^ Access to memory
+  -> State
+     -- ^ Pipeline state
+  -> Action ()
+executeI shiftUnit csrUnit memUnit s = do
   -- Add/sub/compare unit
   let AddOuts sum less equal = addUnit 
         AddIns {
@@ -106,13 +116,39 @@ executeI csrUnit memUnit s = do
   when (s.opcode `is` [AUIPC]) do
     s.result <== s.pc.val + s.opBorImm
 
-  when (s.opcode `is` [SLL]) do
-    s.result <== s.opA .<<. slice @4 @0 (s.opBorImm)
+  case shiftUnit of
 
-  when (s.opcode `is` [SRL, SRA]) do
-    let ext = s.opcode `is` [SRA] ? (at @31 (s.opA), 0)
-    let opAExt = ext # (s.opA)
-    s.result <== truncate (opAExt .>>>. slice @4 @0 (s.opBorImm))
+    -- Use barrel shifter
+    Nothing -> do
+      let shiftAmount = slice @4 @0 (s.opBorImm)
+
+      when (s.opcode `is` [SLL]) do
+        s.result <== s.opA .<<. shiftAmount
+
+      when (s.opcode `is` [SRL, SRA]) do
+        let ext = s.opcode `is` [SRA] ? (at @31 (s.opA), 0)
+        let opAExt = ext # (s.opA)
+        s.result <== truncate (opAExt .>>>. shiftAmount)
+
+    -- Use multiplier
+    Just mulUnit -> do
+      when (s.opcode `is` [SLL, SRL, SRA]) do
+        if mulUnit.mulReqs.canPut
+          then do
+            info <- s.suspend
+            let shiftAmount = slice @4 @0 (s.opBorImm)
+            let noShift = shiftAmount .==. 0
+            put (mulUnit.mulReqs)
+              MulReq {
+                mulReqInfo = info
+              , mulReqA = s.opA
+              , mulReqB = 1 .<<. (if s.opcode `is` [SLL]
+                  then shiftAmount else negate shiftAmount)
+              , mulReqLower = s.opcode `is` [SLL] .||. noShift
+              , mulReqUnsignedA = s.opcode `is` [SRL, SLL] .||. noShift
+              , mulReqUnsignedB = true
+              }
+        else s.retry
 
   let branch =
         orList [

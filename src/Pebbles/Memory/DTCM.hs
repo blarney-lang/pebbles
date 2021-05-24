@@ -79,7 +79,14 @@ makeDTCM conf =
         memReqs =
           Sink {
             canPut = full.inv
-          , put = (reqWire <==)
+          , put = \req -> do
+              reqWire <== req
+              -- Check for unsupported ops
+              let uops = [ memAtomicOp,
+                         , memLocalFenceOp
+                         , memGlobalFenceOp ]
+              dynamicAssert (andList [req.memReqOp .!=. op | op <- uops])
+                "Atomics & fences not yet supported by DTCM"
           }
       , memResps =
           Source {

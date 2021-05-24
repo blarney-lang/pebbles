@@ -24,19 +24,19 @@ type InstrId = Bit InstrIdWidth
 -- | Instruction info for suspension/resumption
 data InstrInfo =
   InstrInfo {
-    -- | Instruction id
     instrId :: InstrId
-    -- | Destination register of suspended instruction
+    -- ^ Instruction id
   , instrDest :: RegId
+    -- ^ Destination register of suspended instruction
   } deriving (Generic, Interface, Bits)
 
 -- | Resume request to pipeline for multi-cycle instructions
 data ResumeReq =
   ResumeReq {
-    -- | Instruction info from the original suspend call
     resumeReqInfo :: InstrInfo
-    -- | Data representing the result of the suspended operation
+    -- ^ Instruction info from the original suspend call
   , resumeReqData :: Bit 32
+    -- ^ Data representing the result of the suspended operation
   } deriving (Generic, Interface, Bits)
 
 -- | Pipeline state, visisble to the execute stage
