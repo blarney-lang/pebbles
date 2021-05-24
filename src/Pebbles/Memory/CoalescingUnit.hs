@@ -171,13 +171,21 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
   -- Pipeline stall wire
   stallWire :: Wire (Bit 1) <- makeWire false
 
+  -- Are we currently processing a multi-flit transaction?
+  isTransaction :: Reg (Bit 1) <- makeReg false
+
+  -- For multi-flit transactions, we need to lock the pipeline, to
+  -- achieve atomicity
+  pipelineLock :: Reg (Bit 1) <- makeReg false
+
   always do
     -- Invariant: feedback and stall never occur together)
     dynamicAssert (inv (feedbackWire.val .&. stallWire.val))
       "Coalescing Unit: feedback and stall both high"
 
     -- Inject requests from input queues when no stall/feedback in progress
-    when (stallWire.val.inv .&. feedbackWire.val.inv) do
+    when (stallWire.val.inv .&&. feedbackWire.val.inv .&&.
+            pipelineLock.val.inv) do
       -- Consume requests and inject into pipeline
       forM_ (zip memReqs memReqs1) \(s, r) -> do
         when (s.canPeek) do
@@ -186,7 +194,13 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
       -- Initialise pending mask
       pending1 <== fromBitList [s.canPeek | s <- memReqs]
       -- Trigger pipeline
-      go1 <== orList [s.canPeek | s <- memReqs]
+      when (orList [s.canPeek | s <- memReqs]) do
+        go1 <== true
+        -- Handle multi-request transactions atomically
+        let isFinal = orList [ s.canPeek .&&. s.peek.memReqIsFinal
+                             | s <- memReqs ]
+        isTransaction <== inv isFinal
+        pipelineLock <== isTransaction.val .&&. isFinal
 
     -- Preserve go signals on stall
     when (stallWire.val) do
@@ -243,7 +257,8 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
     let sameOpAndAccessWidth = andList
           [ valid .==>.
               (leaderReq3.val.memReqAccessWidth .==. req.val.memReqAccessWidth
-                .&&. leaderReq3.val.memReqOp .==. req.val.memReqOp)
+                .&&. leaderReq3.val.memReqOp .==. req.val.memReqOp
+                .&&. leaderReq3.val.memReqIsFinal .==. req.val.memReqIsFinal)
           | (req, valid) <- zip memReqs3 (pending3.val.toBitList) ]
     when (go3.val) do
       dynamicAssert sameOpAndAccessWidth
@@ -354,6 +369,9 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
   -- Which lanes have requests for SRAM
   sramMask5 :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
+  -- Final request of DRAM transaction?
+  isFinalDRAM :: Reg (Bit 1) <- makeReg dontCare
+
   always do
     -- Use SameBlock strategy if it satisfies leader's request and at
     -- least one other request.  Otherwise use SameAddr strategy,
@@ -391,6 +409,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
               coalSameBlockMode <== sameBlockMode4.val
               coalMask <== mask
               leaderReq5 <== leaderReq4.val
+              isFinalDRAM <== leaderReq4.val.memReqIsFinal
               forM_ (zip memReqs4 memReqs5DRAM) \(r4, r5) -> do
                 r5 <== r4.val
               -- Check that atomics are not in use
@@ -401,11 +420,18 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           -- Determine any remaining pending requests
           let remaining = pending4.val .&. inv mask
           -- If there are any, feed them back
-          when (remaining .!=. 0) do
-            go1 <== true
-            feedbackWire <== true
-            zipWithM_ (<==) memReqs1 (map val memReqs4)
-            pending1 <== remaining
+          if remaining .!=. 0
+            then do
+              go1 <== true
+              feedbackWire <== true
+              zipWithM_ (<==) memReqs1 (map val memReqs4)
+              pending1 <== remaining
+            else do
+              -- Release pipeline lock when first request set of transaction
+              -- is finished (best to release as early as possible)
+              when (pipelineLock.val .&&.
+                      leaderReq4.val.memReqIsFinal.inv) do
+                pipelineLock <== false
 
   -- Stage 5 (DRAM): Issue DRAM requests
   -- ===================================
@@ -493,7 +519,8 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           , dramReqData = useSameBlock ? (sameBlockData, sameAddrData)
           , dramReqByteEn = useSameBlock ? (sameBlockBE, sameAddrBE)
           , dramReqBurst = burstLen
-          , dramReqIsFinal = isStore .==>. isFinalStore
+          , dramReqIsFinal =
+              isStore ? (isFinalStore .&&. isFinalDRAM.val, isFinalDRAM.val)
           }
     -- Try to issue DRAM request
     when (go5DRAM.val) do
