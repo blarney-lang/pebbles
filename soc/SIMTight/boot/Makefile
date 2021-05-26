@@ -1,6 +1,6 @@
-PEBBLES_ROOT ?= $(realpath ../..)
+PEBBLES_ROOT ?= $(realpath ../../..)
 
-SIM = $(PEBBLES_ROOT)/SIMTight/sim
+SIM = $(PEBBLES_ROOT)/soc/SIMTight/sim
 
 # RISC-V subset
 RV_ARCH = rv32i

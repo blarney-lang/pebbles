@@ -1,4 +1,4 @@
-PEBBLES_ROOT ?= $(realpath ../../..)
+PEBBLES_ROOT ?= $(realpath ../../../..)
 
 # RISC-V subset
 RV_ARCH = rv32ima
@@ -52,7 +52,7 @@ v-files: $(call v-files-for,cpu,I) \
 %.elf: %.o link.ld
 	@$(RV_LD) $(LDFLAGS) -T link.ld -o $@ $<
 
-link.ld: $(PEBBLES_ROOT)/SIMTight/apps/Common/link.ld.h
+link.ld: $(PEBBLES_ROOT)/soc/SIMTight/apps/Common/link.ld.h
 	@cpp -P -I $(PEBBLES_ROOT)/inc $< > link.ld
 
 .PRECIOUS: %.cpu.o

@@ -202,12 +202,12 @@ makeSIMTCoalescingUnit isBankedSRAMAccess =
 -- Banked SRAMs (synthesis boundary)
 makeSIMTBankedSRAMs route =
   makeBoundary "SIMTBankedSRAMs"
-    (makeBankedSRAMs @(BankInfo (InstrInfo, MemReqInfo)) route)
+    (makeBankedSRAMs @(BankInfo SIMTMemReqId) route)
 
 -- Main function
 -- =============
 
--- Generate code for scalar core
+-- Generate code
 main :: IO ()
 main = do
   writeVerilogModule makeTop "Pebbles" "./"

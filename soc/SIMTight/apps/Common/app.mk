@@ -1,4 +1,4 @@
-PEBBLES_ROOT ?= $(realpath ../../..)
+PEBBLES_ROOT ?= $(realpath ../../../..)
 
 # RISC-V subset
 RV_ARCH = rv32ima

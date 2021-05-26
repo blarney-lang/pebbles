@@ -1,9 +1,9 @@
-PEBBLES_ROOT ?= $(realpath ../..)
+PEBBLES_ROOT ?= $(realpath ../../..)
 BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 
 sim: Main.cpp ../src/Pebbles.v boot.hex boot.mif
 	verilator -cc ../src/Pebbles.v -exe Main.cpp -o sim \
-    -Wno-UNSIGNED -y $(PEBBLES_ROOT)/SIMTight/src/ \
+    -Wno-UNSIGNED -y $(PEBBLES_ROOT)/soc/SIMTight/src/ \
     -y $(BLARNEY_ROOT)/Verilog \
     --x-assign unique --x-initial unique \
     -CFLAGS "-I $(PEBBLES_ROOT)/inc/Sim -I $(PEBBLES_ROOT)/inc -fmax-errors=1"

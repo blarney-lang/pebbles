@@ -1,1 +1,1 @@
-../SIMTight/inc/Config.h
+../soc/SIMTight/inc/Config.h
