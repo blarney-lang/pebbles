@@ -20,7 +20,7 @@ A sample SoC (SIMTight) is included which contains a scalar CPU, a
 data cache, a 32-lane 64-warp SIMT accelerator, a coalescing unit, and
 shared DRAM.
 
-<img src="SIMTight/doc/SoC.svg" width="450">
+<img src="soc/SIMTight/doc/SoC.svg" width="450">
 
 The SoC is optimised for a high MIPS/LUT on FPGA.  A sample project is
 provided for the [DE10-Pro](http://de10-pro.terasic.com) development
