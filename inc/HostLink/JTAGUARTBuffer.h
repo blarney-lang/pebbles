@@ -1,5 +1,5 @@
-#ifndef _JTAGUART_BUFFER_H_
-#define _JTAGUART_BUFFER_H_
+#ifndef _HOSTLINK_JTAGUARTBUFFER_H_
+#define _HOSTLINK_JTAGUARTBUFFER_H_
 
 #include <stdint.h>
 #include <stdlib.h>

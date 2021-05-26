@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <assert.h>
-#include <SoC.h>
+#include <Config.h>
 #include <HostLink/JTAGUARTBuffer.h>
 #include <HostLink/MemFileReader.h>
 

@@ -1,3 +1,3 @@
 .PHONY: clean
 clean:
-	rm -f *.o cpu/*.o
+	rm -f *.o UART/*.o
