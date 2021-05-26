@@ -1728,7 +1728,7 @@ set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_emif_s10_ddr4
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_emif_s10_ddr4_b.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_clock_in.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_jtag_uart_0.ip
-set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_Pebbles_0.ip
+set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_SIMTight_0.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_mm_clockcross_DDR4.ip
 set_global_assignment -name SEARCH_PATH ../src
 set_global_assignment -name SEARCH_PATH ../../../blarney/Verilog/Altera/

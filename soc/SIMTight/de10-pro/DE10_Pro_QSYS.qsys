@@ -10,7 +10,7 @@
    tool="QsysPro" />
  <parameter name="bonusData"><![CDATA[bonusData 
 {
-   element Pebbles_0
+   element SIMTight_0
    {
       datum _sortIndex
       {
@@ -313,7 +313,7 @@
    dir="end" />
  <interface name="reset" internal="reset_in.in_reset" type="reset" dir="end" />
  <module
-   name="Pebbles_0"
+   name="SIMTight_0"
    kind="altera_generic_component"
    version="1.0"
    enabled="1">
@@ -804,9 +804,9 @@
         </interfaces>
     </boundary>
     <originalModuleInfo>
-        <className>Pebbles</className>
+        <className>SIMTight</className>
         <version>1.0</version>
-        <displayName>Pebbles</displayName>
+        <displayName>SIMTight</displayName>
     </originalModuleInfo>
     <systemInfoParameterDescriptors>
         <descriptors/>
@@ -1301,30 +1301,30 @@
     </interfaces>
 </boundaryDefinition>]]></parameter>
   <parameter name="generationInfoDefinition"><![CDATA[<generationInfoDefinition>
-    <hdlLibraryName>DE10_Pro_QSYS_Pebbles_0</hdlLibraryName>
+    <hdlLibraryName>DE10_Pro_QSYS_SIMTight_0</hdlLibraryName>
     <fileSets>
         <fileSet>
-            <fileSetName>DE10_Pro_QSYS_Pebbles_0</fileSetName>
-            <fileSetFixedName>DE10_Pro_QSYS_Pebbles_0</fileSetFixedName>
+            <fileSetName>DE10_Pro_QSYS_SIMTight_0</fileSetName>
+            <fileSetFixedName>DE10_Pro_QSYS_SIMTight_0</fileSetFixedName>
             <fileSetKind>QUARTUS_SYNTH</fileSetKind>
             <fileSetFiles/>
         </fileSet>
         <fileSet>
-            <fileSetName>DE10_Pro_QSYS_Pebbles_0</fileSetName>
-            <fileSetFixedName>DE10_Pro_QSYS_Pebbles_0</fileSetFixedName>
+            <fileSetName>DE10_Pro_QSYS_SIMTight_0</fileSetName>
+            <fileSetFixedName>DE10_Pro_QSYS_SIMTight_0</fileSetFixedName>
             <fileSetKind>SIM_VERILOG</fileSetKind>
             <fileSetFiles/>
         </fileSet>
         <fileSet>
-            <fileSetName>DE10_Pro_QSYS_Pebbles_0</fileSetName>
-            <fileSetFixedName>DE10_Pro_QSYS_Pebbles_0</fileSetFixedName>
+            <fileSetName>DE10_Pro_QSYS_SIMTight_0</fileSetName>
+            <fileSetFixedName>DE10_Pro_QSYS_SIMTight_0</fileSetFixedName>
             <fileSetKind>SIM_VHDL</fileSetKind>
             <fileSetFiles/>
         </fileSet>
     </fileSets>
 </generationInfoDefinition>]]></parameter>
   <parameter name="hlsFile" value="" />
-  <parameter name="logicalView">ip/DE10_Pro_QSYS/DE10_Pro_QSYS_Pebbles_0.ip</parameter>
+  <parameter name="logicalView">ip/DE10_Pro_QSYS/DE10_Pro_QSYS_SIMTight_0.ip</parameter>
   <parameter name="moduleAssignmentDefinition"><![CDATA[<assignmentDefinition>
     <assignmentValueMap/>
 </assignmentDefinition>]]></parameter>
@@ -14415,7 +14415,7 @@
  <connection
    kind="avalon"
    version="19.2"
-   start="Pebbles_0.dram_master"
+   start="SIMTight_0.dram_master"
    end="mm_clockcross_DDR4.s0">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0000" />
@@ -14515,7 +14515,7 @@
  <connection
    kind="avalon"
    version="19.2"
-   start="Pebbles_0.uart_master"
+   start="SIMTight_0.uart_master"
    end="mm_clockcross_50Mhz.s0">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0000" />
@@ -14571,7 +14571,7 @@
    kind="clock"
    version="19.2"
    start="iopll_0.outclk1"
-   end="Pebbles_0.clock_sink" />
+   end="SIMTight_0.clock_sink" />
  <connection
    kind="clock"
    version="19.2"
@@ -14596,7 +14596,7 @@
    kind="reset"
    version="19.2"
    start="emif_s10_ddr4_b.emif_usr_reset_n"
-   end="Pebbles_0.reset" />
+   end="SIMTight_0.reset" />
  <connection
    kind="reset"
    version="19.2"
@@ -14646,7 +14646,7 @@
    kind="reset"
    version="19.2"
    start="reset_in.out_reset"
-   end="Pebbles_0.reset" />
+   end="SIMTight_0.reset" />
  <connection
    kind="reset"
    version="19.2"

@@ -14,7 +14,7 @@ struct VecAdd : Kernel {
 int main()
 {
   // Are we in simulation?
-  bool isSim = pebblesUARTBlockingGet();
+  bool isSim = getchar();
 
   // Vector size for benchmarking
   int N = isSim ? 3000 : 1000000;

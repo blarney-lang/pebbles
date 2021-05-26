@@ -39,7 +39,7 @@ template <int BlockSize> struct Scan : Kernel {
 int main()
 {
   // Are we in simulation?
-  bool isSim = pebblesUARTBlockingGet();
+  bool isSim = getchar();
 
   // Vector size for benchmarking
   // Should divide evenly by SIMT thread count

@@ -9,6 +9,12 @@ int putchar(int c)
   return c;
 }
 
+int getchar()
+{
+  while (! pebblesUARTCanGet());
+  return pebblesUARTGet();
+}
+
 int puts(const char* s)
 {
   int count = 0;

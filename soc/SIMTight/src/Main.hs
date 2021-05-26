@@ -210,4 +210,4 @@ makeSIMTBankedSRAMs route =
 -- Generate code
 main :: IO ()
 main = do
-  writeVerilogModule makeTop "Pebbles" "./"
+  writeVerilogModule makeTop "SIMTight" "./"

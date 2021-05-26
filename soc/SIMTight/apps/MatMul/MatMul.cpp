@@ -109,7 +109,7 @@ template <int BlockSize> struct MatMul : Kernel {
 int main()
 {
   // Are we in simulation?
-  bool isSim = pebblesUARTBlockingGet();
+  bool isSim = getchar();
 
   // Matrix dimensions for benchmarking
   // (Must be a multiple of SIMTLanes)

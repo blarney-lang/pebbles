@@ -30,7 +30,7 @@ struct VecGCD : Kernel {
 int main()
 {
   // Are we in simulation?
-  bool isSim = pebblesUARTBlockingGet();
+  bool isSim = getchar();
 
   // Vector size for benchmarking
   int N = isSim ? 100 : 100000;

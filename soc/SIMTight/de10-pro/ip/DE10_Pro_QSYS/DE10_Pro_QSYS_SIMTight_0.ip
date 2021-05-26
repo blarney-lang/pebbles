@@ -1,8 +1,8 @@
 <?xml version="1.0" ?>
 <ipxact:component xmlns:altera="http://www.altera.com/XMLSchema/IPXact2014/extensions" xmlns:ipxact="http://www.accellera.org/XMLSchema/IPXACT/1685-2014">
   <ipxact:vendor>Altera Corporation</ipxact:vendor>
-  <ipxact:library>DE10_Pro_QSYS_Pebbles_0</ipxact:library>
-  <ipxact:name>Pebbles_0</ipxact:name>
+  <ipxact:library>DE10_Pro_QSYS_SIMTight_0</ipxact:library>
+  <ipxact:name>SIMTight_0</ipxact:name>
   <ipxact:version>1.0</ipxact:version>
   <ipxact:busInterfaces>
     <ipxact:busInterface>
@@ -574,7 +574,7 @@
     <ipxact:instantiations>
       <ipxact:componentInstantiation>
         <ipxact:name>QUARTUS_SYNTH</ipxact:name>
-        <ipxact:moduleName>Pebbles</ipxact:moduleName>
+        <ipxact:moduleName>SIMTight</ipxact:moduleName>
         <ipxact:fileSetRef>
           <ipxact:localName>QUARTUS_SYNTH</ipxact:localName>
         </ipxact:fileSetRef>
@@ -838,8 +838,8 @@
   <ipxact:vendorExtensions>
     <altera:entity_info>
       <ipxact:vendor>Altera Corporation</ipxact:vendor>
-      <ipxact:library>DE10_Pro_QSYS_Pebbles_0</ipxact:library>
-      <ipxact:name>Pebbles</ipxact:name>
+      <ipxact:library>DE10_Pro_QSYS_SIMTight_0</ipxact:library>
+      <ipxact:name>SIMTight</ipxact:name>
       <ipxact:version>1.0</ipxact:version>
     </altera:entity_info>
     <altera:altera_module_parameters>
@@ -1379,10 +1379,10 @@
       </ipxact:parameters>
     </altera:altera_system_parameters>
     <altera:altera_interface_boundary>
-      <altera:interface_mapping altera:name="clock_sink" altera:internal="Pebbles_0.clock_sink" altera:type="clock" altera:dir="end">
+      <altera:interface_mapping altera:name="clock_sink" altera:internal="SIMTight_0.clock_sink" altera:type="clock" altera:dir="end">
         <altera:port_mapping altera:name="clock" altera:internal="clock"></altera:port_mapping>
       </altera:interface_mapping>
-      <altera:interface_mapping altera:name="dram_master" altera:internal="Pebbles_0.dram_master" altera:type="avalon" altera:dir="start">
+      <altera:interface_mapping altera:name="dram_master" altera:internal="SIMTight_0.dram_master" altera:type="avalon" altera:dir="start">
         <altera:port_mapping altera:name="in0_socDRAMIns_avl_dram_readdata" altera:internal="in0_socDRAMIns_avl_dram_readdata"></altera:port_mapping>
         <altera:port_mapping altera:name="in0_socDRAMIns_avl_dram_readdatavalid" altera:internal="in0_socDRAMIns_avl_dram_readdatavalid"></altera:port_mapping>
         <altera:port_mapping altera:name="in0_socDRAMIns_avl_dram_waitrequest" altera:internal="in0_socDRAMIns_avl_dram_waitrequest"></altera:port_mapping>
@@ -1393,10 +1393,10 @@
         <altera:port_mapping altera:name="out_socDRAMOuts_avl_dram_write" altera:internal="out_socDRAMOuts_avl_dram_write"></altera:port_mapping>
         <altera:port_mapping altera:name="out_socDRAMOuts_avl_dram_writedata" altera:internal="out_socDRAMOuts_avl_dram_writedata"></altera:port_mapping>
       </altera:interface_mapping>
-      <altera:interface_mapping altera:name="reset" altera:internal="Pebbles_0.reset" altera:type="reset" altera:dir="end">
+      <altera:interface_mapping altera:name="reset" altera:internal="SIMTight_0.reset" altera:type="reset" altera:dir="end">
         <altera:port_mapping altera:name="reset" altera:internal="reset"></altera:port_mapping>
       </altera:interface_mapping>
-      <altera:interface_mapping altera:name="uart_master" altera:internal="Pebbles_0.uart_master" altera:type="avalon" altera:dir="start">
+      <altera:interface_mapping altera:name="uart_master" altera:internal="SIMTight_0.uart_master" altera:type="avalon" altera:dir="start">
         <altera:port_mapping altera:name="in0_socUARTIns_avl_jtaguart_readdata" altera:internal="in0_socUARTIns_avl_jtaguart_readdata"></altera:port_mapping>
         <altera:port_mapping altera:name="in0_socUARTIns_avl_jtaguart_waitrequest" altera:internal="in0_socUARTIns_avl_jtaguart_waitrequest"></altera:port_mapping>
         <altera:port_mapping altera:name="out_socUARTOuts_avl_jtaguart_address" altera:internal="out_socUARTOuts_avl_jtaguart_address"></altera:port_mapping>

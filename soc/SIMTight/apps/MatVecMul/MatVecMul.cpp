@@ -39,7 +39,7 @@ template <int BlockSize> struct MatVecMul : Kernel {
 int main()
 {
   // Are we in simulation?
-  bool isSim = pebblesUARTBlockingGet();
+  bool isSim = getchar();
 
   // Vector and matrix dimensions for benchmarking
   int width = isSim ? 128 : 1024;

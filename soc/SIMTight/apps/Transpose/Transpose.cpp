@@ -27,7 +27,7 @@ template <int SquareSize> struct Transpose : Kernel {
 int main()
 {
   // Are we in simulation?
-  bool isSim = pebblesUARTBlockingGet();
+  bool isSim = getchar();
 
   // Matrix size for benchmarking
   int width = isSim ? 256 : 512;

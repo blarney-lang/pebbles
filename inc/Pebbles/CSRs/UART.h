@@ -39,11 +39,4 @@ INLINE int pebblesUARTGet()
   return x;
 }
 
-// Blocking receive from UART
-INLINE int pebblesUARTBlockingGet()
-{
-  while (!pebblesUARTCanGet()) {}
-  return pebblesUARTGet();
-}
-
 #endif
