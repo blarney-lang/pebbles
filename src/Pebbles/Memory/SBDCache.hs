@@ -5,7 +5,7 @@ module Pebbles.Memory.SBDCache
   ) where
 
 -- SoC parameters
-#include <SoC.h>
+#include <Config.h>
 
 -- Blarney imports
 import Blarney
@@ -18,7 +18,7 @@ import qualified Blarney.Vector as V
 -- Pebbles imports
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
-import Pebbles.SoC.DRAM.Interface
+import Pebbles.Memory.DRAM.Interface
 
 -- Types
 -- =====

@@ -1,7 +1,7 @@
 module Pebbles.Memory.BankedSRAMs where
 
 -- SoC parameters
-#include <SoC.h>
+#include <Config.h>
 
 -- Blarney imports
 import Blarney
