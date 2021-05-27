@@ -16,8 +16,10 @@ pipelines:
   * An 8-stage [SIMT pipeline](src/Pebbles/Pipeline/SIMT.hs)
     with a parameterisable number of warps and warp size.
 
+## SIMTight SoC
+
 A sample SoC (SIMTight) is included which contains a scalar CPU, a
-data cache, a 32-lane 64-warp SIMT accelerator, a coalescing unit, and
+data cache, a 32-lane 64-warp SIMT GPGPU, a coalescing unit, and
 shared DRAM.
 
 <img src="soc/SIMTight/doc/SoC.svg" width="450">
@@ -83,7 +85,7 @@ $ ./test.sh            # Run in simulation
 ```
 
 To build an FPGA image (specifially for the
-[DE10-Pro](http://de10-pro.terasic.com) board:
+[DE10-Pro](http://de10-pro.terasic.com) board):
 
 ```sh
 cd soc/SIMTight/de10-pro
