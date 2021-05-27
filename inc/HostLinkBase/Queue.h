@@ -1,7 +1,7 @@
 // Simple queue implementation (circular buffer)
 
-#ifndef _HOSTLINK_QUEUE_H_
-#define _HOSTLINK_QUEUE_H_
+#ifndef _HOSTLINKBASE_QUEUE_H_
+#define _HOSTLINKBASE_QUEUE_H_
 
 #include <assert.h>
 

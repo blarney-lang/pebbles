@@ -1,5 +1,5 @@
-#include <Pebbles/NoCL.h>
-#include <Pebbles/Rand.h>
+#include <NoCL.h>
+#include <Rand.h>
 
 // Euclid's algorithm
 int gcd(int x, int y) {

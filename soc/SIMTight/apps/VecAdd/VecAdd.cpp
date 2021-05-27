@@ -1,4 +1,4 @@
-#include <Pebbles/NoCL.h>
+#include <NoCL.h>
 
 // Kernel for adding vectors
 struct VecAdd : Kernel {

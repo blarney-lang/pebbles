@@ -29,8 +29,8 @@
  * SUCH DAMAGE.
  */
 
-#ifndef _HOSTLINK_JTAGATLANTIC_H_
-#define _HOSTLINK_JTAGATLANTIC_H_
+#ifndef _HOSTLINKBASE_JTAGATLANTIC_H_
+#define _HOSTLINKBASE_JTAGATLANTIC_H_
 
 // Header for the libjtag_atlantic shared library provided by Altera
 

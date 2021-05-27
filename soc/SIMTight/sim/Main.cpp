@@ -3,9 +3,9 @@
 
 #include <Sim/DRAM.h>
 #include <Sim/JTAGUART.h>
-#include "VPebbles.h"
+#include "VSIMTight.h"
 
-VPebbles *top;
+VSIMTight *top;
 vluint64_t main_time = 0;
 
 // Called by $time in Verilog
@@ -17,7 +17,7 @@ int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
 
   // Instantiate SoC
-  top = new VPebbles;
+  top = new VSIMTight;
   
   // DRAM simulator
   DRAM dram;

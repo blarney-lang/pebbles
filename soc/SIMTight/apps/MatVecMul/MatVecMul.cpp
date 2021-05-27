@@ -1,5 +1,5 @@
-#include <Pebbles/NoCL.h>
-#include <Pebbles/Rand.h>
+#include <NoCL.h>
+#include <Rand.h>
 
 // Kernel for matrix-vector multipliation
 template <int BlockSize> struct MatVecMul : Kernel {

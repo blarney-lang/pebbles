@@ -1,4 +1,4 @@
-#include <Pebbles/NoCL.h>
+#include <NoCL.h>
 
 // Kernel for computing the parallel prefix sum (inclusive scan)
 // Simple (non-work-efficient) version based on one from "GPU Gems 3"

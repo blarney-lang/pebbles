@@ -1,11 +1,11 @@
-#ifndef _HOSTLINK_JTAGUARTBUFFER_H_
-#define _HOSTLINK_JTAGUARTBUFFER_H_
+#ifndef _HOSTLINKBASE_JTAGUARTBUFFER_H_
+#define _HOSTLINKBASE_JTAGUARTBUFFER_H_
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <HostLink/JTAGUART.h>
-#include <HostLink/Queue.h>
+#include <HostLinkBase/JTAGUART.h>
+#include <HostLinkBase/Queue.h>
 
 #define JTAGUART_BUFFER_SIZE 4095
 

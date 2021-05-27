@@ -26,8 +26,8 @@
 
 // Modified for NoCL, April 2021.
 
-#include <Pebbles/NoCL.h>
-#include <Pebbles/Rand.h>
+#include <NoCL.h>
+#include <Rand.h>
 
 // Matrix multiplication C = A * B
 // (wA is A's width and wB is B's width)

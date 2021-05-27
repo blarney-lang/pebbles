@@ -22,7 +22,7 @@ endif
 
 # Compiler and linker flags for code running on the SoC
 CFLAGS := $(CFLAGS) -mabi=ilp32 -march=$(RV_ARCH) -Os \
-         -I $(PEBBLES_ROOT)/inc \
+         -I $(PEBBLES_ROOT)/inc -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
          -static -mcmodel=medany \
          -fvisibility=hidden -nostdlib \
          -fno-builtin-printf -ffp-contract=off \
@@ -35,14 +35,14 @@ OFILES = $(patsubst %.c,%.o,$(CFILES))
 
 # Size of instruction memory
 LOG_INSTR_BYTES = $(shell echo -n CPUInstrMemLogWords \
-  | cpp -P -imacros $(PEBBLES_ROOT)/inc/Config.h - | xargs)
+  | cpp -P -imacros $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h - | xargs)
 INSTR_BYTES = $(shell echo "4 * (2 ^ $(LOG_INSTR_BYTES))" | bc)
 
 .PHONY: all
 all: $(SIM)/boot.hex ../de10-pro/boot.mif
 
 link.ld: link.ld.h
-	cpp -P -I $(PEBBLES_ROOT)/inc link.ld.h > link.ld
+	cpp -P -I $(PEBBLES_ROOT)/soc/SIMTight/inc link.ld.h > link.ld
 
 $(SIM)/boot.hex: InstrMem.ihex
 	./ihex-to-img.py InstrMem.ihex hex 0 4 $(INSTR_BYTES) 1 \

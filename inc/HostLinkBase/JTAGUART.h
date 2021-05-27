@@ -1,8 +1,8 @@
 // Non-blocking connection to Altera's JTAG UART.  This class
 // abstracts over whether the SoC is running in simulation or on FPGA.
 
-#ifndef _HOSTLINK_JTAGUART_H_
-#define _HOSTLINK_JTAGUART_H_
+#ifndef _HOSTLINKBASE_JTAGUART_H_
+#define _HOSTLINKBASE_JTAGUART_H_
 
 #ifdef SIMULATE
 
@@ -22,7 +22,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <assert.h>
-#include <HostLink/Socket.h>
+#include <HostLinkBase/Socket.h>
 
 class JTAGUART {
   int sock;
@@ -89,7 +89,7 @@ class JTAGUART {
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <HostLink/JTAGAtlantic.h>
+#include <HostLinkBase/JTAGAtlantic.h>
 
 class JTAGUART {
   JTAGATLANTIC* jtag;

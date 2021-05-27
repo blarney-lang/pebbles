@@ -1,4 +1,4 @@
-#include <Pebbles/NoCL.h>
+#include <NoCL.h>
 
 // Kernel for matrix transposition
 // One sub-square at a time

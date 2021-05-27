@@ -1,5 +1,5 @@
-#ifndef _HOSTLINK_SOCKET_H_
-#define _HOSTLINK_SOCKET_H_
+#ifndef _HOSTLINKBASE_SOCKET_H_
+#define _HOSTLINKBASE_SOCKET_H_
 
 #include <stdio.h>
 #include <stdlib.h>

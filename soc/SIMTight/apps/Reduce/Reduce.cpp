@@ -1,4 +1,4 @@
-#include <Pebbles/NoCL.h>
+#include <NoCL.h>
 
 // Kernel for vector summation
 template <int BlockSize> struct Reduce : Kernel {

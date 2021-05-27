@@ -1,8 +1,8 @@
 PEBBLES_ROOT = $(realpath ../../..)
 BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 BLC = $(BLARNEY_ROOT)/Scripts/blc
-BLC_INC = $(PEBBLES_ROOT)/inc
-BUILD_DIR = $(PEBBLES_ROOT)/src/build
+BLC_INC = $(PEBBLES_ROOT)/soc/SIMTight/inc
+BUILD_DIR = $(PEBBLES_ROOT)/soc/SIMTight/src/build
 
 .PHONY: all
 all:

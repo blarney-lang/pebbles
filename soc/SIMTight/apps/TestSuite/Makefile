@@ -4,7 +4,8 @@ PEBBLES_ROOT ?= $(realpath ../../../..)
 RV_ARCH = rv32ima
 
 # Compiler and linker flags
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I./inc -I$(PEBBLES_ROOT)/inc
+CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I./inc \
+          -I$(PEBBLES_ROOT)/soc/SIMTight/inc
 LDFLAGS = -melf32lriscv -G 0
 
 # Can use Clang or GCC
@@ -53,7 +54,7 @@ v-files: $(call v-files-for,cpu,I) \
 	@$(RV_LD) $(LDFLAGS) -T link.ld -o $@ $<
 
 link.ld: $(PEBBLES_ROOT)/soc/SIMTight/apps/Common/link.ld.h
-	@cpp -P -I $(PEBBLES_ROOT)/inc $< > link.ld
+	@cpp -P -I $(PEBBLES_ROOT)/soc/SIMTight/inc $< > link.ld
 
 .PRECIOUS: %.cpu.o
 %.cpu.o: %.S
@@ -65,20 +66,24 @@ link.ld: $(PEBBLES_ROOT)/soc/SIMTight/apps/Common/link.ld.h
 
 TestCPU: checkenv TestCPU.cpp
 	@g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o TestCPU TestCPU.cpp \
+    -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
     -fno-exceptions -ljtag_atlantic -ljtag_client \
     -L $(QUARTUS_ROOTDIR)/linux64/ -Wl,-rpath,$(QUARTUS_ROOTDIR)/linux64
 
 TestCPUSim: TestCPU.cpp
 	@g++ -std=c++11 -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc \
+    -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
     -o TestCPUSim TestCPU.cpp
 
 TestSIMT: checkenv TestSIMT.cpp
 	@g++ -std=c++11 -O2 -I $(PEBBLES_ROOT)/inc -o TestSIMT TestSIMT.cpp \
+    -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
     -fno-exceptions -ljtag_atlantic -ljtag_client \
     -L $(QUARTUS_ROOTDIR)/linux64/ -Wl,-rpath,$(QUARTUS_ROOTDIR)/linux64
 
 TestSIMTSim: TestSIMT.cpp
 	@g++ -std=c++11 -DSIMULATE -O2 -I $(PEBBLES_ROOT)/inc \
+    -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
     -o TestSIMTSim TestSIMT.cpp
 
 .PHONY: test-cpu

@@ -12,8 +12,8 @@
 // up to the next @ sign, are a contiguous stream of bytes starting
 // at that address.
 
-#ifndef _HOSTLINK_MEMFILEREADER_H_
-#define _HOSTLINK_MEMFILEREADER_H_
+#ifndef _HOSTLINKBASE_MEMFILEREADER_H_
+#define _HOSTLINKBASE_MEMFILEREADER_H_
 
 #include <stdio.h>
 #include <stdlib.h>

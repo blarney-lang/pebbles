@@ -1,7 +1,7 @@
 // CUDA-like library for compute kernels
 
-#ifndef _SIMTIGHT_NOCL_H_
-#define _SIMTIGHT_NOCL_H_
+#ifndef _NOCL_H_
+#define _NOCL_H_
 
 #include <Config.h>
 #include <Pebbles/Common.h>

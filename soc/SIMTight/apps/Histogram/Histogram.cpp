@@ -1,4 +1,4 @@
-#include <Pebbles/NoCL.h>
+#include <NoCL.h>
 
 // Kernel for computing 256-bin histograms
 struct Histogram : Kernel {

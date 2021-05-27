@@ -7,7 +7,7 @@
 #include <queue>
 #include <stdint.h>
 #include <assert.h>
-#include <HostLink/Socket.h>
+#include <HostLinkBase/Socket.h>
 
 // Parameters
 // ==========

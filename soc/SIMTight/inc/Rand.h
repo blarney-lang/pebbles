@@ -1,5 +1,5 @@
-#ifndef _PEBBLES_RAND_H_
-#define _PEBBLES_RAND_H_
+#ifndef _RAND_H_
+#define _RAND_H_
 
 #include <Pebbles/Common.h>
 

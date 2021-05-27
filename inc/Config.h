@@ -1,1 +1,0 @@
-../soc/SIMTight/inc/Config.h
