@@ -24,8 +24,8 @@ shared DRAM.
 
 The SoC is optimised for a high MIPS/LUT on FPGA.  A sample project is
 provided for the [DE10-Pro](http://de10-pro.terasic.com) development
-board.  There is also a [CUDA-like library](inc/Pebbles/NoCL.h) and a
-set of sample [compute kernels](SIMTight/apps/).
+board.  There is also a [CUDA-like library](soc/SIMTight/inc/NoCL.h)
+and a set of sample [compute kernels](soc/SIMTight/apps/).
 
 ## Build instructions
 
@@ -50,7 +50,7 @@ Inside the repo, there are various things to try.  For example, to
 build and run the SIMTight simulator:
 
 ```sh
-$ cd SIMTight/sim
+$ cd soc/SIMTight/sim
 $ make
 $ ./sim
 ```
@@ -59,7 +59,7 @@ While the simulator is running, you can build and run the test suite
 in a separate terminal:
 
 ```sh
-$ cd SIMTight/apps/TestSuite
+$ cd soc/SIMTight/apps/TestSuite
 $ make test-cpu-sim     # Run on the CPU
 $ make test-simt-sim    # Run on the SIMT core
 ```
@@ -67,7 +67,7 @@ $ make test-simt-sim    # Run on the SIMT core
 Alternatively, you can run one of the SIMT kernels:
 
 ```sh
-$ cd SIMTight/apps/VecAdd
+$ cd soc/SIMTight/apps/Histogram
 $ make RunSim
 $ ./RunSim
 ```
@@ -78,7 +78,31 @@ already running.
 
 ```sh
 $ killall sim
-$ cd SIMTight/test
+$ cd soc/SIMTight/test
 $ ./test.sh            # Run in simulation
-$ ./test.sh --fpga     # Run on FPGA (DE10-Pro)
+```
+
+To build an FPGA image (specifially for the
+[DE10-Pro](http://de10-pro.terasic.com) board:
+
+```sh
+cd soc/SIMTight/de10-pro
+make                   # Assumes quartus is in your PATH
+make download-sof      # Assumes DE10-Pro is connected via USB
+```
+
+We can now run a SIMT kernel, almost exactly how we did so via the
+simulator.
+
+```sh
+$ cd soc/SIMTight/apps/Histogram
+$ make Run
+$ ./Run
+```
+
+To run the test suite and all benchmarks on FPGA:
+
+```sh
+cd soc/SIMTight/test
+./test.sh --fpga       # Assumes FPGA image built and FPGA connected via USB
 ```
