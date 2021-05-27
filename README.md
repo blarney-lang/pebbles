@@ -87,9 +87,9 @@ To build an FPGA image (specifially for the
 [DE10-Pro](http://de10-pro.terasic.com) board):
 
 ```sh
-$cd soc/SIMTight/de10-pro
-$make                  # Assumes quartus is in your PATH
-$make download-sof     # Assumes DE10-Pro is connected via USB
+$ cd soc/SIMTight/de10-pro
+$ make                 # Assumes quartus is in your PATH
+$ make download-sof    # Assumes DE10-Pro is connected via USB
 ```
 
 We can now run a SIMT kernel, almost exactly how we did so via the
