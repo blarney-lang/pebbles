@@ -18,9 +18,8 @@ pipelines:
 
 ## SIMTight SoC
 
-A sample SoC (SIMTight) is included which contains a scalar CPU, a
-data cache, a 32-lane 64-warp SIMT GPGPU, a coalescing unit, and
-shared DRAM.
+A sample SoC is included which contains a scalar CPU, a data cache, a
+32-lane 64-warp GPGPU, a coalescing unit, and shared DRAM.
 
 <img src="soc/SIMTight/doc/SoC.svg" width="450">
 
@@ -88,9 +87,9 @@ To build an FPGA image (specifially for the
 [DE10-Pro](http://de10-pro.terasic.com) board):
 
 ```sh
-cd soc/SIMTight/de10-pro
-make                   # Assumes quartus is in your PATH
-make download-sof      # Assumes DE10-Pro is connected via USB
+$cd soc/SIMTight/de10-pro
+$make                  # Assumes quartus is in your PATH
+$make download-sof     # Assumes DE10-Pro is connected via USB
 ```
 
 We can now run a SIMT kernel, almost exactly how we did so via the
@@ -105,6 +104,6 @@ $ ./Run
 To run the test suite and all benchmarks on FPGA:
 
 ```sh
-cd soc/SIMTight/test
-./test.sh --fpga       # Assumes FPGA image built and FPGA connected via USB
+$ cd soc/SIMTight/test
+$ ./test.sh --fpga     # Assumes FPGA image built and FPGA connected via USB
 ```
