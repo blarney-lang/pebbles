@@ -61,3 +61,21 @@ NOTE("==========")
 
 NOTE("Space reserved for boot loader")
 #define MaxBootImageBytes 512
+
+NOTE("DRAM cache configuration")
+NOTE("========================")
+
+NOTE("Cache line size")
+#define NBDRAMCacheLogBeatsPerLine 1
+
+NOTE("Number set-associative ways")
+#define NBDRAMCacheLogNumWays 2
+
+NOTE("Number of sets")
+#define NBDRAMCacheLogSets 7
+
+NOTE("Max number of inflight memory requests")
+#define NBDRAMCacheLogMaxInflight 5
+
+NOTE("Max number of pending requests per way")
+#define NBDRAMCachePendingReqsPerWay 8

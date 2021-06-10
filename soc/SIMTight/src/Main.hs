@@ -23,6 +23,7 @@ import Pebbles.Memory.Interface
 import Pebbles.Memory.BankedSRAMs
 import Pebbles.Memory.WarpPreserver
 import Pebbles.Memory.CoalescingUnit
+import Pebbles.Memory.DRAM.NBCache
 import Pebbles.Memory.DRAM.DualPort
 import Pebbles.Memory.DRAM.Interface
 
