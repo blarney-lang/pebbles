@@ -23,8 +23,9 @@ import Pebbles.Memory.Interface
 import Pebbles.Memory.BankedSRAMs
 import Pebbles.Memory.WarpPreserver
 import Pebbles.Memory.CoalescingUnit
+import Pebbles.Memory.DRAM.Bus
+import Pebbles.Memory.DRAM.Wrapper
 import Pebbles.Memory.DRAM.NBCache
-import Pebbles.Memory.DRAM.DualPort
 import Pebbles.Memory.DRAM.Interface
 
 -- SIMTight imports
@@ -79,9 +80,15 @@ makeTop socIns = mdo
   -- SIMT memory subsystem
   (simtMemUnits, dramReqs1) <- makeSIMTMemSubsystem dramResps1
 
+  -- DRAM bus
+  ((dramResps0, dramResps1), dramCacheReqs) <-
+    makeDRAMBus (dramReqs0, dramReqs1) dramCacheResps
+
+  -- DRAM cache
+  (dramCacheResps, dramReqs) <- makeNBDRAMCache dramCacheReqs dramResps
+
   -- DRAM instance
-  ((dramResps0, dramResps1), avlDRAMOuts) <-
-    makeDRAMDualPort (dramReqs0, dramReqs1) (socIns.socDRAMIns)
+  (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
   (fromUART, avlUARTOuts) <- makeJTAGUART

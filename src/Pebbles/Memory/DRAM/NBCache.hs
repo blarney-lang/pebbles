@@ -106,8 +106,8 @@ beatIndex way addr beat = way # setIndex addr # beat
 getTag :: DRAMAddr -> Tag
 getTag = upper
   
--- Non-blocking DRAM cache
--- =======================
+-- Implementation
+-- ==============
 
 -- | Non-blocking set-associate write-back DRAM cache
 makeNBDRAMCache :: forall t_id. Bits t_id =>
@@ -158,6 +158,9 @@ makeNBDRAMCache reqs dramResps = do
   -- Way counter for eviction
   evictWay :: Reg WayId <- makeReg 0
 
+  -- Beat counter for burst requests
+  reqBeatCount :: Reg DRAMBurst <- makeReg 0
+
   -- Pipeline register for determining if line is reserved (one per way)
   busyRegs :: [Reg (Bit 1)] <-
     replicateM (2^NBDRAMCacheLogNumWays) (makeReg dontCare)
@@ -198,12 +201,20 @@ makeNBDRAMCache reqs dramResps = do
                   inv isHit .&&. (map val busyRegs ! evictWay.val)
              .||. -- The queue of inflight requests is full
                   inflightQueue.notFull.inv
+             .||. -- The miss queue is full
+                  missQueue.notFull.inv
              .||. -- The set of reserved lines is full
                   inv (map canInsert reservedQueues ! chosenWay)
       -- Evict a different way next time
       evictWay <== evictWay.val + 1
       -- Consume request
       when (inv stall) do
+        -- Count beats in burst store
+        when (req.dramReqIsStore) do
+          let reqBeatCountNew = reqBeatCount.val + 1
+          if reqBeatCountNew .==. req.dramReqBurst
+            then reqBeatCount <== 0
+            else reqBeatCount <== reqBeatCountNew
         -- Update line state
         sequence
           [ when (way .==. chosenWay) do
@@ -219,14 +230,16 @@ makeNBDRAMCache reqs dramResps = do
         -- Reserve line
         sequence
           [ when (way .==. chosenWay) do
-              insert reservedQueue setId
+              -- Only reserve line once for store burst
+              when (req.dramReqIsStore .==>. reqBeatCount.val .==. 0) do
+                insert reservedQueue setId
           | (reservedQueue, way) <-
               zip reservedQueues (map fromInteger [0..]) ]
         -- Insert request into inflight queue
         enq inflightQueue 
           InflightInfo {
             inflightReq = req
-          , inflightWay = matchingWay
+          , inflightWay = chosenWay
           , inflightHit = isHit
           }
         -- Insert miss info into miss queue
@@ -379,7 +392,7 @@ makeNBDRAMCache reqs dramResps = do
   respCount :: Counter 2 <- makeCounter 2
 
   -- Trigger for second pipeline stage
-  issueResp :: Wire (Bit 1) <- makeWire false
+  issueResp :: Reg (Bit 1) <- makeDReg false
 
   -- Request id for second pipeline stage
   respIdReg :: Reg t_id <- makeReg dontCare
@@ -397,8 +410,8 @@ makeNBDRAMCache reqs dramResps = do
       -- Process request
       when (inv stall) do
         -- Determine address for access to cache's data memory
-        let dataMemAddr = inflight.inflightWay #
-              req.dramReqAddr.setIndex # respBeatCount.val
+        let dataMemAddr = (inflight.inflightWay # req.dramReqAddr.truncate) +
+              respBeatCount.val.zeroExtend
         -- Lookup / update data memory
         if req.dramReqIsStore
           then do
@@ -408,6 +421,10 @@ makeNBDRAMCache reqs dramResps = do
               (req.dramReqData)
             -- Consume store request
             inflightQueue.deq
+            -- Decrement fetch count on store miss
+            -- (Only one store in a burst will be marked as a miss)
+            when (inflight.inflightHit.inv) do
+              decrBy fetchDoneCount 1
           else do
             loadBE dataMemB dataMemAddr
             -- Increment response count
@@ -423,9 +440,9 @@ makeNBDRAMCache reqs dramResps = do
             -- Consume burst load request
             when (req.dramReqIsStore.inv) do
               inflightQueue.deq
-            -- Decrement fetch count on miss
-            when (inflight.inflightHit.inv) do
-              decrBy fetchDoneCount 1
+              -- Decrement fetch count on load miss
+              when (inflight.inflightHit.inv) do
+                decrBy fetchDoneCount 1
             -- Release line
             sequence_
               [ when (way .==. inflight.inflightWay) do
