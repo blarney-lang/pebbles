@@ -85,10 +85,12 @@ makeTop socIns = mdo
     makeDRAMBus (dramReqs0, dramReqs1) dramCacheResps
 
   -- DRAM cache
-  (dramCacheResps, dramReqs) <- makeNBDRAMCache dramCacheReqs dramResps
+  (dramCacheResps, dramReqs) <- makeDRAMCache dramCacheReqs dramResps
 
   -- DRAM instance
-  (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
+  -- (The "unstoppable" version should only be used when there is
+  -- also a DRAM cache present)
+  (dramResps, avlDRAMOuts) <- makeDRAMUnstoppable dramReqs (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
   (fromUART, avlUARTOuts) <- makeJTAGUART
@@ -122,6 +124,10 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
       , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , simtCoreExecBoundary = True
       }
+
+-- DRAM cache (synthesis boundary)
+makeDRAMCache = makeBoundary "DRAMCache"
+  (makeNBDRAMCache @(Bit 1, ()))
 
 -- SIMT memory subsystem
 -- =====================

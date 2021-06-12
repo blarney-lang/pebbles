@@ -179,9 +179,13 @@ makeNBDRAMCache reqs dramResps = do
 
     -- State 0: tag lookup
     when (tagState.val .==. 0 .&&. reqs.canPeek) do
-      dynamicAssert (req.dramReqBurst .<=. fromInteger
-                       (2^NBDRAMCacheLogBeatsPerLine))
+      -- Check some restrictions on burst requests
+      let maxBeats = fromInteger (2^NBDRAMCacheLogBeatsPerLine)
+      dynamicAssert (req.dramReqBurst .<=. maxBeats)
                     "NBDRAMCache: burst count exceeds beats-per-line"
+      let beatOffset :: BeatId = req.dramReqAddr.truncate
+      dynamicAssert (zeroExtend beatOffset + req.dramReqBurst .<=. maxBeats)
+                    "NBDRAMCache: burst spans multiple lines"
       -- Move to update state
       tagState <== 1
 
@@ -359,13 +363,14 @@ makeNBDRAMCache reqs dramResps = do
 
   -- Count number of completed fetches
   -- Used to determine when inflight requests can be processed
-  fetchDoneCount :: Counter NBDRAMCacheLogMaxInflight <- makeCounter ones
+  fetchDoneCount :: Counter (NBDRAMCacheLogMaxInflight+1) <-
+    makeCounter (fromInteger (2^NBDRAMCacheLogMaxInflight))
 
   -- Count beats in DRAM response burst
   dramRespBeatCount :: Reg (Bit NBDRAMCacheLogBeatsPerLine) <- makeReg 0
 
   always do
-    when (dramResps.canPeek .&&. fetchDoneCount.isFull.inv) do
+    when (dramResps.canPeek) do
       let resp = dramResps.peek
       -- Take control over data mem port A
       dramRespInProgress <== true
@@ -378,6 +383,9 @@ makeNBDRAMCache reqs dramResps = do
       -- At end of burst, increment completed fetches
       when (dramRespBeatCount.val .==. ones) do
         incrBy fetchDoneCount 1
+      -- Completed fetches can never exceed number of inflight requests
+      dynamicAssert (fetchDoneCount.isFull.inv)
+        "NBDRAMCache: broken invariant on fetchDoneCount"
 
   -- Cache response
   -- ==============
