@@ -25,7 +25,6 @@ import Pebbles.Memory.WarpPreserver
 import Pebbles.Memory.CoalescingUnit
 import Pebbles.Memory.DRAM.Bus
 import Pebbles.Memory.DRAM.Wrapper
-import Pebbles.Memory.DRAM.NBCache
 import Pebbles.Memory.DRAM.Interface
 
 -- SIMTight imports
@@ -119,10 +118,6 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
       , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , simtCoreExecBoundary = True
       }
-
--- DRAM cache (synthesis boundary)
-makeDRAMCache = makeBoundary "DRAMCache"
-  (makeNBDRAMCache @(Bit 1, ()))
 
 -- SIMT memory subsystem
 -- =====================
