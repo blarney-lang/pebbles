@@ -1,4 +1,14 @@
 -- Non-blocking set-associative write-back DRAM cache
+--
+-- +------------------------------+----------------------------------------------+
+-- | Parameter                    | Description                                  |
+-- +------------------------------+----------------------------------------------+
+-- | NBDRAMCacheLogBeatsPerLine   | Cache line size                              |
+-- | NBDRAMCacheLogNumWays        | Number of set-associative ways               |
+-- | NBDRAMCacheLogSets           | Number of sets                               |
+-- | NBDRAMCacheLogMaxInflight    | Max number of inflight memory requests       |
+-- | NBDRAMCachePendingReqsPerWay | Max number of pending requests per way       |
+-- +------------------------------+----------------------------------------------+
 
 module Pebbles.Memory.DRAM.NBCache
   ( makeNBDRAMCache
@@ -105,7 +115,15 @@ getTag = upper
 -- Implementation
 -- ==============
 
--- | Non-blocking set-associate write-back DRAM cache
+-- | Non-blocking set-associate write-back DRAM cache.  Optimised for
+-- throughput over latency.  Capable of a large number of inflight
+-- requests (NBDRAMCacheLogMaxInflight). Capable of 100% throughput,
+-- except when consuective requests access the same set (where a
+-- pipeline bubble is inserted to avoid reading stale data); this
+-- includes burst stores (a special case that could be optimised in
+-- future).  Use fetch-on-write policy, which means that DRAM
+-- bandwidth can be wasted in the case where the fetch is
+-- unneccessary.
 makeNBDRAMCache :: forall t_id. Bits t_id =>
      Stream (DRAMReq t_id)
      -- ^ Cache requests
@@ -145,6 +163,10 @@ makeNBDRAMCache reqs dramResps = do
 
   -- Tag lookup and update
   -- =====================
+  --
+  -- Two stage pipeline
+  -- Stage 1: tag lookup
+  -- Stage 2: tag update
 
   -- Way counter for eviction
   evictWay :: Reg WayId <- makeReg 0
@@ -167,7 +189,8 @@ makeNBDRAMCache reqs dramResps = do
   stallWire :: Wire (Bit 1) <- makeWire false
 
   -- Insert pipeline bubble
-  -- (Only first stage is stalled)
+  -- (Only first stage is stalled, and only for one cycle)
+  -- (Used when consecutive requests access same state)
   bubbleWire :: Wire (Bit 1) <- makeWire false
 
   always do
@@ -175,6 +198,7 @@ makeNBDRAMCache reqs dramResps = do
     sequence [load tagMem (reqs.peek.dramReqAddr.setIndex) | tagMem <- tagMems]
 
     -- See if line is currently busy
+    -- On a stall, we need to look at request from stage 2 rather than stage 1
     sequence
       [ busy <== member reservedQueue (stallWire.val ?
           (reqReg.val.dramReqAddr.setIndex, reqs.peek.dramReqAddr.setIndex))
