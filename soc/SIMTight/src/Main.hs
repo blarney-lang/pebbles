@@ -81,16 +81,11 @@ makeTop socIns = mdo
   (simtMemUnits, dramReqs1) <- makeSIMTMemSubsystem dramResps1
 
   -- DRAM bus
-  ((dramResps0, dramResps1), dramCacheReqs) <-
-    makeDRAMBus (dramReqs0, dramReqs1) dramCacheResps
-
-  -- DRAM cache
-  (dramCacheResps, dramReqs) <- makeDRAMCache dramCacheReqs dramResps
+  ((dramResps0, dramResps1), dramReqs) <-
+    makeDRAMBus (dramReqs0, dramReqs1) dramResps
 
   -- DRAM instance
-  -- (The "unstoppable" version should only be used when there is
-  -- also a DRAM cache present)
-  (dramResps, avlDRAMOuts) <- makeDRAMUnstoppable dramReqs (socIns.socDRAMIns)
+  (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
   (fromUART, avlUARTOuts) <- makeJTAGUART
