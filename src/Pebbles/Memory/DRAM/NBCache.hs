@@ -98,10 +98,6 @@ lineAddr = slice @(DRAMAddrWidth-1) @NBDRAMCacheLogBeatsPerLine
 setIndex :: DRAMAddr -> SetIndex
 setIndex addr = truncate (lineAddr addr)
 
--- | Determine the beat index in the data memory
-beatIndex :: WayId -> DRAMAddr -> BeatId -> BeatIndex
-beatIndex way addr beat = way # setIndex addr # beat
-
 -- | Determine the bits that make up a tag
 getTag :: DRAMAddr -> Tag
 getTag = upper
@@ -150,11 +146,6 @@ makeNBDRAMCache reqs dramResps = do
   -- Tag lookup and update
   -- =====================
 
-  -- State machine
-  -- State 0: tag lookup
-  -- State 1: tag update
-  tagState :: Reg (Bit 1) <- makeReg 0
-
   -- Way counter for eviction
   evictWay :: Reg WayId <- makeReg 0
 
@@ -165,20 +156,33 @@ makeNBDRAMCache reqs dramResps = do
   busyRegs :: [Reg (Bit 1)] <-
     replicateM (2^NBDRAMCacheLogNumWays) (makeReg dontCare)
 
-  always do
-    let req = reqs.peek
-    let setId = req.dramReqAddr.setIndex
+  -- Pipeline trigger (for second stage)
+  go2 :: Reg (Bit 1) <- makeDReg false
 
+  -- Request register (for second stage)
+  reqReg :: Reg (DRAMReq t_id) <- makeReg dontCare
+
+  -- Pipeline stall wire
+  -- (Both first and second stages are stalled)
+  stallWire :: Wire (Bit 1) <- makeWire false
+
+  -- Insert pipeline bubble
+  -- (Only first stage is stalled)
+  bubbleWire :: Wire (Bit 1) <- makeWire false
+
+  always do
     -- Load tags
-    sequence [load tagMem setId | tagMem <- tagMems]
+    sequence [load tagMem (reqs.peek.dramReqAddr.setIndex) | tagMem <- tagMems]
 
     -- See if line is currently busy
     sequence
-      [ busy <== member reservedQueue setId
+      [ busy <== member reservedQueue (stallWire.val ?
+          (reqReg.val.dramReqAddr.setIndex, reqs.peek.dramReqAddr.setIndex))
       | (busy, reservedQueue) <- zip busyRegs reservedQueues ]
 
-    -- State 0: tag lookup
-    when (tagState.val .==. 0 .&&. reqs.canPeek) do
+    -- Stage 1: tag lookup
+    when (reqs.canPeek .&&. bubbleWire.val.inv .&&. stallWire.val.inv) do
+      let req = reqs.peek
       -- Check some restrictions on burst requests
       let maxBeats = fromInteger (2^NBDRAMCacheLogBeatsPerLine)
       dynamicAssert (req.dramReqBurst .<=. maxBeats)
@@ -186,11 +190,15 @@ makeNBDRAMCache reqs dramResps = do
       let beatOffset :: BeatId = req.dramReqAddr.truncate
       dynamicAssert (zeroExtend beatOffset + req.dramReqBurst .<=. maxBeats)
                     "NBDRAMCache: burst spans multiple lines"
-      -- Move to update state
-      tagState <== 1
+      -- Trigger next stage
+      go2 <== true
+      reqReg <== req
+      reqs.consume
 
-    -- State 1: tag update
-    when (tagState.val .==. 1) do
+    -- Stage 2: tag update
+    when (go2.val) do
+      let req = reqReg.val
+      let setId = req.dramReqAddr.setIndex
       -- Look for a set-associative match
       let matches =
             [ let s = tagMem.out in
@@ -211,54 +219,61 @@ makeNBDRAMCache reqs dramResps = do
                   inv (map canInsert reservedQueues ! chosenWay)
       -- Evict a different way next time
       evictWay <== evictWay.val + 1
-      -- Consume request
-      when (inv stall) do
-        -- Count beats in burst store
-        when (req.dramReqIsStore) do
-          let reqBeatCountNew = reqBeatCount.val + 1
-          if reqBeatCountNew .==. req.dramReqBurst
-            then reqBeatCount <== 0
-            else reqBeatCount <== reqBeatCountNew
-        -- Update line state
-        sequence
-          [ when (way .==. chosenWay) do
-              -- Don't update tag on load hit
-              when (inv (isHit .&&. req.dramReqIsStore.inv)) do
-                store tagMem setId
-                  LineState {
-                    lineTag = req.dramReqAddr.getTag
-                  , lineValid = true
-                  , lineDirty = req.dramReqIsStore
-                  }
-          | (tagMem, way) <- zip tagMems (map fromInteger [0..]) ]
-        -- Reserve line
-        sequence
-          [ when (way .==. chosenWay) do
-              -- Only reserve line once for store burst
-              when (req.dramReqIsStore .==>. reqBeatCount.val .==. 0) do
-                insert reservedQueue setId
-          | (reservedQueue, way) <-
-              zip reservedQueues (map fromInteger [0..]) ]
-        -- Insert request into inflight queue
-        enq inflightQueue 
-          InflightInfo {
-            inflightReq = req
-          , inflightWay = chosenWay
-          , inflightHit = isHit
-          }
-        -- Insert miss info into miss queue
-        when (inv isHit) do
-          enq missQueue
-            MissInfo {
-              missSetId = setId
-            , missWay = evictWay.val
-            , missLine = map out tagMems ! evictWay.val
-            , missNewTag = req.dramReqAddr.getTag
+      -- Try to consume request
+      if stall
+        then do
+          -- Stall pipeline
+          go2 <== true
+          stallWire <== true
+          sequence_ [tagMem.preserveOut | tagMem <- tagMems]
+        else do
+          -- Count beats in burst store
+          when (req.dramReqIsStore) do
+            let reqBeatCountNew = reqBeatCount.val + 1
+            if reqBeatCountNew .==. req.dramReqBurst
+              then reqBeatCount <== 0
+              else reqBeatCount <== reqBeatCountNew
+          -- Update line state
+          sequence
+            [ when (way .==. chosenWay) do
+                -- Don't update tag on load hit
+                when (inv (isHit .&&. req.dramReqIsStore.inv)) do
+                  store tagMem setId
+                    LineState {
+                      lineTag = req.dramReqAddr.getTag
+                    , lineValid = true
+                    , lineDirty = req.dramReqIsStore
+                    }
+            | (tagMem, way) <- zip tagMems (map fromInteger [0..]) ]
+          -- Reserve line
+          sequence
+            [ when (way .==. chosenWay) do
+                -- Only reserve line once for store burst
+                when (req.dramReqIsStore .==>. reqBeatCount.val .==. 0) do
+                  insert reservedQueue setId
+            | (reservedQueue, way) <-
+                zip reservedQueues (map fromInteger [0..]) ]
+          -- Insert request into inflight queue
+          enq inflightQueue 
+            InflightInfo {
+              inflightReq = req
+            , inflightWay = chosenWay
+            , inflightHit = isHit
             }
-        -- Consume request
-        reqs.consume
-        -- Move back to initial state
-        tagState <== 0
+          -- Insert miss info into miss queue
+          when (inv isHit) do
+            enq missQueue
+              MissInfo {
+                missSetId = setId
+              , missWay = evictWay.val
+              , missLine = map out tagMems ! evictWay.val
+              , missNewTag = req.dramReqAddr.getTag
+              }
+          -- Insert pipeline bubble when consecutive requests access same line
+          when (reqs.canPeek .&&.
+                  reqs.peek.dramReqAddr.setIndex .==.
+                  req.dramReqAddr.setIndex) do
+            bubbleWire <== true
 
   -- Miss handler
   -- ============
