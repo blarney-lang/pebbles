@@ -1,5 +1,5 @@
-module Pebbles.Memory.DRAM.DualPort
-  ( makeDRAMDualPort
+module Pebbles.Memory.DRAM.Bus
+  ( makeDRAMBus
   ) where
 
 -- SoC parameters
@@ -20,19 +20,27 @@ import Pebbles.Memory.DRAM.Interface
 
 type Dual a = (a, a)
 
--- Dual-port DRAM
--- ==============
+-- | Bus tag indicates client id of the original request
+type DRAMBusId t_id = (Bit 1, t_id)
 
--- | Create a dual-port DRAM wrapper around a single DRAM instance.
+-- Two-way DRAM bus
+-- ================
+
+-- Client A <--> +----------+    +------+
+--               | DRAM Bus |<-->| DRAM |
+-- Client B <--> +----------+    +------+
+
+-- | Create a dual-port DRAM wrapper around a single DRAM.
 -- Requests are merged fairly and responses are returned in order.
-makeDRAMDualPort :: forall t_id. Bits t_id =>
-     -- | DRAM request streams coming in
+makeDRAMBus :: forall t_id. Bits t_id =>
      Dual (Stream (DRAMReq t_id))
-     -- | Avalon DRAM input signals
-  -> AvalonDRAMIns
-     -- | DRAM response streams, and Avalon DRAM output signals
-  -> Module (Dual (Stream (DRAMResp t_id)), AvalonDRAMOuts)
-makeDRAMDualPort (reqs0, reqs1) avlIns = do
+     -- ^ Client request streams
+  -> Stream (DRAMResp (DRAMBusId t_id))
+     -- ^ Responses from DRAM
+  -> Module (Dual (Stream (DRAMResp t_id)),
+             Stream (DRAMReq (DRAMBusId t_id)))
+     -- ^ Client response streams, and requests to DRAM
+makeDRAMBus (reqs0, reqs1) dramResps = do
   -- Tag a request with a client id
   let tag t req = req { dramReqId = (t, req.dramReqId) }
 
@@ -43,9 +51,6 @@ makeDRAMDualPort (reqs0, reqs1) avlIns = do
   -- Fair merger
   dramReqs <- makeGenericFairMergeTwo makeQueue (const true)
                 dramReqIsFinal (dramReqs0, dramReqs1)
-
-  -- Single DRAM instance
-  (dramResps, avlOuts) <- makeDRAM dramReqs avlIns
 
   -- Get the tag from the response
   let getTag resp = resp.dramRespId.fst
@@ -67,4 +72,4 @@ makeDRAMDualPort (reqs0, reqs1) avlIns = do
         , consume = dramResps.consume
         }
 
-  return ((resps0, resps1), avlOuts)
+  return ((resps0, resps1), dramReqs)

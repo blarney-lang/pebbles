@@ -226,7 +226,7 @@ makeSBDCache dramResps = do
     when (state.val .==. 2) do
       -- Wait until DRAM request possible
       when (dramReqQueue.notFull) do
-        -- Prepare writeback request
+        -- Prepare fetch request
         let dramReq =
               DRAMReq {
                 dramReqId = ()
@@ -238,7 +238,7 @@ makeSBDCache dramResps = do
               , dramReqBurst = 1
               , dramReqIsFinal = true
               }
-        -- Issue writeback
+        -- Issue fetch
         enq dramReqQueue dramReq
         -- Move to DRAM response state
         state <== 3
