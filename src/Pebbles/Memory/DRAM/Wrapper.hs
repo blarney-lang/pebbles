@@ -116,6 +116,7 @@ makeDRAMCore makeRespQueue reqs avlIns =
                  dramRespId = inFlight.first.dramInFlightId
                , dramRespBurstId = burstCount.val
                , dramRespData = resps.first
+               , dramRespDataTagBits = 0
                }
            , consume = do
                dynamicAssert (inFlight.canDeq .&. resps.canDeq)

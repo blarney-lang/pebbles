@@ -1,14 +1,14 @@
 -- Non-blocking set-associative write-back DRAM cache
 --
--- +------------------------------+----------------------------------------------+
--- | Parameter                    | Description                                  |
--- +------------------------------+----------------------------------------------+
--- | NBDRAMCacheLogBeatsPerLine   | Cache line size                              |
--- | NBDRAMCacheLogNumWays        | Number of set-associative ways               |
--- | NBDRAMCacheLogSets           | Number of sets                               |
--- | NBDRAMCacheLogMaxInflight    | Max number of inflight memory requests       |
--- | NBDRAMCachePendingReqsPerWay | Max number of pending requests per way       |
--- +------------------------------+----------------------------------------------+
+-- +------------------------------+-------------------------------------------+
+-- | Parameter                    | Description                               |
+-- +------------------------------+-------------------------------------------+
+-- | NBDRAMCacheLogBeatsPerLine   | Cache line size                           |
+-- | NBDRAMCacheLogNumWays        | Number of set-associative ways            |
+-- | NBDRAMCacheLogSets           | Number of sets                            |
+-- | NBDRAMCacheLogMaxInflight    | Max number of inflight memory requests    |
+-- | NBDRAMCachePendingReqsPerWay | Max number of pending requests per way    |
+-- +------------------------------+-------------------------------------------+
 
 module Pebbles.Memory.DRAM.NBCache
   ( makeNBDRAMCache
@@ -123,7 +123,7 @@ getTag = upper
 -- includes burst stores (a special case that could be optimised in
 -- future).  Use fetch-on-write policy, which means that DRAM
 -- bandwidth can be wasted in the case where the fetch is
--- unneccessary.
+-- unneccessary.  This cache currently is not tag-bit aware.
 makeNBDRAMCache :: forall t_id. Bits t_id =>
      Stream (DRAMReq t_id)
      -- ^ Cache requests
@@ -341,6 +341,7 @@ makeNBDRAMCache reqs dramResps = do
                   , dramReqAddr =
                       miss.missNewTag # miss.missSetId # (0 :: BeatId)
                   , dramReqData = dontCare
+                  , dramReqDataTagBits = dontCare
                   , dramReqByteEn = 0
                   , dramReqBurst = fromInteger (2^NBDRAMCacheLogBeatsPerLine)
                   , dramReqIsFinal = true
@@ -380,6 +381,7 @@ makeNBDRAMCache reqs dramResps = do
                   , dramReqAddr =
                       miss.missLine.lineTag # miss.missSetId # (0 :: BeatId)
                   , dramReqData = dataMemA.outBE
+                  , dramReqDataTagBits = dontCare
                   , dramReqByteEn = ones
                   , dramReqBurst = fromInteger (2^NBDRAMCacheLogBeatsPerLine)
                   , dramReqIsFinal = writebackFinished
@@ -510,6 +512,7 @@ makeNBDRAMCache reqs dramResps = do
           dramRespId = respIdReg.val
         , dramRespBurstId = respBeatCount.val.old.zeroExtend
         , dramRespData = dataMemB.outBE
+        , dramRespTagBits = 0
         }
 
   return

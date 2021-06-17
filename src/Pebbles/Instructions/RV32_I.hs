@@ -195,6 +195,7 @@ executeI shiftUnit csrUnit memUnit s = do
           , memReqAMOInfo = dontCare
           , memReqAddr = memAddr
           , memReqData = s.opB
+          , memReqDataTagBit = 0
           , memReqIsUnsigned = s.instr.getIsUnsignedLoad
           , memReqIsFinal = true
           }

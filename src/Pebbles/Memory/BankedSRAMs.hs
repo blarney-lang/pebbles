@@ -124,6 +124,9 @@ makeSRAMBank reqs = do
     when (state.val .==. 1) do
       if respQueue.notFull
         then do
+          -- Tagged memory not currently supported
+          dynamicAssert (reqReg.val.memReqDataTagBit.inv)
+            "BankedSRAMs: tagged memory not currently supported"
           -- Shorthands
           let req = reqReg.val
           let a = reqReg.val.memReqData
@@ -154,6 +157,7 @@ makeSRAMBank reqs = do
               MemResp {
                 memRespId = req.memReqId
               , memRespData = sramBank.outBE
+              , memRespDataTagBit = 0
               }
           -- Drop the bottom address bits used as bank selector
           let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))

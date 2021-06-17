@@ -37,6 +37,7 @@ executeCacheMgmt memUnit s = do
           , memReqAMOInfo = dontCare
           , memReqAddr = s.opA
           , memReqData = dontCare
+          , memReqDataTagBit = 0
           , memReqIsUnsigned = dontCare
           , memReqIsFinal = true
           }

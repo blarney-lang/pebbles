@@ -1,5 +1,5 @@
 PEBBLES_ROOT = $(realpath ../../..)
-BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
+export BLARNEY_ROOT = $(PEBBLES_ROOT)/blarney
 BLC = $(BLARNEY_ROOT)/Scripts/blc
 BLC_INC = $(PEBBLES_ROOT)/soc/SIMTight/inc
 BUILD_DIR = $(PEBBLES_ROOT)/soc/SIMTight/src/build

@@ -61,3 +61,15 @@ NOTE("==========")
 
 NOTE("Space reserved for boot loader")
 #define MaxBootImageBytes 512
+
+NOTE("CHERI support")
+NOTE("=============")
+
+NOTE("Is CHERI support enabled?")
+#define EnableCHERI 1
+
+NOTE("Number of data bytes per tag bit")
+#define LogBytesPerTagBit 3
+
+NOTE("Number of tag bits per DRAM beat")
+#define TagBitsPerBeat 8

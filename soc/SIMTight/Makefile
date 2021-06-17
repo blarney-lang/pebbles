@@ -1,5 +1,7 @@
+PEBBLES_ROOT ?= $(realpath ../..)
+
 .PHONY: verilog
-verilog: blarney/Makefile
+verilog: $(PEBBLES_ROOT)/blarney/Makefile
 	make -C src
 
 .PHONY: sim
@@ -15,5 +17,5 @@ clean:
 	make -C sim clean
 
 # Fetch blarney repo if it's not there
-blarney/Makefile:
+$(PEBBLES_ROOT)/blarney/Makefile:
 	git submodule update --init --recursive
