@@ -31,14 +31,16 @@ import Pebbles.Pipeline.Interface
 -- | Scalar pipeline configuration
 data ScalarPipelineConfig tag =
   ScalarPipelineConfig {
-    -- | Instruction memory initilaisation file
     instrMemInitFile :: Maybe String
-    -- | Instruciton memory size
+    -- ^ Instruction memory initilaisation file
   , instrMemLogNumInstrs :: Int
-    -- | Decode table
+    -- ^ Instruction memory size
+  , initialPC :: Integer
+    -- ^ Initial program counter
   , decodeStage :: [(String, tag)]
-    -- | Action for execute stage
+    -- ^ Decode table
   , executeStage :: State -> Module ExecuteStage
+    -- ^ Action for execute stage
   }
 
 -- | Scalar pipeline management
@@ -105,7 +107,7 @@ makeScalarPipeline c =
     retryWire :: Wire (Bit 1) <- makeWire false
 
     -- Program counters for each pipeline stage
-    pc1 :: Reg (Bit 32) <- makeReg 0xfffffffc
+    pc1 :: Reg (Bit 32) <- makeReg (fromInteger (c.initialPC - 4))
     pc2 :: Reg (Bit 32) <- makeReg dontCare
     pc3 :: Reg (Bit 32) <- makeReg dontCare
 

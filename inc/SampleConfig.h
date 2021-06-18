@@ -56,12 +56,6 @@ NOTE("Size of tightly coupled instruction memory")
 NOTE("Number of cache lines (line size == DRAM beat size)")
 #define SBDCacheLogLines 7
 
-NOTE("Memory map")
-NOTE("==========")
-
-NOTE("Space reserved for boot loader")
-#define MaxBootImageBytes 512
-
 NOTE("CHERI support")
 NOTE("=============")
 
@@ -73,3 +67,12 @@ NOTE("Number of data bytes per tag bit")
 
 NOTE("Number of tag bits per DRAM beat")
 #define TagBitsPerBeat 8
+
+NOTE("Memory map")
+NOTE("==========")
+
+NOTE("Memory base (after tag bit region)")
+#define MemBase 67108864
+
+NOTE("Space reserved for boot loader")
+#define MaxBootImageBytes 512

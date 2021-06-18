@@ -70,7 +70,7 @@ int main()
     // This is the common mode
 
     // Call the application's main function
-    int (*appMain)() = (int (*)()) (MaxBootImageBytes);
+    int (*appMain)() = (int (*)()) (MemBase + MaxBootImageBytes);
     appMain();
 
     // Send terminating null to host
@@ -84,7 +84,7 @@ int main()
 
     // Start kernel on SIMT core
     while (! pebblesSIMTCanPut()) {}
-    pebblesSIMTStartKernel(MaxBootImageBytes);
+    pebblesSIMTStartKernel(MemBase + MaxBootImageBytes);
 
     // Wait for kernel response
     while (!pebblesSIMTCanGet()) {}
@@ -95,7 +95,7 @@ int main()
   }
 
   // Restart boot loader
-  asm volatile("jr zero");
+  asm volatile("jr %0" : : "r"(MemBase));
 
   // Unreachable
   return 0;

@@ -63,6 +63,8 @@ data SIMTPipelineConfig tag =
     -- ^ Instruction memory initialisation file
   , instrMemLogNumInstrs :: Int
     -- ^ Instuction memory size (in number of instructions)
+  , instrMemBase :: Integer
+    -- ^ Base address of instruction memory in memory map
   , logNumWarps :: Int
     -- ^ Number of warps
   , logMaxNestLevel :: Int
@@ -397,7 +399,8 @@ makeSIMTPipeline c inputs =
     let fromPC :: Bit 32 -> Bit t_logInstrs =
           \pc -> truncateCast (slice @31 @2 pc)
     let toPC :: Bit t_logInstrs -> Bit 32 =
-          \addr -> zeroExtendCast addr # (0 :: Bit 2)
+          \addr -> fromInteger (c.instrMemBase) .|.
+                     zeroExtendCast addr # (0 :: Bit 2)
 
     -- Buffer the decode tables
     let tagMap5 = Map.map buffer tagMap4

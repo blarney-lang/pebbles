@@ -60,6 +60,10 @@ data SoCOuts =
 -- | SoC top-level
 makeTop :: SoCIns -> Module SoCOuts
 makeTop socIns = mdo
+  -- Instruction memory alignment requirement
+  staticAssert (MemBase `mod` (4 * 2^CPUInstrMemLogWords) == 0)
+    "makeTop: Instruction memory alignment requirement not met"
+
   -- Scalar core
   cpuOuts <- makeCPUCore
     ScalarCoreIns {
@@ -104,6 +108,7 @@ makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
       ScalarCoreConfig {
         scalarCoreInstrMemInitFile = Just "boot.mif"
       , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+      , scalarCoreInitialPC = MemBase
       }
 
 -- CPU data cache (synthesis boundary)
@@ -116,6 +121,7 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
       SIMTCoreConfig {
         simtCoreInstrMemInitFile = Nothing
       , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+      , simtCoreInstrMemBase = MemBase
       , simtCoreExecBoundary = True
       }
 

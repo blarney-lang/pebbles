@@ -29,40 +29,42 @@ import Pebbles.Memory.DRAM.Interface
 -- | Configuration parameters
 data ScalarCoreConfig =
   ScalarCoreConfig {
-    -- | Initialisation file for instruction memory
     scalarCoreInstrMemInitFile :: Maybe String
-    -- | Size of tightly coupled instruction memory
+    -- ^ Initialisation file for instruction memory
   , scalarCoreInstrMemLogNumInstrs :: Int
+    -- ^ Size of tightly coupled instruction memory
+  , scalarCoreInitialPC :: Integer
+    -- ^ Initial PC
   }
 
 -- | Scalar core inputs
 data ScalarCoreIns =
   ScalarCoreIns {
-    -- | UART input
     scalarUartIn :: Stream (Bit 8)
-    -- | Memory unit
+    -- ^ UART input
   , scalarMemUnit :: MemUnit InstrInfo
-    -- | Management responses from SIMT core
+    -- ^ Memory unit
   , scalarSIMTResps :: Stream SIMTResp
+    -- ^ Management responses from SIMT core
   } deriving (Generic, Interface)
 
 -- | Scalar core outputs
 data ScalarCoreOuts =
   ScalarCoreOuts {
-    -- | UART output
     scalarUartOut :: Stream (Bit 8)
-    -- | Management requests to SIMT core
+    -- ^ UART output
   , scalarSIMTReqs :: Stream SIMTReq
+    -- ^ Management requests to SIMT core
   } deriving (Generic, Interface)
 
 -- | RV32IM core with UART input and output channels
 makeScalarCore ::
-     -- | Configuration parameters
      ScalarCoreConfig
-     -- | Scalar core inputs
+     -- ^ Configuration parameters
   -> ScalarCoreIns
-     -- | Scalar core outputs
+     -- ^ Scalar core inputs
   -> Module ScalarCoreOuts
+     -- ^ Scalar core outputs
 makeScalarCore config inputs = mdo
   -- UART CSRs
   (uartCSRs, uartOut) <- makeCSRs_UART (inputs.scalarUartIn)
@@ -95,6 +97,7 @@ makeScalarCore config inputs = mdo
     ScalarPipelineConfig {
       instrMemInitFile = config.scalarCoreInstrMemInitFile
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
+    , initialPC = config.scalarCoreInitialPC
     , decodeStage = decodeI ++ decodeM ++ decodeCacheMgmt
     , executeStage = \s -> return
         ExecuteStage {
