@@ -512,7 +512,7 @@ makeNBDRAMCache reqs dramResps = do
           dramRespId = respIdReg.val
         , dramRespBurstId = respBeatCount.val.old.zeroExtend
         , dramRespData = dataMemB.outBE
-        , dramRespTagBits = 0
+        , dramRespDataTagBits = 0
         }
 
   return

@@ -63,11 +63,6 @@ getLineNum addr = upper rest
 getLineWordOffset :: Bit 32 -> Bit (DRAMBeatLogBytes-2)
 getLineWordOffset addr = truncate (slice @31 @2 addr)
 
--- | Get tag bit offset within line from address
-getLineTagBitOffset :: Bit 32 -> Bit (DRAMBeatLogBytes-LogBytesPerTagBit)
-getLineTagBitOffset addr =
-  truncate (slice @31 @LogBytesPerTagBit addr)
-
 -- Implementation
 -- ==============
 
@@ -88,8 +83,8 @@ makeSBDCache dramResps = do
   metaMem :: RAM LineNum LineState <- makeDualRAM
 
   -- Data tag bits (not to be confused with cache line tag)
-  tagBitsMem :: RAM LineNum (Bit TagBitsPerBeat) <-
-    if EnableCHERI == 1
+  tagBitsMem :: RAM LineNum (Bit DRAMBeatWords) <-
+    if EnableTaggedMem == 1
       then makeDualRAM
       else return nullRAM
 
@@ -124,7 +119,6 @@ makeSBDCache dramResps = do
     let tag = reqReg.val.memReqAddr.getTag
     let lineNum = reqReg.val.memReqAddr.getLineNum
     let lineOffset = reqReg.val.memReqAddr.getLineWordOffset
-    let tagBitOffset = reqReg.val.memReqAddr.getLineTagBitOffset
 
     -- Respond on hit, writeback on miss
     when (state.val .==. 1) do
@@ -137,7 +131,7 @@ makeSBDCache dramResps = do
                     tag .==. metaMem.out.lineTag .&&.
                       isFlush.inv
       -- Tag bits in loaded cache line
-      let tagBits :: V.Vec TagBitsPerBeat (Bit 1) = unpack (tagBitsMem.out)
+      let tagBits :: V.Vec DRAMBeatWords (Bit 1) = unpack (tagBitsMem.out)
       -- Separate behaviours for hit and miss
       if isHit .||. isFence
         then do
@@ -154,7 +148,7 @@ makeSBDCache dramResps = do
               -- Loaded word
               let loadWord = loadWords ! lineOffset
               -- Tag bit for loaded word
-              let loadTagBit = tagBits ! tagBitOffset
+              let loadTagBit = tagBits ! lineOffset
               -- Check for space in response queue
               if respQueue.notFull 
                 then do
@@ -167,6 +161,7 @@ makeSBDCache dramResps = do
                             (reqReg.val.memReqAccessWidth)
                             (reqReg.val.memReqIsUnsigned)
                         , memRespDataTagBit = loadTagBit
+                        , memRespIsFinal = reqReg.val.memReqIsFinal
                         }
                   -- Issue loadResponse
                   enq respQueue loadResp
@@ -196,7 +191,7 @@ makeSBDCache dramResps = do
               storeBE dataMem lineNum lineBE (pack storeWords)
               -- Function to determine the i'th tag bit of the cache line
               let genTagBit i tagBit =
-                    if tagBitOffset .==. fromInteger i 
+                    if lineOffset .==. fromInteger i
                     then reqReg.val.memReqDataTagBit
                     else tagBit
               -- Compute new tag bits
@@ -227,7 +222,7 @@ makeSBDCache dramResps = do
                     , dramReqIsStore = true
                     , dramReqAddr = metaMem.out.lineTag # lineNum
                     , dramReqData = dataMem.outBE
-                    , dramReqDataTagBits = tagBitsMem.out.fromTagBits
+                    , dramReqDataTagBits = tagBitsMem.out
                     , dramReqByteEn = ones
                     , dramReqBurst = 1
                     , dramReqIsFinal = true
@@ -290,7 +285,7 @@ makeSBDCache dramResps = do
           store metaMem lineNum line
           storeBE dataMem lineNum ones (dramResps.peek.dramRespData)
           store tagBitsMem lineNum
-            (dramResps.peek.dramRespDataTagBits.toTagBits)
+            (dramResps.peek.dramRespDataTagBits)
         -- Move to loopback state
         state <== 4
 

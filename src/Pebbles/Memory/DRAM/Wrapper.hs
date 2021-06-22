@@ -6,14 +6,14 @@ module Pebbles.Memory.DRAM.Wrapper
 -- SoC parameters
 #include <Config.h>
 
--- Local imports
-import Pebbles.Util.Counter
-import Pebbles.Memory.DRAM.Interface
-
 -- Blarney imports
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+
+-- Pebbles imports
+import Pebbles.Util.Counter
+import Pebbles.Memory.DRAM.Interface
 
 -- Types
 -- =====

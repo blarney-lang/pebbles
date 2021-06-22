@@ -92,6 +92,9 @@ data MemResp id =
     -- ^ Response data
   , memRespDataTagBit :: Bit 1
     -- ^ Data tag bit
+  , memRespIsFinal :: Bit 1
+    -- ^ Is this the final response of an atomic transaction?
+    -- See note [Memory transactions]
   } deriving (Generic, Interface, Bits)
 
 -- | Interface to the memory unit
@@ -129,10 +132,10 @@ memRespToResumeReq resp =
 -- Note [Memory transactions]
 -- ==========================
 
--- Memory transactions are sequences of requests that cannot be
--- interleaved with other memory requests.  The scope of a transaction
--- is simply defined using the 'memReqIsFinal' bit.  The main intent
+-- Memory transactions are sequences of requests (or responses) that
+-- cannot be interleaved with other memory requests (or responses).
+-- The scope of a transaction is simply defined using the
+-- 'memReqIsFinal' bit (or the `memRespIsFinal` bit).  The main intent
 -- here is to support accessing data items larger than 32 bits in an
--- atomic manner.  Of course, the mechanism can be abused to hog
--- busses for long durations, impacting overall system efficiency, so
--- use with care!
+-- atomic manner.  The mechanism can be misused to hog busses for long
+-- durations, so use with care!

@@ -59,20 +59,14 @@ NOTE("Number of cache lines (line size == DRAM beat size)")
 NOTE("CHERI support")
 NOTE("=============")
 
-NOTE("Is CHERI support enabled?")
-#define EnableCHERI 1
-
-NOTE("Number of data bytes per tag bit")
-#define LogBytesPerTagBit 3
-
-NOTE("Number of tag bits per DRAM beat")
-#define TagBitsPerBeat 8
+NOTE("Is tagged memory enabled?")
+#define EnableTaggedMem 1
 
 NOTE("Memory map")
 NOTE("==========")
 
 NOTE("Memory base (after tag bit region)")
-#define MemBase 67108864
+#define MemBase 134217728
 
 NOTE("Space reserved for boot loader")
 #define MaxBootImageBytes 512

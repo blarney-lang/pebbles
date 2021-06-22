@@ -75,21 +75,9 @@ data AvalonDRAMOuts =
 -- ==========================
 
 -- DRAM requests and responses contain one tag bit for each 32-bit
--- word in a beat.  The memory subsystem maintains the invariant that
--- all tag bits of a capability are either all-one or all-zero.  So
--- why not just use one tag bit per capability?  Because SIMT stack
--- interleaving means that the words of a capability on a thread's
--- stack are not contiguous in physical memory; therefore each word in
--- a DRAM beat could be from a different capability.  Multiple tag
--- bits for a capability are never actually stored
--- separately/redundantly in memory.
-
--- | Given a tag bit per word, determine tag bit per capability
-toTagBits :: Bit DRAMBeatWords -> Bit TagBitsPerBeat
-toTagBits bits = pack $ V.map headBit $ unpack bits
-  where headBit v = V.head v :: Bit 1
-
--- | Given a tag bit per capability, determine tag bit per word
-fromTagBits :: Bit TagBitsPerBeat -> Bit DRAMBeatWords
-fromTagBits bits = pack $ V.map V.replicate v
-  where v :: V.Vec TagBitsPerBeat (Bit 1) = unpack bits
+-- word in a beat.  This is a higher density than strictly required
+-- for CHERI, but it is convenient.  The words that make up a
+-- capability neither need to be aligned nor contiguous.  Due to the
+-- way that SIMT stacks are implemented (interleaved, to aid
+-- coalescing), the words of a capability may indeed be
+-- non-contiguous.

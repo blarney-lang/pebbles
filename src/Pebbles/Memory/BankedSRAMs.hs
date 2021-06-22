@@ -50,7 +50,7 @@ makeBankedSRAMs route reqStreamsVec = do
   -- Shuffle-exchange network on responses
   let switchResp = makeFairExchange (makeShiftQueue 1)
   let routeResp resp = resp.memRespId.route
-  let isFinalResp resp = true
+  let isFinalResp resp = resp.memRespIsFinal
   respStreams1 <- makeShuffleExchange switchResp routeResp
                     isFinalResp respStreams0
 
@@ -64,7 +64,8 @@ makeSRAMBank :: Bits t_id =>
      -- ^ Stream of memory responses
 makeSRAMBank reqs = do
   -- SRAM bank implemented by a block RAM
-  sramBank :: RAMBE SIMTLogWordsPerSRAMBank 4 <- makeDualRAMBE
+  -- (Most significant byte holds tag bit)
+  sramBank :: RAMBE SIMTLogWordsPerSRAMBank 5 <- makeDualRAMBE
 
   -- Response queue
   respQueue :: Queue (MemResp t_id) <- makeShiftQueue 1
@@ -124,13 +125,10 @@ makeSRAMBank reqs = do
     when (state.val .==. 1) do
       if respQueue.notFull
         then do
-          -- Tagged memory not currently supported
-          dynamicAssert (reqReg.val.memReqDataTagBit.inv)
-            "BankedSRAMs: tagged memory not currently supported"
           -- Shorthands
           let req = reqReg.val
           let a = reqReg.val.memReqData
-          let b = sramBank.outBE
+          let b = sramBank.outBE.truncate
           -- Prepare min/max operation
           let msb a = upper a :: Bit 1
           let sa = isUnsigned.val ? (0, msb a)
@@ -156,8 +154,9 @@ makeSRAMBank reqs = do
             enq respQueue
               MemResp {
                 memRespId = req.memReqId
-              , memRespData = sramBank.outBE
-              , memRespDataTagBit = 0
+              , memRespData = sramBank.outBE.truncate
+              , memRespDataTagBit = at @32 (sramBank.outBE)
+              , memRespIsFinal = req.memReqIsFinal
               }
           -- Drop the bottom address bits used as bank selector
           let addr = truncate (slice @31 @(SIMTLogLanes+2) (req.memReqAddr))
@@ -166,9 +165,11 @@ makeSRAMBank reqs = do
           -- Write to bank
           when (req.memReqOp .==. memStoreOp .||.
                   req.memReqOp .==. memAtomicOp) do
-            storeBE sramBank addr byteEn
-              (if req.memReqOp .==. memStoreOp then req.memReqData
-                                               else storeData)
+            let d = if req.memReqOp .==. memStoreOp
+                      then req.memReqData
+                      else storeData
+            storeBE sramBank addr (EnableTaggedMem # byteEn)
+              (dontCare # req.memReqDataTagBit # d)
           -- Move back to initial state
           state <== 0
         else do

@@ -50,6 +50,8 @@ data CoalescingInfo t_id =
     -- ^ Lower bits of address
   , coalInfoBurstLen :: DRAMBurst
     -- ^ Burst length
+  , coalInfoIsFinal :: Bit 1
+    -- ^ Final request in transaction?
   } deriving (Generic, Bits)
 
 -- | SRAM bank request info
@@ -561,6 +563,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
               , coalInfoSameBlockMode = sameBlockMode
               , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
               , coalInfoBurstLen = burstLen - 1
+              , coalInfoIsFinal = leaderReq5.val.memReqIsFinal
               }
         -- Handle load & fence: insert info into inflight queue
         let hasResp = leaderReq5.val.memReqOp .==. memLoadOp
@@ -743,6 +746,7 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
               memRespId = id
             , memRespData = useSameBlock ? (d, sameAddrData)
             , memRespDataTagBit = useSameBlock ? (t, sameAddrTagBit)
+            , memRespIsFinal = info.coalInfoIsFinal
             }
 
   -- Stage 6 (SRAM): Handle responses
