@@ -12,7 +12,7 @@ import Blarney.Stream
 import Blarney.SourceSink
 import Blarney.Connectable
 import Blarney.Interconnect
-import Blarney.Vector (Vec, toList, fromList, genWith)
+import qualified Blarney.Vector as V
 
 -- Pebbles imports
 import Pebbles.IO.JTAGUART
@@ -26,6 +26,8 @@ import Pebbles.Memory.CoalescingUnit
 import Pebbles.Memory.DRAM.Bus
 import Pebbles.Memory.DRAM.Wrapper
 import Pebbles.Memory.DRAM.Interface
+import Pebbles.Memory.StreamCache
+import Pebbles.Memory.DRAM.Deburster
 
 -- SIMTight imports
 import Core.SIMT
@@ -84,8 +86,17 @@ makeTop socIns = mdo
   (simtMemUnits, dramReqs1) <- makeSIMTMemSubsystem dramResps1
 
   -- DRAM bus
-  ((dramResps0, dramResps1), dramReqs) <-
-    makeDRAMBus (dramReqs0, dramReqs1) dramResps
+  ((dramResps0, dramResps1), dramCacheReqs) <-
+    makeDRAMBus (dramReqs0, dramReqs1) dramCacheResps
+
+  -- DRAM Deburster
+  dramCacheReqs1 <- makeDRAMDeburster dramCacheReqs
+
+  -- DRAM cache
+  (dramCacheResps', dramReqs) <-
+    makeStreamCache (fmap dramReqToStreamCacheReq dramCacheReqs1)
+                    dramResps
+  let dramCacheResps = fmap streamCacheRespToDRAMResp dramCacheResps'
 
   -- DRAM instance
   (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
@@ -134,7 +145,7 @@ makeSIMTMemSubsystem ::
      -- | DRAM responses
      Stream (DRAMResp ())
      -- | DRAM requests and per-lane mem units
-  -> Module (Vec SIMTLanes (MemUnit InstrInfo), Stream (DRAMReq ()))
+  -> Module (V.Vec SIMTLanes (MemUnit InstrInfo), Stream (DRAMReq ()))
 makeSIMTMemSubsystem dramResps = mdo
     -- Warp preserver
     (memReqs, simtMemUnits) <- makeWarpPreserver memResps1
@@ -160,7 +171,7 @@ makeSIMTMemSubsystem dramResps = mdo
     -- Coalescing unit
     (memResps, sramReqs, dramReqs) <-
       makeSIMTCoalescingUnit isBankedSRAMAccess
-        (fromList memReqs1) dramResps sramResps
+        (V.fromList memReqs1) dramResps sramResps
 
     -- Banked SRAMs
     let sramRoute info = info.bankLaneId
@@ -177,7 +188,7 @@ makeSIMTMemSubsystem dramResps = mdo
               (resp.memRespId.snd.memReqInfoAccessWidth)
               (resp.memRespId.snd.memReqInfoIsUnsigned)
           }
-    let memResps1 = map (mapSource processResp) (toList memResps)
+    let memResps1 = map (mapSource processResp) (V.toList memResps)
 
     -- Ensure that the SRAM base address is suitably aligned
     -- (If so, remapping SRAM addresses is unecessary)
@@ -185,7 +196,7 @@ makeSIMTMemSubsystem dramResps = mdo
       then error "SRAM base address not suitably aligned"
       else return ()
 
-    return (fromList simtMemUnits, dramReqs)
+    return (V.fromList simtMemUnits, dramReqs)
 
   where
     -- SRAM-related addresses
@@ -213,6 +224,31 @@ makeSIMTCoalescingUnit isBankedSRAMAccess =
 makeSIMTBankedSRAMs route =
   makeBoundary "SIMTBankedSRAMs"
     (makeBankedSRAMs @(BankInfo SIMTMemReqId) route)
+
+-- Helpers
+-- =======
+
+dramReqToStreamCacheReq :: DRAMReq t_id -> StreamCacheReq t_id
+dramReqToStreamCacheReq req =
+  StreamCacheReq {
+    streamCacheReqId = req.dramReqId
+  , streamCacheReqIsStore = req.dramReqIsStore
+  , streamCacheReqAddr = req.dramReqAddr
+  , streamCacheReqOffset = 0
+  , streamCacheReqData = req.dramReqData
+  , streamCacheReqWriteEn =
+      let v :: V.Vec DRAMBeatBytes (Bit 1) = req.dramReqByteEn.unpack in
+        pack $ V.map (\b -> b ? (ones, 0 :: Bit 8)) v
+  }
+
+streamCacheRespToDRAMResp :: StreamCacheResp t_id -> DRAMResp t_id
+streamCacheRespToDRAMResp resp =
+  DRAMResp {
+    dramRespId = resp.streamCacheRespId
+  , dramRespBurstId = 0
+  , dramRespData = resp.streamCacheRespData
+  , dramRespDataTagBits = 0
+  }
 
 -- Main function
 -- =============
