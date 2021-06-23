@@ -26,8 +26,6 @@ import Pebbles.Memory.CoalescingUnit
 import Pebbles.Memory.DRAM.Bus
 import Pebbles.Memory.DRAM.Wrapper
 import Pebbles.Memory.DRAM.Interface
-import Pebbles.Memory.StreamCache
-import Pebbles.Memory.DRAM.Deburster
 
 -- SIMTight imports
 import Core.SIMT
@@ -86,17 +84,8 @@ makeTop socIns = mdo
   (simtMemUnits, dramReqs1) <- makeSIMTMemSubsystem dramResps1
 
   -- DRAM bus
-  ((dramResps0, dramResps1), dramCacheReqs) <-
-    makeDRAMBus (dramReqs0, dramReqs1) dramCacheResps
-
-  -- DRAM Deburster
-  dramCacheReqs1 <- makeDRAMDeburster dramCacheReqs
-
-  -- DRAM cache
-  (dramCacheResps', dramReqs) <-
-    makeStreamCache (fmap dramReqToStreamCacheReq dramCacheReqs1)
-                    dramResps
-  let dramCacheResps = fmap streamCacheRespToDRAMResp dramCacheResps'
+  ((dramResps0, dramResps1), dramReqs) <-
+    makeDRAMBus (dramReqs0, dramReqs1) dramResps
 
   -- DRAM instance
   (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
@@ -224,31 +213,6 @@ makeSIMTCoalescingUnit isBankedSRAMAccess =
 makeSIMTBankedSRAMs route =
   makeBoundary "SIMTBankedSRAMs"
     (makeBankedSRAMs @(BankInfo SIMTMemReqId) route)
-
--- Helpers
--- =======
-
-dramReqToStreamCacheReq :: DRAMReq t_id -> StreamCacheReq t_id
-dramReqToStreamCacheReq req =
-  StreamCacheReq {
-    streamCacheReqId = req.dramReqId
-  , streamCacheReqIsStore = req.dramReqIsStore
-  , streamCacheReqAddr = req.dramReqAddr
-  , streamCacheReqOffset = 0
-  , streamCacheReqData = req.dramReqData
-  , streamCacheReqWriteEn =
-      let v :: V.Vec DRAMBeatBytes (Bit 1) = req.dramReqByteEn.unpack in
-        pack $ V.map (\b -> b ? (ones, 0 :: Bit 8)) v
-  }
-
-streamCacheRespToDRAMResp :: StreamCacheResp t_id -> DRAMResp t_id
-streamCacheRespToDRAMResp resp =
-  DRAMResp {
-    dramRespId = resp.streamCacheRespId
-  , dramRespBurstId = 0
-  , dramRespData = resp.streamCacheRespData
-  , dramRespDataTagBits = 0
-  }
 
 -- Main function
 -- =============

@@ -1,15 +1,15 @@
 -- Non-blocking set-associative write-back DRAM cache
 --
--- +------------------------------+-------------------------------------------+
--- | Parameter                    | Description                               |
--- +------------------------------+-------------------------------------------+
--- | StreamCacheLogItemsPerBeat   | Number of data items per DRAM beat        |
--- | StreamCacheLogBeatsPerLine   | Cache line size                           |
--- | StreamCacheLogNumWays        | Number of set-associative ways            |
--- | StreamCacheLogSets           | Number of sets                            |
--- | StreamCacheLogMaxInflight    | Max number of inflight memory requests    |
--- | StreamCachePendingReqsPerWay | Max number of pending requests per way    |
--- +------------------------------+-------------------------------------------+
+-- +------------------------------+-----------------------------------------+
+-- | Parameter                    | Description                             |
+-- +------------------------------+-----------------------------------------+
+-- | StreamCacheLogItemsPerBeat   | Number of data items per DRAM beat      |
+-- | StreamCacheLogBeatsPerLine   | Cache line size                         |
+-- | StreamCacheLogNumWays        | Number of set-associative ways          |
+-- | StreamCacheLogSets           | Number of sets                          |
+-- | StreamCacheLogMaxInflight    | Max number of inflight memory requests  |
+-- | StreamCachePendingReqsPerWay | Max number of pending requests per way  |
+-- +------------------------------+-----------------------------------------+
 
 module Pebbles.Memory.StreamCache
   ( makeStreamCache
@@ -19,14 +19,6 @@ module Pebbles.Memory.StreamCache
 
 -- SoC parameters
 #include <Config.h>
-
--- TODO: temporary
-#define StreamCacheLogItemsPerBeat   0
-#define StreamCacheLogBeatsPerLine   1
-#define StreamCacheLogNumWays        2
-#define StreamCacheLogSets           7
-#define StreamCacheLogMaxInflight    5
-#define StreamCachePendingReqsPerWay 8
 
 -- Blarney imports
 import Blarney
