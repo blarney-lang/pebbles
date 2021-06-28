@@ -1,5 +1,6 @@
 module Pebbles.Memory.DRAM.Bus
   ( makeDRAMBus
+  , DRAMBusId
   ) where
 
 -- SoC parameters

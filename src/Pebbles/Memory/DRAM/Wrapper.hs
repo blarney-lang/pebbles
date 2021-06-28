@@ -174,4 +174,4 @@ makeDRAMUnstoppable :: Bits t_id =>
 makeDRAMUnstoppable reqs avlIns =
   -- Use a small response queue which may overflow if
   -- responses are not consumed fast enough
-  makeDRAMCore makeQueue reqs avlIns
+  makeDRAMCore (makePipelineQueue 1) reqs avlIns

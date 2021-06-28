@@ -22,6 +22,7 @@ import Pebbles.Memory.Alignment
 import Pebbles.Memory.Interface
 import Pebbles.Memory.BankedSRAMs
 import Pebbles.Memory.WarpPreserver
+import Pebbles.Memory.TagController
 import Pebbles.Memory.CoalescingUnit
 import Pebbles.Memory.DRAM.Bus
 import Pebbles.Memory.DRAM.Wrapper
@@ -87,8 +88,19 @@ makeTop socIns = mdo
   ((dramResps0, dramResps1), dramReqs) <-
     makeDRAMBus (dramReqs0, dramReqs1) dramResps
 
+  -- Optional tag controller
+  (dramResps, dramFinalReqs) <-
+    if EnableTaggedMem == 1
+      then makeTagController dramReqs dramFinalResps
+      else makeNullTagController dramReqs dramFinalResps
+
   -- DRAM instance
-  (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
+  -- (No DRAM buffering needed when tag controller is in use;
+  -- it performs its own buffering)
+  (dramFinalResps, avlDRAMOuts) <-
+    if EnableTaggedMem == 1
+      then makeDRAMUnstoppable dramFinalReqs (socIns.socDRAMIns)
+      else makeDRAM dramFinalReqs (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
   (fromUART, avlUARTOuts) <- makeJTAGUART

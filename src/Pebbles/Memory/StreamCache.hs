@@ -11,12 +11,6 @@
 -- | StreamCachePendingReqsPerWay | Max number of pending requests per way  |
 -- +------------------------------+-----------------------------------------+
 
-module Pebbles.Memory.StreamCache
-  ( makeStreamCache
-  , StreamCacheReq(..)
-  , StreamCacheResp(..)
-  ) where
-
 -- SoC parameters
 #include <Config.h>
 
@@ -384,15 +378,14 @@ makeStreamCache reqs dramResps = do
 
           -- Give way to memory response stage
           -- (Which also accesses data memory)
-          when (dramRespInProgress.val.inv) do
+          when (dramRespInProgress.val.inv .&&. writebackStall.val.inv) do
             -- Load beat from data memory
             loadBE dataMemA
               (miss.missWay # miss.missSetId # writebackCount.val.truncate)
             -- Try writeback on next cycle
             enableWriteback <== true
             -- Increment writeback count
-            when (writebackStall.val.inv) do
-              writebackCount <== writebackCount.val + 1
+            writebackCount <== writebackCount.val + 1
           -- Try writeback
           when (enableWriteback.val) do
             let writebackFinished = writebackCount.val .==.
@@ -442,7 +435,7 @@ makeStreamCache reqs dramResps = do
       -- Write beat to data memory
       storeBE dataMemA (resp.dramRespId + dramRespBeatCount.val.zeroExtend)
         ones (dramResps.peek.dramRespData)
-      -- Consume request
+      -- Consume response
       dramResps.consume
       dramRespBeatCount <== dramRespBeatCount.val + 1
       -- At end of burst, increment completed fetches
@@ -484,7 +477,7 @@ makeStreamCache reqs dramResps = do
                         req.streamCacheReqAddr.truncate
     -- State 0: data lookup
     when (respState.val .==. 0) do
-      when (respQueue.notFull .&&. inflightQueue.canDeq) do
+      when (inflightQueue.canDeq) do
         -- Stall condition
         let stall = -- Miss has not yet been resolved
                     inflight.inflightHit.inv .&&.
@@ -536,7 +529,7 @@ makeStreamCache reqs dramResps = do
             V.replicate (req.streamCacheReqData)
       -- Data to write  (after mask applied)
       let writeData :: DRAMBeat =
-            fromBitList $
+            fromBitList
               [ cond ? (new, old)
               | (cond, old, new) <-
                   zip3 (toBitList $ pack mask)

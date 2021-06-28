@@ -14,7 +14,7 @@
 #define LogBeatsPerPage 14
 
 // DRAMLatency on load responses (ticks)
-#define DRAMLatency 20
+#define DRAMLatency 30
 
 // Types
 // =====
