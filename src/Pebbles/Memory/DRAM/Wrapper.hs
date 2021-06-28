@@ -85,7 +85,11 @@ makeDRAMCore makeRespQueue reqs avlIns =
      always do
        when (reqs.canPeek .&. waitRequest.inv) do
          let req :: DRAMReq t_id = reqs.peek
-         when (inFlightCount.getAvailable .>=. maxBurst) do
+         -- Check burst size
+         dynamicAssert (req.dramReqBurst .<=. maxBurst)
+           "DRAM: max burst size exceeded"
+         -- Consume request
+         when (inFlightCount.getAvailable .>=. req.dramReqBurst.zeroExtend) do
            reqs.consume
            byteEn <== req.dramReqByteEn
            address <== req.dramReqAddr

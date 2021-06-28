@@ -75,7 +75,7 @@ NOTE("Tag cache: max number of inflight memory requests")
 #define TagCacheLogMaxInflight 5
 
 NOTE("Tag cache: max number of pending requests per way")
-#define TagCachePendingReqsPerWay 8
+#define TagCachePendingReqsPerWay 12
 
 NOTE("Memory map")
 NOTE("==========")

@@ -84,9 +84,9 @@ makeTagController reqs dramResps = mdo
 
   -- Split requests to tag cache and DRAM request queue
   always do
-    let maxBurst = fromInteger (2 ^ (DRAMBurstWidth-1))
-    when (reqs.canPeek .&&. inFlightCount.getAvailable .>=. maxBurst) do
-      let req = reqs.peek
+    let req = reqs.peek
+    when (reqs.canPeek .&&. inFlightCount.getAvailable .>=.
+                              req.dramReqBurst.zeroExtend) do
       -- DRAM address, accounting for bursts
       let addr = req.dramReqAddr + burstCount.val.zeroExtend
       -- Determine the address of the beat containing the desired tag bits,
