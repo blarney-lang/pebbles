@@ -29,7 +29,8 @@ data DTCMConfig =
 -- Implementation
 -- ==============
 
--- | Tightly-coupled data memory with single-cycle read latency
+-- | Tightly-coupled data memory with single-cycle read latency.
+-- Currently, not tag-bit aware.
 makeDTCM :: Bits t_id => DTCMConfig -> Module (MemUnit t_id)
 makeDTCM conf = 
   -- Determine address width at type level
@@ -72,7 +73,7 @@ makeDTCM conf =
         when (req.memReqOp .==. memStoreOp) do
           storeBE dataMem addr byteEn writeVal
       -- Update ready register
-      ready <== full .|. (reqWire.active .&. (req.memReqOp .==. memLoadOp))
+      ready <== full .||. reqWire.active .&&. req.memReqOp .==. memLoadOp
 
     return
       MemUnit {

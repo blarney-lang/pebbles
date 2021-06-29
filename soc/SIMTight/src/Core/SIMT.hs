@@ -43,16 +43,16 @@ import Data.List
 -- | SIMT execute stage inputs
 data SIMTExecuteIns =
   SIMTExecuteIns {
-    -- | Lane id
     execLaneId :: Bit SIMTLogLanes
-    -- | Warp id
+    -- ^ Lane id
   , execWarpId :: Bit SIMTLogWarps
-    -- | Kernel address
+    -- ^ Warp id
   , execKernelAddr :: Bit 32
-    -- | Wire containing warp command
+    -- ^ Kernel address
   , execWarpCmd :: Wire WarpCmd
-    -- | Memory unit interface for lane
+    -- ^ Wire containing warp command
   , execMemUnit :: MemUnit InstrInfo
+    -- ^ Memory unit interface for lane
   } deriving (Generic, Interface)
 
 -- | Execute stage for a SIMT lane (synthesis boundary)
@@ -100,12 +100,14 @@ makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
 -- | Configuration parameters
 data SIMTCoreConfig =
   SIMTCoreConfig {
-    -- | Initialisation file for instruction memory
     simtCoreInstrMemInitFile :: Maybe String
-    -- | Size of tightly coupled instruction memory
+    -- ^ Initialisation file for instruction memory
   , simtCoreInstrMemLogNumInstrs :: Int
-    -- | Synthesis boundary on execute stage?
+    -- ^ Size of tightly coupled instruction memory
+  , simtCoreInstrMemBase :: Integer
+    -- ^ Base of instr mem within memory map
   , simtCoreExecBoundary :: Bool
+    -- ^ Synthesis boundary on execute stage?
   }
 
 -- | RV32IM SIMT core
@@ -132,6 +134,7 @@ makeSIMTCore config mgmtReqs memUnitsVec = mdo
         SIMTPipelineConfig {
           instrMemInitFile = config.simtCoreInstrMemInitFile
         , instrMemLogNumInstrs = config.simtCoreInstrMemLogNumInstrs
+        , instrMemBase = config.simtCoreInstrMemBase
         , logNumWarps = SIMTLogWarps
         , logMaxNestLevel = SIMTLogMaxNestLevel
         , enableStatCounters = SIMTEnableStatCounters == 1

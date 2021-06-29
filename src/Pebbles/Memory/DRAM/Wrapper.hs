@@ -6,14 +6,14 @@ module Pebbles.Memory.DRAM.Wrapper
 -- SoC parameters
 #include <Config.h>
 
--- Local imports
-import Pebbles.Util.Counter
-import Pebbles.Memory.DRAM.Interface
-
 -- Blarney imports
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+
+-- Pebbles imports
+import Pebbles.Util.Counter
+import Pebbles.Memory.DRAM.Interface
 
 -- Types
 -- =====
@@ -85,7 +85,11 @@ makeDRAMCore makeRespQueue reqs avlIns =
      always do
        when (reqs.canPeek .&. waitRequest.inv) do
          let req :: DRAMReq t_id = reqs.peek
-         when (inFlightCount.getAvailable .>=. maxBurst) do
+         -- Check burst size
+         dynamicAssert (req.dramReqBurst .<=. maxBurst)
+           "DRAM: max burst size exceeded"
+         -- Consume request
+         when (inFlightCount.getAvailable .>=. req.dramReqBurst.zeroExtend) do
            reqs.consume
            byteEn <== req.dramReqByteEn
            address <== req.dramReqAddr
@@ -116,6 +120,7 @@ makeDRAMCore makeRespQueue reqs avlIns =
                  dramRespId = inFlight.first.dramInFlightId
                , dramRespBurstId = burstCount.val
                , dramRespData = resps.first
+               , dramRespDataTagBits = 0
                }
            , consume = do
                dynamicAssert (inFlight.canDeq .&. resps.canDeq)
@@ -173,4 +178,4 @@ makeDRAMUnstoppable :: Bits t_id =>
 makeDRAMUnstoppable reqs avlIns =
   -- Use a small response queue which may overflow if
   -- responses are not consumed fast enough
-  makeDRAMCore makeQueue reqs avlIns
+  makeDRAMCore (makePipelineQueue 1) reqs avlIns

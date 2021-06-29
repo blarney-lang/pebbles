@@ -50,6 +50,8 @@ data CoalescingInfo t_id =
     -- ^ Lower bits of address
   , coalInfoBurstLen :: DRAMBurst
     -- ^ Burst length
+  , coalInfoIsFinal :: Bit 1
+    -- ^ Final request in transaction?
   } deriving (Generic, Bits)
 
 -- | SRAM bank request info
@@ -92,6 +94,8 @@ data BankInfo t_id =
 --   * A global fence is treated like a load (the response data is 
 --     ignored but the response signifies that all preceeding stores
 --     have reached DRAM).
+--   * For capability accesses, the SameBlock strategy is currently
+--     only effective when accessing the SIMT stacks.
 makeCoalescingUnit :: Bits t_id =>
      (MemReq t_id -> Bit 1)
      -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
@@ -475,10 +479,29 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           [pack sameBlockData8,
              pack sameBlockData16,
                pack sameBlockData32] ! sameBlockMode
+    -- Tag bits for SameBlock strategy
+    let sameBlockTagBits8 :: Bit DRAMBeatWords =
+          fromBitList $ concat $ replicate 2 $
+            [ andList $ map memReqDataTagBit $ map val rs
+            | rs <- groupsOf 4 memReqs5DRAM]
+    let sameBlockTagBits16 :: Bit DRAMBeatWords =
+          fromBitList
+            [ andList $ map memReqDataTagBit $ map val rs
+            | rs <- groupsOf 2 memReqs5DRAM]
+    let sameBlockTagBits32 :: Bit DRAMBeatWords =
+          fromBitList $ selectHalf (storeCount.val.truncate)
+            [r.val.memReqDataTagBit | r <- memReqs5DRAM]
+    let sameBlockTagBits =
+          [sameBlockTagBits8,
+             sameBlockTagBits16,
+               sameBlockTagBits32] ! sameBlockMode
     -- DRAM data field for SameAddress strategy
     let sameAddrDataVec :: V.Vec DRAMBeatWords (Bit 32) =
           V.replicate (leaderReq5.val.memReqData)
     let sameAddrData :: DRAMBeat = pack sameAddrDataVec
+    -- Tag bits for SameAddress strategy
+    let sameAddrTagBits :: Bit DRAMBeatWords =
+          rep (leaderReq5.val.memReqDataTagBit)
     -- DRAM byte enable field for SameBlock strategy
     let useUpper = at @(DRAMBeatLogBytes-1) (leaderReq5.val.memReqAddr)
     let sameBlockBE8 :: Bit DRAMBeatBytes =
@@ -517,6 +540,8 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           , dramReqIsStore = isStore
           , dramReqAddr = dramAddr.truncate .&. addrMask.zeroExtend.inv
           , dramReqData = useSameBlock ? (sameBlockData, sameAddrData)
+          , dramReqDataTagBits =
+              useSameBlock ? (sameBlockTagBits, sameAddrTagBits)
           , dramReqByteEn = useSameBlock ? (sameBlockBE, sameAddrBE)
           , dramReqBurst = burstLen
           , dramReqIsFinal =
@@ -533,10 +558,12 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
               CoalescingInfo {
                 coalInfoUseSameBlock = useSameBlock
               , coalInfoMask = mask
-              , coalInfoReqIds = V.fromList [r.val.memReqId | r <- memReqs5DRAM]
+              , coalInfoReqIds =
+                  V.fromList [r.val.memReqId | r <- memReqs5DRAM]
               , coalInfoSameBlockMode = sameBlockMode
               , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
               , coalInfoBurstLen = burstLen - 1
+              , coalInfoIsFinal = leaderReq5.val.memReqIsFinal
               }
         -- Handle load & fence: insert info into inflight queue
         let hasResp = leaderReq5.val.memReqOp .==. memLoadOp
@@ -660,11 +687,15 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
     let sameAddrWordIndex :: Bit (DRAMBeatLogBytes-2) =
           info.coalInfoAddr.upper
     let sameAddrData = beatWords ! sameAddrWordIndex
+    -- Response tag bits for SameAddress strategy
+    let sameAddrTagBit = resp.dramRespDataTagBits ! sameAddrWordIndex
+    -- Accessing lower or upper bytes?
+    let bytesSel = at @(DRAMBeatLogBytes-1) (info.coalInfoAddr)
     -- Response data for SameBlock strategy
     let sameBlockBytes :: V.Vec SIMTLanes (Bit 32) =
           V.fromList $
             map (\x -> x # x # x # x) $
-              selectHalf (at @(DRAMBeatLogBytes-1) (info.coalInfoAddr)) $
+              selectHalf bytesSel $
                 V.toList beatBytes
     let sameBlockHalfs :: V.Vec SIMTLanes (Bit 32) =
           V.map (\x -> x # x) beatHalfs
@@ -672,6 +703,20 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           [ sameBlockBytes
           , sameBlockHalfs
           , beatWords `V.append` beatWords
+          ] ! sameBlockMode
+    -- Response tag bits for SameBlock strategy
+    let sameBlockByteTagBits :: Bit SIMTLanes =
+          fromBitList $
+            concatMap (replicate 4) $
+              selectHalf bytesSel $
+                resp.dramRespDataTagBits.toBitList
+    let sameBlockHalfTagBits :: Bit SIMTLanes =
+          fromBitList $ concat
+            [[b, b] | b <- resp.dramRespDataTagBits.toBitList]
+    let sameBlockTagBits :: Bit SIMTLanes =
+          [ sameBlockByteTagBits
+          , sameBlockHalfTagBits
+          , resp.dramRespDataTagBits # resp.dramRespDataTagBits
           ] ! sameBlockMode
     -- Condition for consuming DRAM response
     let consumeResp = dramResps.canPeek .&.
@@ -688,15 +733,21 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
           loadCount <== loadCount.val + 1
 
       -- Response info for each SIMT lane
-      let respInfo = zip4 dramRespQueues activeAny
+      let respInfo = zip5 dramRespQueues activeAny
                           (V.toList (info.coalInfoReqIds))
                           (V.toList sameBlockData)
+                          (toBitList sameBlockTagBits)
 
       -- For each SIMT lane
-      forM_ respInfo \(respQueue, active, id, d) -> do
+      forM_ respInfo \(respQueue, active, id, d, t) -> do
         when active do
-          let respData = useSameBlock ? (d, sameAddrData)
-          enq respQueue (MemResp id respData)
+          enq respQueue
+            MemResp {
+              memRespId = id
+            , memRespData = useSameBlock ? (d, sameAddrData)
+            , memRespDataTagBit = useSameBlock ? (t, sameAddrTagBit)
+            , memRespIsFinal = info.coalInfoIsFinal
+            }
 
   -- Stage 6 (SRAM): Handle responses
   -- ================================

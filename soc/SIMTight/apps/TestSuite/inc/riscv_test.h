@@ -4,6 +4,7 @@
 #define _ENV_PHYSICAL_SINGLE_CORE_H
 
 #include "encoding.h"
+#include "Config.h"
 
 //-----------------------------------------------------------------------
 // Begin Macro
@@ -56,14 +57,14 @@
         1: csrrw t0, CSR_UARTCanPut, zero;                              \
         beq t0, zero, 1b;                                               \
         csrw CSR_UARTPut, TESTNUM;                                      \
-        jr zero;
+        j MemBase;
 
 #define RVTEST_FAIL                                                     \
         sll TESTNUM, TESTNUM, 1;                                        \
         1:csrrw t0, CSR_UARTCanPut, zero;                               \
         beq t0, zero, 1b;                                               \
         csrw CSR_UARTPut, TESTNUM;                                      \
-        jr zero; 
+        j MemBase;
 
 #else
 

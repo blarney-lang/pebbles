@@ -74,10 +74,13 @@ data MemReq id =
     -- ^ Memory address
   , memReqData :: Bit 32
     -- ^ Data to store
+  , memReqDataTagBit :: Bit 1
+    -- ^ Data tag bit
   , memReqIsUnsigned :: Bit 1
     -- ^ Is it an unsigned load?
   , memReqIsFinal :: Bit 1
     -- ^ Is this the final request of an atomic transaction?
+    -- See note [Memory transactions]
   } deriving (Generic, Interface, Bits)
 
 -- | Memory responses to the processor
@@ -87,6 +90,11 @@ data MemResp id =
     -- ^ Idenitifier, to match up request and response
   , memRespData :: Bit 32
     -- ^ Response data
+  , memRespDataTagBit :: Bit 1
+    -- ^ Data tag bit
+  , memRespIsFinal :: Bit 1
+    -- ^ Is this the final response of an atomic transaction?
+    -- See note [Memory transactions]
   } deriving (Generic, Interface, Bits)
 
 -- | Interface to the memory unit
@@ -120,3 +128,14 @@ memRespToResumeReq resp =
     resumeReqInfo = resp.memRespId
   , resumeReqData = resp.memRespData
   }
+
+-- Note [Memory transactions]
+-- ==========================
+
+-- Memory transactions are sequences of requests (or responses) that
+-- cannot be interleaved with other memory requests (or responses).
+-- The scope of a transaction is simply defined using the
+-- 'memReqIsFinal' bit (or the `memRespIsFinal` bit).  The main intent
+-- here is to support accessing data items larger than 32 bits in an
+-- atomic manner.  The mechanism can be misused to hog busses for long
+-- durations, so use with care!

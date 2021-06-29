@@ -56,8 +56,32 @@ NOTE("Size of tightly coupled instruction memory")
 NOTE("Number of cache lines (line size == DRAM beat size)")
 #define SBDCacheLogLines 7
 
+NOTE("Tagged memory")
+NOTE("=============")
+
+NOTE("Is tagged memory enabled?")
+#define EnableTaggedMem 1
+
+NOTE("Tag cache: line size")
+#define TagCacheLogBeatsPerLine 1
+
+NOTE("Tag cache: number of set-associative ways")
+#define TagCacheLogNumWays 2
+
+NOTE("Tag cache: number of sets")
+#define TagCacheLogSets 7
+
+NOTE("Tag cache: max number of inflight memory requests")
+#define TagCacheLogMaxInflight 5
+
+NOTE("Tag cache: max number of pending requests per way")
+#define TagCachePendingReqsPerWay 16
+
 NOTE("Memory map")
 NOTE("==========")
+
+NOTE("Memory base (after tag bit region)")
+#define MemBase 134217728
 
 NOTE("Space reserved for boot loader")
 #define MaxBootImageBytes 512

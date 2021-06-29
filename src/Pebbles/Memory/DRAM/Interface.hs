@@ -5,6 +5,7 @@ module Pebbles.Memory.DRAM.Interface where
 
 -- Blarney imports
 import Blarney
+import qualified Blarney.Vector as V
 
 -- DRAM interface
 -- ==============
@@ -25,6 +26,8 @@ data DRAMReq id =
     -- ^ Address
   , dramReqData :: DRAMBeat
     -- ^ Data to store
+  , dramReqDataTagBits :: Bit DRAMBeatWords
+    -- ^ Data tag bit per word (see note [Density of tag bits])
   , dramReqByteEn :: DRAMByteEn
     -- ^ Byte enable of store
   , dramReqBurst :: DRAMBurst
@@ -42,6 +45,8 @@ data DRAMResp id =
     -- ^ Beat id for burst
   , dramRespData :: DRAMBeat
     -- ^ Result of load operation
+  , dramRespDataTagBits :: Bit DRAMBeatWords
+    -- ^ Data tag bit per word (see note [Density of tag bits])
   } deriving (Generic, FShow, Bits, Interface)
 
 -- Avalon DRAM interface
@@ -65,3 +70,14 @@ data AvalonDRAMOuts =
   , avl_dram_byteen     :: DRAMByteEn
   , avl_dram_burstcount :: DRAMBurst  
   } deriving (Generic, Bits, Interface)
+
+-- Note [Density of tag bits]
+-- ==========================
+
+-- DRAM requests and responses contain one tag bit for each 32-bit
+-- word in a beat.  This is a higher density than strictly required
+-- for CHERI, but it is convenient.  The words that make up a
+-- capability neither need to be aligned nor contiguous.  Due to the
+-- way that SIMT stacks are implemented (interleaved, to aid
+-- coalescing), the words of a capability may indeed be
+-- non-contiguous.

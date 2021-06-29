@@ -33,10 +33,13 @@ LDFLAGS := -melf32lriscv -G 0
 CFILES = boot.c
 OFILES = $(patsubst %.c,%.o,$(CFILES))
 
-# Size of instruction memory
+# Size and base of instruction memory
+CONFIG_H = $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h
+INSTR_BASE = $(shell echo -n MemBase \
+  | cpp -P -imacros $(CONFIG_H) - | xargs)
 LOG_INSTR_BYTES = $(shell echo -n CPUInstrMemLogWords \
-  | cpp -P -imacros $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h - | xargs)
-INSTR_BYTES = $(shell echo "4 * (2 ^ $(LOG_INSTR_BYTES))" | bc)
+  | cpp -P -imacros $(CONFIG_H) - | xargs)
+INSTR_BYTES = $(shell echo "3 * (2 ^ $(LOG_INSTR_BYTES))" | bc)
 
 .PHONY: all
 all: $(SIM)/boot.hex ../de10-pro/boot.mif
@@ -45,11 +48,11 @@ link.ld: link.ld.h
 	cpp -P -I $(PEBBLES_ROOT)/soc/SIMTight/inc link.ld.h > link.ld
 
 $(SIM)/boot.hex: InstrMem.ihex
-	./ihex-to-img.py InstrMem.ihex hex 0 4 $(INSTR_BYTES) 1 \
+	./ihex-to-img.py InstrMem.ihex hex $(INSTR_BASE) 4 $(INSTR_BYTES) 1 \
     > $(SIM)/boot.hex
 
 ../de10-pro/boot.mif: InstrMem.ihex
-	./ihex-to-img.py InstrMem.ihex mif 0 4 $(INSTR_BYTES) 1 \
+	./ihex-to-img.py InstrMem.ihex mif $(INSTR_BASE) 4 $(INSTR_BYTES) 1 \
     > ../de10-pro/boot.mif
 
 InstrMem.ihex: out.elf

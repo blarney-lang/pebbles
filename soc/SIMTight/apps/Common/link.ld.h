@@ -1,15 +1,20 @@
 #include <Config.h>
 
-#define DMEM_BASE    (4 * (1 << CPUInstrMemLogWords))
-#define IMEM_LENGTH  (DMEM_BASE - MaxBootImageBytes)
-
 OUTPUT_ARCH( "riscv" )
 
-/* SIMT local memory is toward the end of DRAM, before SIMT thread stacks */
-__localBase =
-   (1 << (DRAMAddrWidth + DRAMBeatLogBytes)) -
-    (1 << (SIMTLogLanes + SIMTLogWarps + SIMTLogBytesPerStack)) -
-      (1 << (SIMTLogLanes + SIMTLogWordsPerSRAMBank+2));
+#define DRAM_SIZE \
+  (1 << (DRAMAddrWidth + DRAMBeatLogBytes))
+#define SIMT_STACKS_SIZE \
+  (1 << (SIMTLogLanes + SIMTLogWarps + SIMTLogBytesPerStack))
+#define BANKED_SRAMS_SIZE \
+  (1 << (SIMTLogLanes + SIMTLogWordsPerSRAMBank+2))
+
+#define DMEM_BASE    (MemBase + (4 << CPUInstrMemLogWords))
+#define IMEM_LENGTH  ((4 << CPUInstrMemLogWords) - MaxBootImageBytes)
+
+// SIMT local memory is toward the end of DRAM,
+// before SIMT thread stacks and tag memory
+__localBase = DRAM_SIZE - SIMT_STACKS_SIZE - BANKED_SRAMS_SIZE;
 
 /* Base of stack is toward the end of DRAM, before SIMT local memory */
 __stackBase = __localBase - 4;
@@ -17,7 +22,7 @@ __stackBase = __localBase - 4;
 MEMORY
 {
   /* Define max length of boot loader */
-  instrs : ORIGIN = MaxBootImageBytes, LENGTH = IMEM_LENGTH
+  instrs : ORIGIN = MemBase+MaxBootImageBytes, LENGTH = IMEM_LENGTH
   globals : ORIGIN = DMEM_BASE, LENGTH = 1 << 20
 }
 

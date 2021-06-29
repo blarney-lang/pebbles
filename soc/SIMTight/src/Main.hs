@@ -12,7 +12,7 @@ import Blarney.Stream
 import Blarney.SourceSink
 import Blarney.Connectable
 import Blarney.Interconnect
-import Blarney.Vector (Vec, toList, fromList, genWith)
+import qualified Blarney.Vector as V
 
 -- Pebbles imports
 import Pebbles.IO.JTAGUART
@@ -22,6 +22,7 @@ import Pebbles.Memory.Alignment
 import Pebbles.Memory.Interface
 import Pebbles.Memory.BankedSRAMs
 import Pebbles.Memory.WarpPreserver
+import Pebbles.Memory.TagController
 import Pebbles.Memory.CoalescingUnit
 import Pebbles.Memory.DRAM.Bus
 import Pebbles.Memory.DRAM.Wrapper
@@ -60,6 +61,10 @@ data SoCOuts =
 -- | SoC top-level
 makeTop :: SoCIns -> Module SoCOuts
 makeTop socIns = mdo
+  -- Instruction memory alignment requirement
+  staticAssert (MemBase `mod` (4 * 2^CPUInstrMemLogWords) == 0)
+    "makeTop: Instruction memory alignment requirement not met"
+
   -- Scalar core
   cpuOuts <- makeCPUCore
     ScalarCoreIns {
@@ -83,8 +88,19 @@ makeTop socIns = mdo
   ((dramResps0, dramResps1), dramReqs) <-
     makeDRAMBus (dramReqs0, dramReqs1) dramResps
 
+  -- Optional tag controller
+  (dramResps, dramFinalReqs) <-
+    if EnableTaggedMem == 1
+      then makeTagController dramReqs dramFinalResps
+      else makeNullTagController dramReqs dramFinalResps
+
   -- DRAM instance
-  (dramResps, avlDRAMOuts) <- makeDRAM dramReqs (socIns.socDRAMIns)
+  -- (No DRAM buffering needed when tag controller is in use;
+  -- it performs its own buffering)
+  (dramFinalResps, avlDRAMOuts) <-
+    if EnableTaggedMem == 1
+      then makeDRAMUnstoppable dramFinalReqs (socIns.socDRAMIns)
+      else makeDRAM dramFinalReqs (socIns.socDRAMIns)
 
   -- Avalon JTAG UART wrapper module
   (fromUART, avlUARTOuts) <- makeJTAGUART
@@ -104,6 +120,7 @@ makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
       ScalarCoreConfig {
         scalarCoreInstrMemInitFile = Just "boot.mif"
       , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+      , scalarCoreInitialPC = MemBase
       }
 
 -- CPU data cache (synthesis boundary)
@@ -116,6 +133,7 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
       SIMTCoreConfig {
         simtCoreInstrMemInitFile = Nothing
       , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
+      , simtCoreInstrMemBase = MemBase
       , simtCoreExecBoundary = True
       }
 
@@ -128,7 +146,7 @@ makeSIMTMemSubsystem ::
      -- | DRAM responses
      Stream (DRAMResp ())
      -- | DRAM requests and per-lane mem units
-  -> Module (Vec SIMTLanes (MemUnit InstrInfo), Stream (DRAMReq ()))
+  -> Module (V.Vec SIMTLanes (MemUnit InstrInfo), Stream (DRAMReq ()))
 makeSIMTMemSubsystem dramResps = mdo
     -- Warp preserver
     (memReqs, simtMemUnits) <- makeWarpPreserver memResps1
@@ -154,7 +172,7 @@ makeSIMTMemSubsystem dramResps = mdo
     -- Coalescing unit
     (memResps, sramReqs, dramReqs) <-
       makeSIMTCoalescingUnit isBankedSRAMAccess
-        (fromList memReqs1) dramResps sramResps
+        (V.fromList memReqs1) dramResps sramResps
 
     -- Banked SRAMs
     let sramRoute info = info.bankLaneId
@@ -171,7 +189,7 @@ makeSIMTMemSubsystem dramResps = mdo
               (resp.memRespId.snd.memReqInfoAccessWidth)
               (resp.memRespId.snd.memReqInfoIsUnsigned)
           }
-    let memResps1 = map (mapSource processResp) (toList memResps)
+    let memResps1 = map (mapSource processResp) (V.toList memResps)
 
     -- Ensure that the SRAM base address is suitably aligned
     -- (If so, remapping SRAM addresses is unecessary)
@@ -179,7 +197,7 @@ makeSIMTMemSubsystem dramResps = mdo
       then error "SRAM base address not suitably aligned"
       else return ()
 
-    return (fromList simtMemUnits, dramReqs)
+    return (V.fromList simtMemUnits, dramReqs)
 
   where
     -- SRAM-related addresses
