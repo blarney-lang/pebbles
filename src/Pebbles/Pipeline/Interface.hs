@@ -42,34 +42,39 @@ data ResumeReq =
 -- | Pipeline state, visisble to the execute stage
 data State =
   State {
-    -- | Current instruction.
     instr :: Bit 32
+    -- ^ Current instruction
 
-    -- | Source operands. These contain the values of the two source registers.
   , opA :: Bit 32
   , opB :: Bit 32
   , opBorImm :: Bit 32
+    -- ^ Source operands. These contain the values of the two source registers.
 
-    -- | Program counter interface. This may be read, to obtain the PC
+  , opAIndex :: RegId
+  , opBIndex :: RegId
+  , resultIndex :: RegId
+    -- ^ Register file indices.
+
+  , pc :: ReadWrite (Bit 32)
+    -- ^ Program counter interface. This may be read, to obtain the PC
     -- of the currently executing instruction.  It may be written,
     -- to modify the PC. If unwritten, the pipeline implicity
     -- updates the PC to point to the next instruction in memory.
-  , pc :: ReadWrite (Bit 32)
 
-    -- | Instruction result interface.  Writing to this modifies 
-    -- the destination register.
   , result :: WriteOnly (Bit 32)
+    -- ^ Instruction result interface.  Writing to this modifies
+    -- the destination register.
 
-    -- | Call this to implement a multi-cycle instruction.
-    -- Results are returned via resume stage.
   , suspend :: Action InstrInfo
+    -- ^ Call this to implement a multi-cycle instruction.
+    -- Results are returned via resume stage.
 
-    -- | Call this if the instruction cannot currently be executed
-    -- (perhaps resources are not currently available).
   , retry :: Action ()
+    -- ^ Call this if the instruction cannot currently be executed
+    -- (perhaps resources are not currently available).
 
-    -- Mnemonic(s) for current instruction identified by the decoder
   , opcode :: MnemonicVec
+    -- ^ Mnemonic(s) for current instruction identified by the decoder
   } deriving (Generic, Interface)
 
 -- | Upper bound on number of instruction mnemonics used by the decoder

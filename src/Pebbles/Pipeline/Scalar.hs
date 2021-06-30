@@ -212,6 +212,9 @@ makeScalarPipeline c =
       , opA = regA.val
       , opB = regB.val
       , opBorImm = regBorImm.val
+      , opAIndex = instr3.val.srcA
+      , opBIndex = instr3.val.srcB
+      , resultIndex = instr3.val.dst
       , pc = ReadWrite (pc3.val) (pcNext <==)
       , result = WriteOnly \x ->
                    when (instr3.val.dst .!=. 0) do

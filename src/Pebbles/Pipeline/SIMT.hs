@@ -463,6 +463,9 @@ makeSIMTPipeline c inputs =
             , opA = regFileA.out.old
             , opB = regFileB.out.old
             , opBorImm = regFileB.out.getRegBOrImm.old
+            , opAIndex = instr5.val.srcA
+            , opBIndex = instr5.val.srcB
+            , resultIndex = instr5.val.dst
             , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
                      pcNextWire <== writeVal.fromPC
             , result = WriteOnly \writeVal ->
