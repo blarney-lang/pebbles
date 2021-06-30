@@ -10,6 +10,7 @@ import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.CSRs.CSRUnit
+import Pebbles.CSRs.TrapCodes
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.Mnemonics
@@ -90,10 +91,12 @@ executeI ::
      -- ^ Access to CSRs
   -> MemUnit InstrInfo
      -- ^ Access to memory
+  -> (TrapCode -> Action ())
+     -- ^ Trap function
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeI shiftUnit csrUnit memUnit s = do
+executeI shiftUnit csrUnit memUnit trap s = do
   -- Add/sub/compare unit
   let AddOuts sum less equal = addUnit 
         AddIns {
@@ -210,10 +213,10 @@ executeI shiftUnit csrUnit memUnit s = do
       else s.retry
 
   when (s.opcode `is` [ECALL]) do
-    display "ECALL not implemented"
+    trap exc_eCallFromM
 
   when (s.opcode `is` [EBREAK]) do
-    display "EBREAK not implemented"
+    trap exc_breakpoint
 
   -- Control/status registers
   when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do

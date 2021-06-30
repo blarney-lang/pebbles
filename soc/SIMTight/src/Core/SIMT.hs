@@ -68,6 +68,9 @@ makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
   csr_WarpCmd <- makeCSR_WarpCmd (ins.execLaneId) (ins.execWarpCmd)
   csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
 
+  -- Trap function (currently a no-op)
+  let trapFun = \code -> return ()
+
   -- CSR unit
   let hartId = zeroExtend (ins.execWarpId # ins.execLaneId)
   csrUnit <- makeCSRUnit $
@@ -88,7 +91,7 @@ makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
   return
     ExecuteStage {
       execute = do
-        executeI (Just mulUnit) csrUnit (ins.execMemUnit) s
+        executeI (Just mulUnit) csrUnit (ins.execMemUnit) trapFun s
         executeM mulUnit divUnit s
         executeA (ins.execMemUnit) s
     , resumeReqs = resumeQueue.toStream

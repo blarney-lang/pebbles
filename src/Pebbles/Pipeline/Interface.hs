@@ -86,8 +86,8 @@ type MnemonicVec = Bit MaxMnemonics
 -- | Interface to pipeline's execute stage
 data ExecuteStage =
   ExecuteStage {
-    -- Trigger execute stage
     execute :: Action ()
-    -- Resume requests for instructions that suspend
+    -- ^ Trigger execute stage
   , resumeReqs :: Stream ResumeReq
+    -- ^ Resume requests for instructions that suspend
   } deriving (Generic, Interface)

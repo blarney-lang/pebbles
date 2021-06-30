@@ -9,6 +9,7 @@ import Blarney.SourceSink
 import Blarney.Interconnect
 
 -- Pebbles imports
+import Pebbles.CSRs.Trap
 import Pebbles.CSRs.CSRUnit
 import Pebbles.CSRs.CycleCount
 import Pebbles.CSRs.Custom.Simulate
@@ -78,6 +79,9 @@ makeScalarCore config inputs = mdo
   -- Cycle count CSRs
   cycleCSRs <- makeCSR_CycleCount
 
+  -- Trap CSRs
+  (trapCSRs, trapFun) <- makeCSRs_Trap (pipeline.progCounter)
+
   -- CSR unit
   csrUnit <- makeCSRUnit $
        csrs_Sim
@@ -85,6 +89,7 @@ makeScalarCore config inputs = mdo
     ++ imemCSRs
     ++ simtCSRs
     ++ cycleCSRs
+    ++ trapCSRs
  
   -- Multiplier
   mulUnit <- makeHalfMulUnit
@@ -102,7 +107,7 @@ makeScalarCore config inputs = mdo
     , executeStage = \s -> return
         ExecuteStage {
           execute = do
-            executeI Nothing csrUnit (inputs.scalarMemUnit) s
+            executeI Nothing csrUnit (inputs.scalarMemUnit) trapFun s
             executeM mulUnit divUnit s
             executeCacheMgmt (inputs.scalarMemUnit) s
         , resumeReqs = mergeTree

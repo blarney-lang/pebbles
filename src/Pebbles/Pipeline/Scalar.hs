@@ -46,16 +46,18 @@ data ScalarPipelineConfig tag =
 -- | Scalar pipeline management
 data ScalarPipeline =
   ScalarPipeline {
-    -- Write to instruction memory
     writeInstr :: Bit 32 -> Bit 32 -> Action ()
+    -- ^ Write to instruction memory
+  , progCounter :: ReadWrite (Bit 32)
+    -- ^ Program counter of instruction in execute stage
   }
 
 -- | Scalar pipeline
 makeScalarPipeline :: Tag tag =>
-     -- | Inputs: pipeline configuration
      ScalarPipelineConfig tag
-     -- | Outpus: pipeline management interface
+     -- ^ Inputs: pipeline configuration
   -> Module ScalarPipeline
+     -- ^ Outpus: pipeline management interface
 makeScalarPipeline c = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
@@ -267,9 +269,10 @@ makeScalarPipeline c =
         store regFileA rd (finalResultWire.val)
         store regFileB rd (finalResultWire.val)
 
-    -- Pipeline management interface
+    -- Pipeline outputs
     return
       ScalarPipeline {
         writeInstr = \addr instr -> do
           store instrMem (truncateCast (slice @31 @2 addr)) instr
+      , progCounter = ReadWrite (pc3.val) (pcNext <==)
       }
