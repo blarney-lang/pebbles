@@ -26,6 +26,8 @@ import Data.Proxy
 import qualified Data.Map as Map
 
 -- Pebbles imports
+import Pebbles.CSRs.Trap
+import Pebbles.CSRs.TrapCodes
 import Pebbles.Pipeline.Interface
 
 -- | Scalar pipeline configuration
@@ -41,21 +43,22 @@ data ScalarPipelineConfig tag =
     -- ^ Decode table
   , executeStage :: State -> Module ExecuteStage
     -- ^ Action for execute stage
+  , trapCSRs :: TrapCSRs
   }
 
 -- | Scalar pipeline management
 data ScalarPipeline =
   ScalarPipeline {
-    -- Write to instruction memory
     writeInstr :: Bit 32 -> Bit 32 -> Action ()
+    -- ^ Write to instruction memory
   }
 
 -- | Scalar pipeline
 makeScalarPipeline :: Tag tag =>
-     -- | Inputs: pipeline configuration
      ScalarPipelineConfig tag
-     -- | Outpus: pipeline management interface
+     -- ^ Inputs: pipeline configuration
   -> Module ScalarPipeline
+     -- ^ Outpus: pipeline management interface
 makeScalarPipeline c = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
@@ -120,6 +123,9 @@ makeScalarPipeline c =
     go1 :: Reg (Bit 1) <- makeDReg false
     go2 :: Reg (Bit 1) <- makeDReg false
     go3 :: Reg (Bit 1) <- makeDReg false
+
+    -- Wire pulsed to signal an exception / interrupt
+    trapWire :: Wire (Bit 1) <- makeWire false
 
     -- Stage 0: Instruction Fetch
     -- ==========================
@@ -212,6 +218,9 @@ makeScalarPipeline c =
       , opA = regA.val
       , opB = regB.val
       , opBorImm = regBorImm.val
+      , opAIndex = instr3.val.srcA
+      , opBIndex = instr3.val.srcB
+      , resultIndex = instr3.val.dst
       , pc = ReadWrite (pc3.val) (pcNext <==)
       , result = WriteOnly \x ->
                    when (instr3.val.dst .!=. 0) do
@@ -227,6 +236,10 @@ makeScalarPipeline c =
           retryWire <== true
           stallWire <== true
       , opcode = packTagMap tagMap3
+      , trap = \code -> do
+          c.trapCSRs.csr_mcause <==
+            code.trapCodeIsInterrupt # code.trapCodeCause
+          trapWire <== true
       }
 
     always do
@@ -235,6 +248,11 @@ makeScalarPipeline c =
         execStage.execute
         when (retryWire.val.inv) do
           instr4 <== instr3.val
+
+      -- Common trap-handling code
+      when (trapWire.val) do
+        c.trapCSRs.csr_mepc <== pc3.val
+        pcNext <== slice @31 @2 (c.trapCSRs.csr_mtvec.val) # 0b00
 
     -- Stage 4: Writeback
     -- ==================
@@ -264,7 +282,7 @@ makeScalarPipeline c =
         store regFileA rd (finalResultWire.val)
         store regFileB rd (finalResultWire.val)
 
-    -- Pipeline management interface
+    -- Pipeline outputs
     return
       ScalarPipeline {
         writeInstr = \addr instr -> do

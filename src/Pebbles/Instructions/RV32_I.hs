@@ -10,6 +10,7 @@ import Blarney.SourceSink
 
 -- Pebbles imports
 import Pebbles.CSRs.CSRUnit
+import Pebbles.CSRs.TrapCodes
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.Mnemonics
@@ -54,7 +55,9 @@ decodeI =
   , "fence<4> pred<4> succ<4> rs1<5> 000 00000 0001111" --> FENCE
   , "000000000000 <5> 000 <5> 1110011" --> ECALL
   , "000000000001 <5> 000 <5> 1110011" --> EBREAK
-  , "imm[11:0] rs1<5> 001 rd<5> 1110011" --> CSRRW
+  , "csrImm[11:0] rs1<5> csrI<1> 01 rd<5> 1110011" --> CSRRW
+  , "csrImm[11:0] rs1<5> csrI<1> 10 rd<5> 1110011" --> CSRRS
+  , "csrImm[11:0] rs1<5> csrI<1> 11 rd<5> 1110011" --> CSRRC
   ]
 
 -- Field selectors
@@ -71,6 +74,12 @@ getIsUnsignedLoad = makeFieldSelector decodeI "ul"
 
 getFenceFlags :: Bit 32 -> Bit 4
 getFenceFlags = makeFieldSelector decodeI "fence"
+
+getCSRI :: Bit 32 -> Bit 1
+getCSRI = makeFieldSelector decodeI "csrI"
+
+getCSRImm :: Bit 32 -> Bit 12
+getCSRImm = makeFieldSelector decodeI "csrImm"
 
 -- Execute stage
 -- =============
@@ -202,12 +211,27 @@ executeI shiftUnit csrUnit memUnit s = do
       else s.retry
 
   when (s.opcode `is` [ECALL]) do
-    display "ECALL not implemented"
+    trap s exc_eCallFromM
 
   when (s.opcode `is` [EBREAK]) do
-    display "EBREAK not implemented"
+    trap s exc_breakpoint
 
-  when (s.opcode `is` [CSRRW]) do
-    x <- csrUnitRead csrUnit (s.opBorImm.truncate)
-    csrUnitWrite csrUnit (s.opBorImm.truncate) (s.opA)
+  -- Control/status registers
+  when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
+    -- Condition for reading CSR
+    let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
+    -- Read CSR
+    x <- whenR doRead do csrUnitRead csrUnit (s.instr.getCSRImm)
     s.result <== x
+    -- Condition for writing CSR
+    let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
+    -- Determine operand
+    let operand = s.instr.getCSRI ? (s.opAIndex.zeroExtend, s.opA)
+    -- Data to write for CSRRS/CSRRC
+    let maskedData = fromBitList
+          [ cond ? (s.opcode `is` [CSRRS], old)
+          | (old, cond) <- zip (toBitList x) (toBitList operand) ]
+    -- Data to write
+    let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
+    -- Write CSR
+    when doWrite do csrUnitWrite csrUnit (s.instr.getCSRImm) writeData

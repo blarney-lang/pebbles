@@ -7,6 +7,9 @@ import Blarney
 import Blarney.Stream
 import Blarney.BitScan
 
+-- Pebbles imports
+import Pebbles.CSRs.TrapCodes
+
 -- General imports
 import qualified Data.Map as Map
 
@@ -42,34 +45,42 @@ data ResumeReq =
 -- | Pipeline state, visisble to the execute stage
 data State =
   State {
-    -- | Current instruction.
     instr :: Bit 32
+    -- ^ Current instruction
 
-    -- | Source operands. These contain the values of the two source registers.
   , opA :: Bit 32
   , opB :: Bit 32
   , opBorImm :: Bit 32
+    -- ^ Source operands. These contain the values of the two source registers.
 
-    -- | Program counter interface. This may be read, to obtain the PC
+  , opAIndex :: RegId
+  , opBIndex :: RegId
+  , resultIndex :: RegId
+    -- ^ Register file indices.
+
+  , pc :: ReadWrite (Bit 32)
+    -- ^ Program counter interface. This may be read, to obtain the PC
     -- of the currently executing instruction.  It may be written,
     -- to modify the PC. If unwritten, the pipeline implicity
     -- updates the PC to point to the next instruction in memory.
-  , pc :: ReadWrite (Bit 32)
 
-    -- | Instruction result interface.  Writing to this modifies 
-    -- the destination register.
   , result :: WriteOnly (Bit 32)
+    -- ^ Instruction result interface.  Writing to this modifies
+    -- the destination register.
 
-    -- | Call this to implement a multi-cycle instruction.
-    -- Results are returned via resume stage.
   , suspend :: Action InstrInfo
+    -- ^ Call this to implement a multi-cycle instruction.
+    -- Results are returned via resume stage.
 
-    -- | Call this if the instruction cannot currently be executed
-    -- (perhaps resources are not currently available).
   , retry :: Action ()
+    -- ^ Call this if the instruction cannot currently be executed
+    -- (perhaps resources are not currently available).
 
-    -- Mnemonic(s) for current instruction identified by the decoder
   , opcode :: MnemonicVec
+    -- ^ Mnemonic(s) for current instruction identified by the decoder
+
+  , trap :: TrapCode -> Action ()
+    -- ^ Call this to tigger an exception / interrupt
   } deriving (Generic, Interface)
 
 -- | Upper bound on number of instruction mnemonics used by the decoder
@@ -81,8 +92,8 @@ type MnemonicVec = Bit MaxMnemonics
 -- | Interface to pipeline's execute stage
 data ExecuteStage =
   ExecuteStage {
-    -- Trigger execute stage
     execute :: Action ()
-    -- Resume requests for instructions that suspend
+    -- ^ Trigger execute stage
   , resumeReqs :: Stream ResumeReq
+    -- ^ Resume requests for instructions that suspend
   } deriving (Generic, Interface)

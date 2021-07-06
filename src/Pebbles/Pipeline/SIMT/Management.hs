@@ -41,3 +41,15 @@ data SIMTReq =
 
 -- | SIMT pipeline management response (to CPU)
 type SIMTResp = Bit 32
+
+-- | Kernel exit code
+type SIMTExitCode = Bit 2
+
+-- | Successfull exit from software
+simtExit_Success :: SIMTExitCode = 0
+
+-- | Failed exit from software
+simtExit_Failure :: SIMTExitCode = 1
+
+-- | Exception raised
+simtExit_Exception :: SIMTExitCode = 2

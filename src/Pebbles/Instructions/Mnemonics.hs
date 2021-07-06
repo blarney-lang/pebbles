@@ -34,6 +34,8 @@ data Mnemonic =
   | ECALL
   | EBREAK
   | CSRRW
+  | CSRRS
+  | CSRRC
 
     -- M extension
   | MUL

@@ -10,6 +10,7 @@ data Counter n =
   , isFull       :: Bit 1
   , getAvailable :: Bit n
   , getCount     :: Bit n
+  , setCount     :: Bit n -> Action ()
   }
 
 -- | N-bit counter with parallel increment/decrement support
@@ -31,4 +32,5 @@ makeCounter maxVal =
      , isFull = fullReg.val
      , getCount = countReg.val
      , getAvailable = maxVal - countReg.val
+     , setCount = \x -> countReg <== x
      }
