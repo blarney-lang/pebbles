@@ -52,6 +52,7 @@ import Control.Applicative hiding (some)
 
 -- Pebbles imports
 import Pebbles.Util.List
+import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 import Pebbles.CSRs.Custom.SIMTDevice
@@ -171,6 +172,10 @@ makeSIMTPipeline c inputs =
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM numWarps (makeReg 0)
 
+    -- Count of number of warps in a barrier
+    -- (Not read when all warps in barrier, so overflow not a problem)
+    barrierCount :: Counter t_logWarps <- makeCounter dontCare
+
     -- Trigger for each stage
     go1 :: Reg (Bit 1) <- makeDReg false
     go3 :: Reg (Bit 1) <- makeDReg false
@@ -204,6 +209,12 @@ makeSIMTPipeline c inputs =
     isSusp4 :: Reg (Bit 1) <- makeReg dontCare
     isSusp5 :: Reg (Bit 1) <- makeReg dontCare
 
+    -- Exception register
+    exc :: Reg (Bit 1) <- makeReg false
+
+    -- Program counter at point of exception
+    excPC :: Reg (Bit 32) <- makeReg dontCare
+
     -- Kernel response queue (indicates to CPU when kernel has finished)
     kernelRespQueue :: Queue SIMTResp <- makeShiftQueue 1
 
@@ -217,7 +228,7 @@ makeSIMTPipeline c inputs =
     cycleCount :: Reg (Bit 32) <- makeReg 0
     instrCount :: Reg (Bit 32) <- makeReg 0
 
-    -- Triggers from each lane to increment instruciton count
+    -- Triggers from each lane to increment instruction count
     incInstrCountRegs :: [Reg (Bit 1)] <- replicateM warpSize (makeDReg 0)
 
     -- Pipeline Initialisation
@@ -245,6 +256,11 @@ makeSIMTPipeline c inputs =
               }
         sequence_ [ store stateMem (warpIdCounter.val) initState
                   | stateMem <- stateMems ]
+
+        -- Reset various state
+        exc <== false
+        setCount barrierCount 0
+        sequence_ [r <== false | r <- barrierBits]
 
         -- Insert into warp queue
         dynamicAssert (warpQueue.notFull)
@@ -408,25 +424,38 @@ makeSIMTPipeline c inputs =
     -- Insert warp id back into warp queue, except on warp command
     always do
       when (go5.val) do
-        if inputs.simtWarpCmdWire.active
+        -- Reschedule warp if any thread suspended, or the instruction
+        -- is not a warp command and an exception has not occurred
+        if isSusp5.val .||.
+              (inputs.simtWarpCmdWire.active.inv .&&. exc.val.inv)
           then do
-            -- We assume that warp has converged
-            dynamicAssert (activeMask5.val .==. ones)
+            -- Reschedule
+            dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
+            enq warpQueue (warpId5.val)
+          else do
+            -- Instruction is warp command or exception has occurred.
+            -- Warp commands assume that warp has converged
+            dynamicAssert (exc.val.inv .==>. activeMask5.val .==. ones)
               "SIMT pipeline: warp command issued by diverged warp"
             -- Handle command
-            if inputs.simtWarpCmdWire.val.warpCmd_isTerminate
+            if inputs.simtWarpCmdWire.val.warpCmd_isTerminate .||. exc.val
               then do
                 completedWarps <== completedWarps.val + 1
                 -- Track kernel success
                 let success = kernelSuccess.val .&.
                       inputs.simtWarpCmdWire.val.warpCmd_termCode
+                -- Determined completed warps
+                let completed = completedWarps.val +
+                      (exc.val ? (barrierCount.getCount, 0))
                 -- Have all warps have terminated?
-                if completedWarps.val .==. ones
+                if completed .==. ones
                   then do
                     -- Issue kernel response to CPU
                     dynamicAssert (kernelRespQueue.notFull)
                       "SIMT pipeline: can't issue kernel response"
-                    enq kernelRespQueue (zeroExtend success)
+                    let code = exc.val ? (simtExit_Exception,
+                          success ? (simtExit_Success, simtExit_Failure))
+                    enq kernelRespQueue (zeroExtend code)
                     -- Re-enter initial state
                     pipelineActive <== false
                     kernelSuccess <== true
@@ -436,10 +465,11 @@ makeSIMTPipeline c inputs =
               else do
                 -- Enter barrier
                 barrierBits!(warpId5.val) <== true
-          else do
-            -- Not a SIMT command, so reschedule
-            dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
-            enq warpQueue (warpId5.val)
+                incrBy barrierCount 1
+
+      -- Track exception PC
+      when (go5.val .&&. exc.val.inv) do
+        excPC <== state5.val.simtPC.toPC
 
     -- Is it a SIMT convergence instruction?
     let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
@@ -480,11 +510,15 @@ makeSIMTPipeline c inputs =
                   }
             , retry = retryWire <== true
             , opcode = packTagMap tagMap5
+            , trap = \code -> do
+                exc <== true
+                display "SIMT exception occurred: " code
             }
 
           always do
             -- Execute stage
-            when (go5.val .&. threadActive .&. isSusp5.val.inv) do
+            when (go5.val .&&. threadActive .&&.
+                    isSusp5.val.inv .&&. exc.val.inv) do
               -- Trigger execute stage
               execStage.execute
 
@@ -514,7 +548,7 @@ makeSIMTPipeline c inputs =
                 suspMask!(warpId5.val) <== true
 
             -- Writeback stage
-            if delay false (resultWire.active)
+            if delay false (resultWire.active) .&&. exc.val.inv
               then do
                 let idx = (warpId5.val.old, instr5.val.dst.old)
                 let value = resultWire.val.old
@@ -526,7 +560,7 @@ makeSIMTPipeline c inputs =
                   let req = execStage.resumeReqs.peek
                   let idx = (req.resumeReqInfo.instrId.truncateCast,
                              req.resumeReqInfo.instrDest)
-                  when (req.resumeReqInfo.instrDest .!=. 0) do
+                  when (req.resumeReqInfo.instrDest .!=. 0 .&&. exc.val.inv) do
                     store regFileA idx (req.resumeReqData)
                     store regFileB idx (req.resumeReqData)
                   suspMask!(req.resumeReqInfo.instrId) <== false
@@ -558,12 +592,14 @@ makeSIMTPipeline c inputs =
       , relBarrierMask = barrierMask.val
       , relBarrierVec = fromBitList (map val barrierBits)
       , relAction = \warpId -> do
-          -- Clear barrier bit
-          barrierBits!warpId <== false
-          -- Insert back into warp queue
-          dynamicAssert (releaseQueue.notFull)
-            "SIMT release queue overflow"
-          enq releaseQueue warpId
+          when (exc.val.inv) do
+            -- Clear barrier bit
+            barrierBits!warpId <== false
+            decrBy barrierCount 1
+            -- Insert back into warp queue
+            dynamicAssert (releaseQueue.notFull)
+              "SIMT release queue overflow"
+            enq releaseQueue warpId
       }
 
     -- Handle management requests

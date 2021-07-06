@@ -80,7 +80,7 @@ makeScalarCore config inputs = mdo
   cycleCSRs <- makeCSR_CycleCount
 
   -- Trap CSRs
-  (trapCSRs, trapFun) <- makeCSRs_Trap (pipeline.progCounter)
+  (trapCSRs, trapRegs) <- makeCSRs_Trap
 
   -- CSR unit
   csrUnit <- makeCSRUnit $
@@ -107,7 +107,7 @@ makeScalarCore config inputs = mdo
     , executeStage = \s -> return
         ExecuteStage {
           execute = do
-            executeI Nothing csrUnit (inputs.scalarMemUnit) trapFun s
+            executeI Nothing csrUnit (inputs.scalarMemUnit) s
             executeM mulUnit divUnit s
             executeCacheMgmt (inputs.scalarMemUnit) s
         , resumeReqs = mergeTree
@@ -116,6 +116,7 @@ makeScalarCore config inputs = mdo
             , divUnit.divResps
             ]
         }
+    , trapCSRs = trapRegs
     }
 
   return

@@ -3,9 +3,6 @@ module Pebbles.CSRs.TrapCodes.Interface where
 -- Blarney imports
 import Blarney
 
--- Pebbles imports
-import Pebbles.Pipeline.Interface
-
 data TrapCode =
   TrapCode {
     trapCodeIsInterrupt :: Bit 1
@@ -14,7 +11,7 @@ data TrapCode =
     -- ^ Trap cause
   , trapCodeCapCause :: Bit 5
     -- ^ Capability exception cause
-  } deriving (Generic, Interface, Bits)
+  } deriving (Generic, Interface, Bits, FShow)
 
 excCode :: Bit 31 -> TrapCode
 excCode c =

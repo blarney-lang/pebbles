@@ -91,12 +91,10 @@ executeI ::
      -- ^ Access to CSRs
   -> MemUnit InstrInfo
      -- ^ Access to memory
-  -> (TrapCode -> Action ())
-     -- ^ Trap function
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeI shiftUnit csrUnit memUnit trap s = do
+executeI shiftUnit csrUnit memUnit s = do
   -- Add/sub/compare unit
   let AddOuts sum less equal = addUnit 
         AddIns {
@@ -213,10 +211,10 @@ executeI shiftUnit csrUnit memUnit trap s = do
       else s.retry
 
   when (s.opcode `is` [ECALL]) do
-    trap exc_eCallFromM
+    trap s exc_eCallFromM
 
   when (s.opcode `is` [EBREAK]) do
-    trap exc_breakpoint
+    trap s exc_breakpoint
 
   -- Control/status registers
   when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do

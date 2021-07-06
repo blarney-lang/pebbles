@@ -16,12 +16,17 @@ import Pebbles.CSRs.TrapCodes
 -- | mtvec       |   0x305 |      W | Machine trap-handler base address   |
 -- +-------------+---------+--------+-------------------------------------+
 
--- | Trap function
-type TrapFun = TrapCode -> Action ()
+-- | Trap CSRs
+data TrapCSRs =
+  TrapCSRs {
+    csr_mepc :: Reg (Bit 32)
+  , csr_mcause :: Reg (Bit 32)
+  , csr_mtvec :: Reg (Bit 32)
+  }
 
 -- | Create trap-related CSRs
-makeCSRs_Trap :: ReadWrite (Bit 32) -> Module ([CSR], TrapFun)
-makeCSRs_Trap pc = do
+makeCSRs_Trap :: Module ([CSR], TrapCSRs)
+makeCSRs_Trap = do
   -- Machine exception program counter
   mepc :: Reg (Bit 32) <- makeReg 0
 
@@ -30,20 +35,6 @@ makeCSRs_Trap pc = do
 
   -- Machine trap cause
   mcause :: Reg (Bit 32) <- makeReg 0
-
-  -- Trigger trap
-  trapWire :: Wire (Bit 1) <- makeWire false
-
-  -- Common trap logic
-  always do
-    when (trapWire.val) do
-      mepc <== pc.val
-      pc <== slice @31 @2 (mtvec.val) # 0b00
-
-  -- Trap function
-  let trapFun = \code -> do
-        mcause <== code.trapCodeIsInterrupt # code.trapCodeCause
-        trapWire <== true
 
   let csrs =
         [ -- mepc
@@ -66,4 +57,11 @@ makeCSRs_Trap pc = do
          }
        ]
 
-  return (csrs, trapFun)
+  let regs =
+        TrapCSRs {
+          csr_mepc = mepc
+        , csr_mcause = mcause
+        , csr_mtvec  = mtvec
+        }
+
+  return (csrs, regs)

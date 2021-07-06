@@ -291,6 +291,10 @@ template <typename K> __attribute__ ((noinline))
   int noclRunKernelAndDumpStats(K* k) {
     unsigned ret = noclRunKernel(k);
 
+    // Check return code
+    if (ret == 1) puts("Kernel failed\n");
+    if (ret == 2) puts("Kernel failed due to exception\n");
+
     // Get number of cycles taken
     while (!pebblesSIMTCanPut()) {}
     pebblesSIMTAskStats(STAT_SIMT_CYCLES);

@@ -7,6 +7,9 @@ import Blarney
 import Blarney.Stream
 import Blarney.BitScan
 
+-- Pebbles imports
+import Pebbles.CSRs.TrapCodes
+
 -- General imports
 import qualified Data.Map as Map
 
@@ -75,6 +78,9 @@ data State =
 
   , opcode :: MnemonicVec
     -- ^ Mnemonic(s) for current instruction identified by the decoder
+
+  , trap :: TrapCode -> Action ()
+    -- ^ Call this to tigger an exception / interrupt
   } deriving (Generic, Interface)
 
 -- | Upper bound on number of instruction mnemonics used by the decoder

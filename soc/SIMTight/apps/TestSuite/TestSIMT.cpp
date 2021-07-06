@@ -18,10 +18,10 @@ int main(int argc, char** argv)
     hostLink.boot(codeFile, dataFile);
     hostLink.startSIMT();
     uint8_t result = hostLink.uart->getByte();
-    if (result == 1)
+    if (result == 0)
       printf("ok\n");
     else {
-      printf("FAILED(%d)\n", result >> 1);
+      printf("FAILED(%d)\n", result);
       failed = true;
     }
   }

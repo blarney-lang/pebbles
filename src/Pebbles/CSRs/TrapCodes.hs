@@ -7,6 +7,5 @@ module Pebbles.CSRs.TrapCodes
 import Blarney
 
 -- Pebbles imports
-import Pebbles.Pipeline.Interface
 import Pebbles.CSRs.TrapCodes.Interface
 import Pebbles.CSRs.TrapCodes.Standard
