@@ -54,7 +54,7 @@ NOTE("Size of tightly coupled instruction memory")
 #define CPUInstrMemLogWords 13
 
 NOTE("Number of cache lines (line size == DRAM beat size)")
-#define SBDCacheLogLines 7
+#define SBDCacheLogLines 9
 
 NOTE("Tagged memory")
 NOTE("=============")
@@ -76,6 +76,12 @@ NOTE("Tag cache: max number of inflight memory requests")
 
 NOTE("Tag cache: max number of pending requests per way")
 #define TagCachePendingReqsPerWay 16
+
+NOTE("CHERI support")
+NOTE("=============")
+
+NOTE("Is CHERI enabled?")
+#define EnableCHERI 1
 
 NOTE("Memory map")
 NOTE("==========")

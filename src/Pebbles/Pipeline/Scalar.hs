@@ -23,12 +23,16 @@ import Blarney.BitScan
 
 -- General imports
 import Data.Proxy
+import Data.Maybe
 import qualified Data.Map as Map
 
 -- Pebbles imports
 import Pebbles.CSRs.Trap
 import Pebbles.CSRs.TrapCodes
 import Pebbles.Pipeline.Interface
+
+-- CHERI imports
+import CHERI.CapLib
 
 -- | Scalar pipeline configuration
 data ScalarPipelineConfig tag =
@@ -44,6 +48,9 @@ data ScalarPipelineConfig tag =
   , executeStage :: State -> Module ExecuteStage
     -- ^ Action for execute stage
   , trapCSRs :: TrapCSRs
+    -- ^ Trap-related CSRs
+  , checkPCCFunc :: Maybe (InternalCap -> Bit 1)
+    -- ^ When CHERI is enabled, function to check PCC
   }
 
 -- | Scalar pipeline management
@@ -62,6 +69,9 @@ makeScalarPipeline :: Tag tag =>
 makeScalarPipeline c = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
+
+    -- Is CHERI enabled?
+    let enableCHERI = c.checkPCCFunc.isJust
 
     -- Compute field selector functions from decode table
     let selMap = matchSel (c.decodeStage)
@@ -90,6 +100,9 @@ makeScalarPipeline c =
     -- which also triggers a pipeline flush
     pcNext :: Wire (Bit 32) <- makeWire dontCare
 
+    -- Wire used to update the PCC meta data
+    pccNext :: Wire InternalCap <- makeWire dontCare
+
     -- Pipeline stall
     stallWire :: Wire (Bit 1) <- makeWire 0
 
@@ -114,6 +127,14 @@ makeScalarPipeline c =
     pc2 :: Reg (Bit 32) <- makeReg dontCare
     pc3 :: Reg (Bit 32) <- makeReg dontCare
 
+    -- Program counter capabilities for each pipeline stage
+    pcc1 :: Reg InternalCap <- makeReg dontCare
+    pcc2 :: Reg (Exact InternalCap) <- makeReg dontCare
+    pcc3 :: Reg InternalCap <- makeReg dontCare
+
+    -- Program counter capability check
+    pcc3_exc :: Reg (Bit 1) <- makeDReg false
+
     -- Instruction registers for each pipeline stage
     instr2 :: Reg Instr <- makeReg 0
     instr3 :: Reg Instr <- makeReg 0
@@ -134,6 +155,9 @@ makeScalarPipeline c =
       -- PC to fetch
       let pcFetch = pcNext.active ? (pcNext.val, pc1.val + 4)
 
+      -- PC capability to fetch
+      let pccFetch = pccNext.active ? (pccNext.val, pcc1.val)
+
       -- Index the instruction memory
       let instrAddr = truncateCast (slice @31 @2 pcFetch)
       load instrMem instrAddr
@@ -148,6 +172,13 @@ makeScalarPipeline c =
           pc1 <== pcFetch
           go1 <== true
 
+          -- CHERI specific code
+          if enableCHERI
+            then do
+              let isFirstCycle = delay true false
+              pcc1 <== isFirstCycle ? (almightyCap, pccFetch)
+            else return ()
+
     -- Stage 1: Operand Fetch
     -- ======================
 
@@ -158,6 +189,11 @@ makeScalarPipeline c =
           go2 <== true
           instr2 <== instrMem.out
           pc2 <== pc1.val
+
+          -- CHERI specific code
+          if enableCHERI
+            then pcc2 <== setAddr (pcc1.val) (pc1.val)
+            else return ()
 
       -- Fetch operands
       load regFileA (stallWire.val ? (instr2.val.srcA, instrMem.out.srcA))
@@ -199,10 +235,22 @@ makeScalarPipeline c =
           regB <== b
           regBorImm <== bOrImm
 
-          -- Trigger next stage
-          go3 <== true
+          -- Prepare next stage
           instr3 <== instr2.val
           pc3 <== pc2.val
+
+          -- Trigger next stage
+          case c.checkPCCFunc of
+            Nothing -> do
+              go3 <== true
+            Just checkPCC -> do
+              let pcc = pcc2.val
+              let ok = pcc.exact .&&. checkPCC (pcc.value)
+              go3 <== ok
+              pcc3 <== pcc.value
+              pcc3_exc <== inv ok
+              when (inv ok) do
+                display "Scalar pipeline: PCC exception"
 
     -- Stage 3: Execute
     -- ================
@@ -222,6 +270,11 @@ makeScalarPipeline c =
       , opBIndex = instr3.val.srcB
       , resultIndex = instr3.val.dst
       , pc = ReadWrite (pc3.val) (pcNext <==)
+      , pcc = if enableCHERI
+                then ReadWrite (pcc3.val) \cap -> do
+                       pcNext <== getAddr cap
+                       pccNext <== cap
+                else error "Scalar Pipeline: PCC used when CHERI disabled"
       , result = WriteOnly \x ->
                    when (instr3.val.dst .!=. 0) do
                      resultWire <== x
@@ -250,7 +303,7 @@ makeScalarPipeline c =
           instr4 <== instr3.val
 
       -- Common trap-handling code
-      when (trapWire.val) do
+      when (trapWire.val .||. pcc3_exc.val) do
         c.trapCSRs.csr_mepc <== pc3.val
         pcNext <== slice @31 @2 (c.trapCSRs.csr_mtvec.val) # 0b00
 

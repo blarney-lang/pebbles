@@ -1732,4 +1732,5 @@ set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_SIMTight_0.ip
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_mm_clockcross_DDR4.ip
 set_global_assignment -name SEARCH_PATH ../src
 set_global_assignment -name SEARCH_PATH ../../../blarney/Verilog/Altera/
+set_global_assignment -name SEARCH_PATH ../../../src/CHERI/Verilog/
 set_global_assignment -name SEED 10

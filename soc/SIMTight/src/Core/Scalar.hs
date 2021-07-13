@@ -21,6 +21,7 @@ import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
+import Pebbles.Instructions.RV32_xCHERI
 import Pebbles.Instructions.Units.MulUnit
 import Pebbles.Instructions.Units.DivUnit
 import Pebbles.Instructions.Custom.CacheManagement
@@ -36,6 +37,8 @@ data ScalarCoreConfig =
     -- ^ Size of tightly coupled instruction memory
   , scalarCoreInitialPC :: Integer
     -- ^ Initial PC
+  , scalarCoreEnableCHERI :: Bool
+    -- ^ Enable CHERI extensions
   }
 
 -- | Scalar core inputs
@@ -117,6 +120,8 @@ makeScalarCore config inputs = mdo
             ]
         }
     , trapCSRs = trapRegs
+    , checkPCCFunc =
+        if config.scalarCoreEnableCHERI then Just checkPCC else Nothing
     }
 
   return

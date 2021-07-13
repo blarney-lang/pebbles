@@ -498,6 +498,8 @@ makeSIMTPipeline c inputs =
             , resultIndex = instr5.val.dst
             , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
                      pcNextWire <== writeVal.fromPC
+              -- CHERI not yet supported in SIMT pipeline
+            , pcc = ReadWrite dontCare (\writeVal -> return ())
             , result = WriteOnly \writeVal ->
                          when (instr5.val.dst .!=. 0) do
                            resultWire <== writeVal

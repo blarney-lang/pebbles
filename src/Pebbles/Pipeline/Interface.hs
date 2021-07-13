@@ -10,6 +10,9 @@ import Blarney.BitScan
 -- Pebbles imports
 import Pebbles.CSRs.TrapCodes
 
+-- CHERI imports
+import CHERI.CapLib
+
 -- General imports
 import qualified Data.Map as Map
 
@@ -63,6 +66,10 @@ data State =
     -- of the currently executing instruction.  It may be written,
     -- to modify the PC. If unwritten, the pipeline implicity
     -- updates the PC to point to the next instruction in memory.
+
+  , pcc :: ReadWrite InternalCap
+    -- ^ Program counter capability. The client should not write
+    -- 'pc' *and* 'pcc' in the same clock cycle.
 
   , result :: WriteOnly (Bit 32)
     -- ^ Instruction result interface.  Writing to this modifies

@@ -121,6 +121,7 @@ makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
         scalarCoreInstrMemInitFile = Just "boot.mif"
       , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , scalarCoreInitialPC = MemBase
+      , scalarCoreEnableCHERI = EnableCHERI == 1
       }
 
 -- CPU data cache (synthesis boundary)
