@@ -122,6 +122,10 @@ makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
       , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , scalarCoreInitialPC = MemBase
       , scalarCoreEnableCHERI = EnableCHERI == 1
+      , scalarCoreCapRegInitFile =
+          if EnableCHERI == 1
+            then Just (capRegInitFile ++ ".mif")
+            else Nothing
       }
 
 -- CPU data cache (synthesis boundary)
@@ -227,10 +231,25 @@ makeSIMTBankedSRAMs route =
   makeBoundary "SIMTBankedSRAMs"
     (makeBankedSRAMs @(BankInfo SIMTMemReqId) route)
 
+-- Initialisation files
+-- ====================
+
+capRegInitFile :: String
+capRegInitFile = "CapRegFileInit"
+
+writeInitFiles :: IO ()
+writeInitFiles = do
+  if EnableCHERI == 1
+    then do
+      writeScalarCapRegFileMif (capRegInitFile ++ ".mif")
+      writeScalarCapRegFileHex (capRegInitFile ++ ".hex")
+    else return ()
+
 -- Main function
 -- =============
 
 -- Generate code
 main :: IO ()
 main = do
+  writeInitFiles
   writeVerilogModule makeTop "SIMTight" "./"

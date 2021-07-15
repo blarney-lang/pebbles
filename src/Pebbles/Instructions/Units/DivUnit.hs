@@ -3,6 +3,7 @@ module Pebbles.Instructions.Units.DivUnit where
 -- Blarney imports
 import Blarney
 import Blarney.Stmt
+import Blarney.Option
 import Blarney.SourceSink
 
 -- Pebbles imports
@@ -126,6 +127,7 @@ makeSeqDivUnit = do
             ResumeReq {
               resumeReqInfo = reqInfo.val
             , resumeReqData = output.val
+            , resumeReqCap = none
             }
         , consume = do done <== false
         }

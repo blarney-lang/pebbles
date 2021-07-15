@@ -492,17 +492,19 @@ makeSIMTPipeline c inputs =
               instr = instr5.val
             , opA = regFileA.out.old
             , opB = regFileB.out.old
+            , capA = dontCare -- TODO
+            , capB = dontCare -- TODO
             , opBorImm = regFileB.out.getRegBOrImm.old
             , opAIndex = instr5.val.srcA
             , opBIndex = instr5.val.srcB
             , resultIndex = instr5.val.dst
             , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
                      pcNextWire <== writeVal.fromPC
-              -- CHERI not yet supported in SIMT pipeline
-            , pcc = ReadWrite dontCare (\writeVal -> return ())
+            , pcc = ReadWrite dontCare (\writeVal -> return ()) -- TODO
             , result = WriteOnly \writeVal ->
                          when (instr5.val.dst .!=. 0) do
                            resultWire <== writeVal
+            , resultCap = WriteOnly \writeVal -> return () -- TODO
             , suspend = do
                 suspWire <== true
                 return

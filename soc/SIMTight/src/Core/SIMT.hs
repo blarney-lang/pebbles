@@ -76,10 +76,15 @@ makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
     ++ [csr_WarpCmd]
     ++ [csr_WarpGetKernel]
  
+  -- Pipeline resume requests from memory
+  memResumeReqs <- makeMemRespToResumeReq
+    False -- TODO
+    (ins.execMemUnit.memResps)
+
   -- Merge resume requests
   let resumeReqStream =
-        fmap memRespToResumeReq (ins.execMemUnit.memResps)
-          `mergeTwo` mergeTwo (mulUnit.mulResps) (divUnit.divResps)
+        memResumeReqs `mergeTwo`
+          mergeTwo (mulUnit.mulResps) (divUnit.divResps)
 
   -- Resume queue
   resumeQueue <- makePipelineQueue 1

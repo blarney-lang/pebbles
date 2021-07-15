@@ -44,6 +44,10 @@ data Mnemonic =
     -- A extension
   | AMO
 
+    -- CHERI extension
+  | CGetPerm
+  | CAndPerm
+
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE
 

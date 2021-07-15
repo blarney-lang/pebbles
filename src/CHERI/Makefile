@@ -1,6 +1,7 @@
-CapLib.hs: cheri-cap-lib/Makefile
+CapLibBase.hs: cheri-cap-lib/Makefile
 	make -C cheri-cap-lib
-	cd cheri-cap-lib && CHERICapWrapBlarney.py CHERI.CapLib > ../CapLib.hs
+	cd cheri-cap-lib && \
+    CHERICapWrapBlarney.py CHERI.CapLibBase > ../CapLibBase.hs
 	mkdir -p Verilog
 	cp cheri-cap-lib/*.v Verilog
 
@@ -13,4 +14,4 @@ clean:
 
 .PHONY: mrproper
 mrproper: clean
-	rm -rf CapLib.hs Verilog
+	rm -rf CapLibBase.hs Verilog

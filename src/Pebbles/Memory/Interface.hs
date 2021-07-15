@@ -2,9 +2,13 @@ module Pebbles.Memory.Interface where
   
 -- Blarney imports
 import Blarney
+import Blarney.Queue
+import Blarney.Stream
+import Blarney.Option
 import Blarney.SourceSink
 
 -- Local imports
+import CHERI.CapLib
 import Pebbles.Pipeline.Interface
 
 -- Interface to memory subsystem
@@ -118,17 +122,6 @@ data MemReqInfo =
   }
   deriving (Generic, Interface, Bits)
 
--- Helper functions
--- ================
-
--- | Convert memory response to pipeline resume request
-memRespToResumeReq :: MemResp InstrInfo -> ResumeReq
-memRespToResumeReq resp =
-  ResumeReq {
-    resumeReqInfo = resp.memRespId
-  , resumeReqData = resp.memRespData
-  }
-
 -- Note [Memory transactions]
 -- ==========================
 
@@ -139,3 +132,80 @@ memRespToResumeReq resp =
 -- here is to support accessing data items larger than 32 bits in an
 -- atomic manner.  The mechanism can be misused to hog busses for long
 -- durations, so use with care!
+
+-- Resume request helpers
+-- ======================
+
+-- | Convert memory response flit(s) to pipeline resume request
+makeMemRespToResumeReq ::
+     Bool
+     -- ^ Is CHERI enabled?
+  -> Stream (MemResp InstrInfo)
+     -- ^ Stream of memory response flits
+  -> Module (Stream ResumeReq)
+     -- ^ Stream of resume requests
+makeMemRespToResumeReq enableCHERI memResps
+  | not enableCHERI =
+      return $
+        memResps {
+          peek =
+            ResumeReq {
+              resumeReqInfo = memResps.peek.memRespId
+            , resumeReqData = memResps.peek.memRespData
+            , resumeReqCap = none
+           }
+        }
+  | otherwise = do
+      -- Output buffer
+      outQueue :: Queue ResumeReq <- makePipelineQueue 1
+
+      -- Count flits in response
+      flitCount :: Reg (Bit 1) <- makeReg 0
+
+      -- Tag bit accumulator
+      tagBitReg :: Reg (Bit 1) <- makeReg true
+
+      -- Data acummulator
+      dataReg :: Reg (Bit 32) <- makeReg dontCare
+
+      always do
+        when (memResps.canPeek) do
+          let resp = memResps.peek
+
+          -- Currently, only one or two response flits are expected
+          -- Two-flit responses are assumed to be capabilities
+          dynamicAssert (flitCount.val .!=. 0 .==>. resp.memRespIsFinal)
+            "makeMemRespToResumeReq: too many flits in memory response"
+
+          -- The capability is valid if all its tag bits are set
+          let isValid = tagBitReg.val .&&. resp.memRespDataTagBit
+
+          if resp.memRespIsFinal
+            then do
+              when (outQueue.notFull) do
+                -- Reset accumlators for next transaction
+                flitCount <== 0
+                tagBitReg <== true
+                -- Decode capability
+                let cap = fromMem (isValid, resp.memRespData # dataReg.val)
+                -- Split capability into address and meta-data
+                let (meta, addr) = split cap
+                -- Create resume request
+                enq outQueue
+                  ResumeReq {
+                    resumeReqInfo = resp.memRespId
+                  , resumeReqData =
+                      if flitCount.val .==. 1 then addr else resp.memRespData
+                  , resumeReqCap = Option (flitCount.val .==. 1) meta
+                  }
+                -- Consume flit
+                memResps.consume
+            else do
+              -- Accumulate response
+              tagBitReg <== isValid
+              dataReg <== resp.memRespData
+              flitCount <== flitCount.val + 1
+              -- Consume flit
+              memResps.consume
+
+      return (toStream outQueue)

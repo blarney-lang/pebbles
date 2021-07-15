@@ -5,6 +5,7 @@ module Pebbles.Pipeline.Interface where
 -- Blarney imports
 import Blarney
 import Blarney.Stream
+import Blarney.Option
 import Blarney.BitScan
 
 -- Pebbles imports
@@ -43,6 +44,8 @@ data ResumeReq =
     -- ^ Instruction info from the original suspend call
   , resumeReqData :: Bit 32
     -- ^ Data representing the result of the suspended operation
+  , resumeReqCap :: Option InternalCapMetaData
+    -- ^ Capability meta-data for the result of the suspended operation
   } deriving (Generic, Interface, Bits)
 
 -- | Pipeline state, visisble to the execute stage
@@ -55,6 +58,10 @@ data State =
   , opB :: Bit 32
   , opBorImm :: Bit 32
     -- ^ Source operands. These contain the values of the two source registers.
+
+  , capA :: InternalCap
+  , capB :: InternalCap
+    -- ^ Capability operands.
 
   , opAIndex :: RegId
   , opBIndex :: RegId
@@ -74,6 +81,10 @@ data State =
   , result :: WriteOnly (Bit 32)
     -- ^ Instruction result interface.  Writing to this modifies
     -- the destination register.
+
+  , resultCap :: WriteOnly InternalCap
+    -- ^ Instruction result for capability reg file. The client should
+    -- not write 'result' *and* 'resultCap' in the same clock cycle.
 
   , suspend :: Action InstrInfo
     -- ^ Call this to implement a multi-cycle instruction.
