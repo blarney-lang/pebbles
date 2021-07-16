@@ -42,6 +42,7 @@ import Blarney.Queue
 import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
+import Blarney.QuadPortRAM
 import Blarney.Interconnect
 
 -- General imports
@@ -164,10 +165,10 @@ makeSIMTPipeline c inputs =
       replicateM warpSize (replicateM numWarps (makeReg false))
 
     -- Register files
-    regFilesA :: [RAM (Bit t_logWarps, RegId) (Bit 32)] <-
-      replicateM warpSize makeDualRAM
-    regFilesB :: [RAM (Bit t_logWarps, RegId) (Bit 32)] <-
-      replicateM warpSize makeDualRAM
+    (regFilesA, regFilesB) ::
+      ([RAM (Bit t_logWarps, RegId) (Bit 32)],
+       [RAM (Bit t_logWarps, RegId) (Bit 32)]) <-
+         unzip <$> replicateM warpSize makeQuadRAM
 
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM numWarps (makeReg 0)
@@ -548,23 +549,20 @@ makeSIMTPipeline c inputs =
                 suspMask!(warpId5.val) <== true
 
             -- Writeback stage
-            if delay false (resultWire.active) .&&. exc.val.inv
-              then do
-                let idx = (warpId5.val.old, instr5.val.dst.old)
-                let value = resultWire.val.old
-                store regFileA idx value
-                store regFileB idx value
-              else do
-                -- Thread resumption
-                when (execStage.resumeReqs.canPeek) do
-                  let req = execStage.resumeReqs.peek
-                  let idx = (req.resumeReqInfo.instrId.truncateCast,
-                             req.resumeReqInfo.instrDest)
-                  when (req.resumeReqInfo.instrDest .!=. 0 .&&. exc.val.inv) do
-                    store regFileA idx (req.resumeReqData)
-                    store regFileB idx (req.resumeReqData)
-                  suspMask!(req.resumeReqInfo.instrId) <== false
-                  execStage.resumeReqs.consume
+            when (delay false (resultWire.active) .&&. exc.val.inv) do
+              let idx = (warpId5.val.old, instr5.val.dst.old)
+              let value = resultWire.val.old
+              store regFileA idx value
+
+            -- Thread resumption
+            when (execStage.resumeReqs.canPeek) do
+              let req = execStage.resumeReqs.peek
+              let idx = (req.resumeReqInfo.instrId.truncateCast,
+                         req.resumeReqInfo.instrDest)
+              when (req.resumeReqInfo.instrDest .!=. 0 .&&. exc.val.inv) do
+                store regFileB idx (req.resumeReqData)
+              suspMask!(req.resumeReqInfo.instrId) <== false
+              execStage.resumeReqs.consume
 
     -- Create vector lanes
     sequence $ getZipList $
