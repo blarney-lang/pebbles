@@ -170,6 +170,9 @@ makeScalarPipeline c =
     -- Wire pulsed to signal an exception / interrupt
     trapWire :: Wire (Bit 1) <- makeWire false
 
+    -- See [Note: Delayed Trap]
+    let trapReg = delay false (trapWire.val)
+
     -- Stage 0: Instruction Fetch
     -- ==========================
 
@@ -290,7 +293,7 @@ makeScalarPipeline c =
             Just checkPCC -> do
               let pcc = pcc2.val
               let ok = pcc.exact .&&. checkPCC (pcc.value)
-              go3 <== ok
+              go3 <== ok .&&. trapWire.val.inv
               pcc3 <== pcc.value
               pcc3_exc <== inv ok
               when (inv ok) do
@@ -360,8 +363,8 @@ makeScalarPipeline c =
           instr4 <== instr3.val
 
       -- Common trap-handling code
-      when (trapWire.val .||. pcc3_exc.val) do
-        c.trapCSRs.csr_mepc <== pc3.val
+      when (trapReg .||. pcc3_exc.val) do
+        c.trapCSRs.csr_mepc <== if trapReg then pc3.val.old else pc3.val
         pcNext <== slice @31 @2 (c.trapCSRs.csr_mtvec.val) # 0b00
 
     -- Stage 4: Writeback
@@ -392,13 +395,14 @@ makeScalarPipeline c =
                 finalResultCapWire <== resumeReq.resumeReqCap.val
             else return ()
         else do
-          when (delay false (resultWire.active)) do
-            finalResultWire <== resultWire.val.old
-          if enableCHERI
-            then do
-              when (delay false (resultCapWire.active)) do
-                finalResultCapWire <== resultCapWire.val.old
-            else return ()
+          when (inv trapReg) do
+            when (delay false (resultWire.active)) do
+              finalResultWire <== resultWire.val.old
+            if enableCHERI
+              then do
+                when (delay false (resultCapWire.active)) do
+                  finalResultCapWire <== resultCapWire.val.old
+              else return ()
 
       -- Writeback
       when (finalResultWire.active) do
@@ -418,3 +422,17 @@ makeScalarPipeline c =
         writeInstr = \addr instr -> do
           store instrMem (truncateCast (slice @31 @2 addr)) instr
       }
+
+-- Note [Delayed Trap]
+-- ===================
+
+-- Traps can be simply implemented by modifying pcNext.  However, ISA
+-- extensions like CHERI can introduce a lot of logic on the trap
+-- condition, so we delay the modification of pcNext until the cycle
+-- after the trap has been raised, and prohibit the execute stage from
+-- firing on that cycle.  We also prohibit the writeback stage from
+-- firing on that cycle, allowing the ISA implementation to trap *and*
+-- write a result at the same time, with the effect that result is
+-- ignored. Separating the trap condition from the result writeback
+-- reduces the amount of logic on the register forwarding path
+-- (believed to be a critical path).
