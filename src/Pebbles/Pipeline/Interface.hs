@@ -35,6 +35,8 @@ data InstrInfo =
     -- ^ Instruction id
   , instrDest :: RegId
     -- ^ Destination register of suspended instruction
+  , instrTagMask :: Bit 1
+    -- ^ Mask to be applied to tag bit of capability result
   } deriving (Generic, Interface, Bits)
 
 -- | Resume request to pipeline for multi-cycle instructions
@@ -75,8 +77,7 @@ data State =
     -- updates the PC to point to the next instruction in memory.
 
   , pcc :: ReadWrite InternalCap
-    -- ^ Program counter capability. The client should not write
-    -- 'pc' *and* 'pcc' in the same clock cycle.
+    -- ^ Program counter capability.
 
   , result :: WriteOnly (Bit 32)
     -- ^ Instruction result interface.  Writing to this modifies

@@ -221,6 +221,12 @@ test_ ## testnum: \
       inst x3, offset(x1); \
     )
 
+#define TEST_CLD_OP( testnum, inst, result, offset, base ) \
+    TEST_CASE( testnum, x3, result, \
+      cllc c1, base; \
+      inst x3, offset(c1); \
+    )
+
 #define TEST_ST_OP( testnum, load_inst, store_inst, result, offset, base ) \
     TEST_CASE( testnum, x3, result, \
       la  x1, base; \
@@ -229,12 +235,34 @@ test_ ## testnum: \
       load_inst x3, offset(x1); \
     )
 
+#define TEST_CST_OP( testnum, load_inst, store_inst, result, offset, base ) \
+    TEST_CASE( testnum, x3, result, \
+      cllc c1, base; \
+      li  x2, result; \
+      store_inst x2, offset(c1); \
+      load_inst x3, offset(c1); \
+    )
+
 #define TEST_LD_DEST_BYPASS( testnum, nop_cycles, inst, result, offset, base ) \
 test_ ## testnum: \
     li  TESTNUM, testnum; \
     li  x4, 0; \
 1:  la  x1, base; \
     inst x3, offset(x1); \
+    TEST_INSERT_NOPS_ ## nop_cycles \
+    addi  x6, x3, 0; \
+    li  x29, result; \
+    bne x6, x29, fail; \
+    addi  x4, x4, 1; \
+    li  x5, 2; \
+    bne x4, x5, 1b; \
+
+#define TEST_CLD_DEST_BYPASS(testnum, nop_cycles, inst, result, offset, base) \
+test_ ## testnum: \
+    li  TESTNUM, testnum; \
+    li  x4, 0; \
+1:  cllc  c1, base; \
+    inst x3, offset(c1); \
     TEST_INSERT_NOPS_ ## nop_cycles \
     addi  x6, x3, 0; \
     li  x29, result; \
@@ -256,6 +284,20 @@ test_ ## testnum: \
     li  x5, 2; \
     bne x4, x5, 1b \
 
+#define TEST_CLD_SRC1_BYPASS(testnum, nop_cycles, inst, result, offset, base) \
+test_ ## testnum: \
+    li  TESTNUM, testnum; \
+    li  x4, 0; \
+1:  cllc c1, base; \
+    TEST_INSERT_NOPS_ ## nop_cycles \
+    inst x3, offset(c1); \
+    li  x29, result; \
+    bne x3, x29, fail; \
+    addi  x4, x4, 1; \
+    li  x5, 2; \
+    bne x4, x5, 1b \
+
+
 #define TEST_ST_SRC12_BYPASS( testnum, src1_nops, src2_nops, load_inst, store_inst, result, offset, base ) \
 test_ ## testnum: \
     li  TESTNUM, testnum; \
@@ -272,6 +314,23 @@ test_ ## testnum: \
     li  x5, 2; \
     bne x4, x5, 1b \
 
+#define TEST_CST_SRC12_BYPASS( testnum, src1_nops, src2_nops, load_inst, store_inst, result, offset, base ) \
+test_ ## testnum: \
+    li  TESTNUM, testnum; \
+    li  x4, 0; \
+1:  li  x1, result; \
+    TEST_INSERT_NOPS_ ## src1_nops \
+    cllc  c2, base; \
+    TEST_INSERT_NOPS_ ## src2_nops \
+    store_inst x1, offset(c2); \
+    load_inst x3, offset(c2); \
+    li  x29, result; \
+    bne x3, x29, fail; \
+    addi  x4, x4, 1; \
+    li  x5, 2; \
+    bne x4, x5, 1b \
+
+
 #define TEST_ST_SRC21_BYPASS( testnum, src1_nops, src2_nops, load_inst, store_inst, result, offset, base ) \
 test_ ## testnum: \
     li  TESTNUM, testnum; \
@@ -282,6 +341,22 @@ test_ ## testnum: \
     TEST_INSERT_NOPS_ ## src2_nops \
     store_inst x1, offset(x2); \
     load_inst x3, offset(x2); \
+    li  x29, result; \
+    bne x3, x29, fail; \
+    addi  x4, x4, 1; \
+    li  x5, 2; \
+    bne x4, x5, 1b \
+
+#define TEST_CST_SRC21_BYPASS( testnum, src1_nops, src2_nops, load_inst, store_inst, result, offset, base ) \
+test_ ## testnum: \
+    li  TESTNUM, testnum; \
+    li  x4, 0; \
+1:  cllc  c2, base; \
+    TEST_INSERT_NOPS_ ## src1_nops \
+    li  x1, result; \
+    TEST_INSERT_NOPS_ ## src2_nops \
+    store_inst x1, offset(c2); \
+    load_inst x3, offset(c2); \
     li  x29, result; \
     bne x3, x29, fail; \
     addi  x4, x4, 1; \

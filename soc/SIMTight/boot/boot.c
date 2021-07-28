@@ -1,19 +1,24 @@
 // Boot loader
 #include <Config.h>
+#include <Pebbles/CSRs/Sim.h>
 #include <Pebbles/CSRs/UART.h>
 #include <Pebbles/CSRs/InstrMem.h>
 #include <Pebbles/CSRs/SIMTHost.h>
 #include <Pebbles/Instrs/CacheMgmt.h>
 
+#if EnableCHERI
+#include <cheriintrin.h>
+#endif
+
 // Receive byte from UART (blocking)
-uint32_t getByte()
+INLINE uint32_t getByte()
 {
   while (!pebblesUARTCanGet()) {}
   return pebblesUARTGet();
 }
 
 // Receive 32-bit word from UART (blocking)
-uint32_t getWord()
+INLINE uint32_t getWord()
 {
   uint32_t w;
   w = getByte();
@@ -24,14 +29,14 @@ uint32_t getWord()
 }
 
 // Send byte over UART (blocking)
-void putByte(uint32_t byte)
+INLINE void putByte(uint32_t byte)
 {
   while (!pebblesUARTCanPut()) {}
   pebblesUARTPut(byte);
 }
 
 // Write instruction to SIMT core
-void writeInstrToSIMTCore(uint32_t addr, uint32_t instr)
+INLINE void writeInstrToSIMTCore(uint32_t addr, uint32_t instr)
 {
   while (! pebblesSIMTCanPut()) {}
   pebblesSIMTWriteInstr(addr, instr);
@@ -40,6 +45,10 @@ void writeInstrToSIMTCore(uint32_t addr, uint32_t instr)
 // Boot loader
 int main()
 {
+  #if EnableCHERI
+    void* almighty = cheri_ddc_get();
+  #endif
+
   // Receive code from host (blocking)
   while (1) {
     uint32_t addr = getWord();
@@ -54,45 +63,25 @@ int main()
     uint32_t addr = getWord();
     if (addr == 0xffffffff) break;
     uint32_t data = getWord();
-    volatile uint32_t* ptr = (uint32_t*) addr;
+    #if EnableCHERI
+      volatile uint32_t* ptr = (uint32_t*) cheri_address_set(almighty, addr);
+    #else
+      volatile uint32_t* ptr = (uint32_t*) addr;
+    #endif
     *ptr = data;
   }
 
   // Perform cache flush so data is visible globally, e.g. to SIMT core
   pebblesCacheFlushFull();
 
-  // Determine boot mode
-  uint32_t mode = getByte();
-  if (mode == 0) {
-    // CPU mode
-    // --------
-
-    // This is the common mode
-
-    // Call the application's main function
-    int (*appMain)() = (int (*)()) (MemBase + MaxBootImageBytes);
-    appMain();
-
-    // Send terminating null to host
-    putByte('\0');
-  }
-  else {
-    // SIMT mode 
-    // ---------
-
-    // This mode is intended for running assembley tests on the SIMT core
-
-    // Start kernel on SIMT core
-    while (! pebblesSIMTCanPut()) {}
-    pebblesSIMTStartKernel(MemBase + MaxBootImageBytes);
-
-    // Wait for kernel response
-    while (!pebblesSIMTCanGet()) {}
-    int resp = pebblesSIMTGet();
-
-    // Send kernel response to host
-    putByte(resp);
-  }
+  // Call the application's start function
+  #if EnableCHERI
+    int (*appStart)() = cheri_address_set(almighty,
+      MemBase + MaxBootImageBytes);
+  #else
+    int (*appStart)() = (int (*)()) (MemBase + MaxBootImageBytes);
+  #endif
+  appStart();
 
   // Restart boot loader
   asm volatile("jr %0" : : "r"(MemBase));

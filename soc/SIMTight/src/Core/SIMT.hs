@@ -93,9 +93,10 @@ makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
   return
     ExecuteStage {
       execute = do
-        executeI (Just mulUnit) csrUnit (ins.execMemUnit) s
+        executeI (Just mulUnit) csrUnit (ins.execMemUnit.memReqs) s
+        executeI_NoCap csrUnit (ins.execMemUnit.memReqs) s
         executeM mulUnit divUnit s
-        executeA (ins.execMemUnit) s
+        executeA (ins.execMemUnit.memReqs) s
     , resumeReqs = resumeQueue.toStream
     }
 
@@ -143,7 +144,13 @@ makeSIMTCore config mgmtReqs memUnitsVec = mdo
         , logNumWarps = SIMTLogWarps
         , logMaxNestLevel = SIMTLogMaxNestLevel
         , enableStatCounters = SIMTEnableStatCounters == 1
-        , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeSIMT
+        , decodeStage = concat
+            [ decodeI
+            , decodeI_NoCap
+            , decodeM
+            , decodeA
+            , decodeSIMT
+            ]
         , executeStage =
             [ makeSIMTExecuteStage
                 SIMTExecuteIns {

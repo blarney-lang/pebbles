@@ -80,8 +80,14 @@ NOTE("Tag cache: max number of pending requests per way")
 NOTE("CHERI support")
 NOTE("=============")
 
-NOTE("Is CHERI enabled?")
+NOTE("Is CHERI enabled? (If so, see UseClang parameter)")
 #define EnableCHERI 1
+
+NOTE("Compiler")
+NOTE("========")
+
+NOTE("Use clang rather than gcc? (Currently required if CHERI enabled)")
+#define UseClang 1
 
 NOTE("Memory map")
 NOTE("==========")
@@ -90,4 +96,4 @@ NOTE("Memory base (after tag bit region)")
 #define MemBase 134217728
 
 NOTE("Space reserved for boot loader")
-#define MaxBootImageBytes 512
+#define MaxBootImageBytes 1024

@@ -51,7 +51,7 @@ data ScalarPipelineConfig tag =
     -- ^ Action for execute stage
   , trapCSRs :: TrapCSRs
     -- ^ Trap-related CSRs
-  , checkPCCFunc :: Maybe (InternalCap -> Bit 1)
+  , checkPCCFunc :: Maybe (InternalCap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
   }
 
@@ -177,10 +177,10 @@ makeScalarPipeline c =
     -- ==========================
 
     always do
-      -- PC to fetch
+      -- PC for fetch
       let pcFetch = pcNext.active ? (pcNext.val, pc1.val + 4)
 
-      -- PC capability to fetch
+      -- PC capability for fetch
       let pccFetch = pccNext.active ? (pccNext.val, pcc1.val)
 
       -- Index the instruction memory
@@ -292,12 +292,17 @@ makeScalarPipeline c =
               go3 <== true
             Just checkPCC -> do
               let pcc = pcc2.val
-              let ok = pcc.exact .&&. checkPCC (pcc.value)
+              let table = checkPCC (pcc.value)
+              let exception = orList [cond | (cond, _) <- table]
+              let ok = pcc.exact .&&. inv exception
               go3 <== ok .&&. trapWire.val.inv
               pcc3 <== pcc.value
               pcc3_exc <== inv ok
               when (inv ok) do
-                display "Scalar pipeline: PCC exception"
+                let trapCode = priorityIf table dontCare
+                display "Scalar pipeline: PCC exception:"
+                  " code=" trapCode
+                  " pc=" (formatHex 8 (pc2.val))
 
     -- Stage 3: Execute
     -- ================
@@ -323,9 +328,7 @@ makeScalarPipeline c =
       , resultIndex = instr3.val.dst
       , pc = ReadWrite (pc3.val) (pcNext <==)
       , pcc = if enableCHERI
-                then ReadWrite (pcc3.val) \cap -> do
-                       pcNext <== getAddr cap
-                       pccNext <== cap
+                then ReadWrite (pcc3.val) (pccNext <==)
                 else error "Scalar Pipeline: PCC used when CHERI disabled"
       , result = WriteOnly \x ->
                    when destNonZero do
@@ -343,13 +346,22 @@ makeScalarPipeline c =
           -- to bypass multi-cycle instructions
           suspendInProgress <== true
           stallWire <== true
-          return dontCare
+          return
+            InstrInfo {
+              -- Some of these fields are not used because the
+              -- pipeline currently blocks for suspended instrs
+              instrId = dontCare
+            , instrDest = dontCare
+            , instrTagMask = false
+            }
+
       , retry = do
           go3 <== true
           retryWire <== true
           stallWire <== true
       , opcode = packTagMap tagMap3
       , trap = \code -> do
+          display "Trap: code=" code " pc=0x" (formatHex 8 (pc3.val))
           c.trapCSRs.csr_mcause <==
             code.trapCodeIsInterrupt # code.trapCodeCause
           trapWire <== true

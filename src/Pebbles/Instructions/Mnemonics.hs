@@ -46,7 +46,30 @@ data Mnemonic =
 
     -- CHERI extension
   | CGetPerm
+  | CGetType
+  | CGetBase
+  | CGetLen
+  | CGetTag
+  | CGetSealed
+  | CGetOffset
+  | CGetFlags
+  | CGetAddr
   | CAndPerm
+  | CSetFlags
+  | CSetOffset
+  | CSetAddr
+  | CIncOffset
+  | CClearTag
+  | CSetBounds
+  | CSetBoundsExact
+  | CSub
+  | CMove
+  | CJALR
+  | CSpecialRW
+  | CLoad
+  | CStore
+  | CSealEntry
+  | AUIPCC
 
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE

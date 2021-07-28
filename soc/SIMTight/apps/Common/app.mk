@@ -1,38 +1,49 @@
 PEBBLES_ROOT ?= $(realpath ../../../..)
+CONFIG_H = $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h
+
+# Is CHERI enabled?
+CHERI_EN ?= $(shell echo -n EnableCHERI \
+              | cpp -P -imacros $(CONFIG_H) - | xargs)
+CHERI_EN_COND = $(findstring 1, $(CHERI_EN))
+
+# Use Clang or GCC
+USE_CLANG ?= $(shell echo -n UseClang \
+              | cpp -P -imacros $(CONFIG_H) - | xargs)
 
 # RISC-V subset
-RV_ARCH = rv32ima
+ifeq ($(CHERI_EN), 1)
+  RV_ARCH = rv32imaxcheri
+  RV_ABI = il32pc64
+else
+  RV_ARCH = rv32ima
+  RV_ABI = ilp32
+endif
 
-# Can use Clang or GCC
-USE_CLANG ?= false
-
-ifeq ($(USE_CLANG), true)
-CFLAGS     = --target=riscv64-unknown -ffunction-sections
-LDFLAGS    = --entry _Z4mainv
-RV_CC      = clang-11
-RV_LD      = ld.lld-11
+ifeq ($(USE_CLANG), 1)
+CFLAGS     = -fuse-ld=lld
+RV_CC      = riscv64-unknown-freebsd-clang++
+RV_LD      = riscv64-unknown-freebsd-ld.lld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 else
-CFLAGS     = 
-LDFLAGS    = --entry main
+CFLAGS     =
 RV_CC      = riscv64-unknown-elf-gcc
 RV_LD      = riscv64-unknown-elf-ld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 endif
 
 # Compiler and linker flags for code running on the SoC
-CFLAGS := $(CFLAGS) -mabi=ilp32 -march=$(RV_ARCH) -O2 \
+CFLAGS := $(CFLAGS) -mabi=$(RV_ABI) -march=$(RV_ARCH) -O2 \
          -I $(PEBBLES_ROOT)/inc \
          -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
          -static -mcmodel=medany \
          -fvisibility=hidden -nostdlib \
          -fno-builtin-printf -ffp-contract=off \
-         -fno-builtin -ffreestanding
-LDFLAGS := $(LDFLAGS) -melf32lriscv -G 0
+         -fno-builtin -ffreestanding -ffunction-sections
 
-OFILES = $(patsubst %.cpp,%.o,$(APP_CPP)) \
-         $(PEBBLES_ROOT)/lib/UART/IO.o \
-         $(PEBBLES_ROOT)/lib/baremetal.o
+CFILES = ../Common/Start.cpp \
+         $(APP_CPP) \
+         $(PEBBLES_ROOT)/lib/UART/IO.cpp \
+         $(PEBBLES_ROOT)/lib/baremetal.cpp
 
 .PHONY: all
 all: Run
@@ -44,14 +55,8 @@ data.v: app.elf
 	$(RV_OBJCOPY) -O verilog --remove-section=.text \
                 --set-section-flags .bss=alloc,load,contents app.elf data.v
 
-app.elf: $(OFILES) link.ld
-	$(RV_LD) $(LDFLAGS) -T link.ld -o app.elf $(OFILES)
-
-$(PEBBLES_ROOT)/lib/baremetal.o: $(PEBBLES_ROOT)/lib/baremetal.c
-	$(RV_CC) $(CFLAGS) -Wall -c -o $@ $<
-
-%.o: %.cpp $(APP_HDR)
-	$(RV_CC) $(CFLAGS) -Wall -c -o $@ $<
+app.elf: link.ld $(CFILES)
+	$(RV_CC) $(CFLAGS) -T link.ld -o app.elf $(CFILES)
 
 link.ld: ../Common/link.ld.h
 	cpp -P -I $(PEBBLES_ROOT)/soc/SIMTight/inc $< > link.ld

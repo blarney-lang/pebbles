@@ -189,14 +189,15 @@ makeMemRespToResumeReq enableCHERI memResps
                 -- Decode capability
                 let cap = fromMem (isValid, resp.memRespData # dataReg.val)
                 -- Split capability into address and meta-data
-                let (meta, addr) = split cap
+                let (meta, addr) = splitCap cap
                 -- Create resume request
                 enq outQueue
                   ResumeReq {
                     resumeReqInfo = resp.memRespId
                   , resumeReqData =
                       if flitCount.val .==. 1 then addr else resp.memRespData
-                  , resumeReqCap = Option (flitCount.val .==. 1) meta
+                  , resumeReqCap = Option (flitCount.val .==. 1)
+                      (maskValidBitMeta (resp.memRespId.instrTagMask) meta)
                   }
                 -- Consume flit
                 memResps.consume
@@ -209,3 +210,70 @@ makeMemRespToResumeReq enableCHERI memResps
               memResps.consume
 
       return (toStream outQueue)
+
+-- Memory requests from a CHERI-enabled processor
+-- ==============================================
+
+-- | A memory request able to represent a standard (32-bit) memory
+-- request or a capability (64 bit) memory request.
+data CapMemReq t_id =
+  CapMemReq {
+    capMemReqStd :: MemReq t_id
+    -- ^ Standard memory request
+  , capMemReqIsCapAccess :: Bit 1
+    -- ^ Are we accessing a capability?
+  , capMemReqUpperData :: Bit 32
+    -- ^ Extra data field for capability store
+  } deriving (Generic, Interface, Bits)
+
+-- | Convert 'CapMemReq's to 'MemReq's by serialisation
+makeCapMemReqSink :: Bits t_id =>
+     Sink (MemReq t_id)
+     -- ^ Sink for standard memory requets
+  -> Module (Sink (CapMemReq t_id))
+     -- ^ Sink for capability memory requests
+makeCapMemReqSink memReqSink = do
+  -- Are we currently serialising a request?
+  busy :: Reg (Bit 1) <- makeReg false
+
+  -- Register for request currently being serialised
+  reqReg :: Reg (CapMemReq t_id) <- makeReg dontCare
+
+  always do
+    when (busy.val .&&. memReqSink.canPut) do
+      let req = reqReg.val
+      let stdReq = req.capMemReqStd
+      -- Put the second (final) flit of the serialised request
+      put memReqSink
+        stdReq {
+          memReqData = req.capMemReqUpperData
+        , memReqAddr = stdReq.memReqAddr + 4
+        , memReqIsFinal = true
+        }
+      -- Serialisation complete
+      busy <== false
+
+  return
+    Sink {
+      canPut = busy.val.inv .&&. memReqSink.canPut
+    , put = \req -> do
+        reqReg <== req
+        let stdReq = req.capMemReqStd
+        -- A capability access will require serialisation
+        busy <== req.capMemReqIsCapAccess
+        -- Put the first flit of the serialised request
+        put memReqSink
+          stdReq {
+            -- If it's a capability access, disable final bit
+            memReqIsFinal = req.capMemReqIsCapAccess.inv
+          }
+    }
+
+-- | Convert 'MemReq's to 'CapMemReq's
+toCapMemReq :: Bits t_id => MemReq t_id -> CapMemReq t_id
+toCapMemReq req =
+  CapMemReq {
+    capMemReqStd = req
+  , capMemReqIsCapAccess = false
+  , capMemReqUpperData = dontCare
+  }

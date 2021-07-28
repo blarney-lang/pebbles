@@ -2,6 +2,7 @@ module CHERI.CapLib
   ( module CHERI.CapLibBase
   , splitCap
   , unsplitCap
+  , maskValidBitMeta
   , nullCapVal
   , almightyCapVal
   , nullCapMetaVal
@@ -26,6 +27,11 @@ unsplitCap :: (InternalCapMetaData, Bit 32) -> InternalCap
 unsplitCap (meta, addr) = tag # addr # lower meta
   where tag = upper meta :: Bit 1
 
+-- | Apply mask to valid bit of meta data
+maskValidBitMeta :: Bit 1 -> InternalCapMetaData -> InternalCapMetaData
+maskValidBitMeta mask meta = (mask .&&. tag) # lower meta
+  where tag = upper meta :: Bit 1
+
 -- | Direct almighty capability (not via Verilog)
 almightyCapVal :: InternalCap
 almightyCapVal = fromInteger almightyCapInteger
@@ -45,3 +51,4 @@ nullCapMetaInteger = nullCapInteger B..&. mask
     cw = valueOf @InternalCapWidth
     mw = valueOf @InternalCapMetaDataWidth
     mask = (1 `B.shiftL` (mw-1)) - 1
+

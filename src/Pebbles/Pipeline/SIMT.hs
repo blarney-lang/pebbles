@@ -511,6 +511,7 @@ makeSIMTPipeline c inputs =
                   InstrInfo {
                     instrId = warpId5.val.zeroExtendCast
                   , instrDest = instr5.val.dst
+                  , instrTagMask = false
                   }
             , retry = retryWire <== true
             , opcode = packTagMap tagMap5

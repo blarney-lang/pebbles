@@ -28,16 +28,14 @@ MEMORY
 
 SECTIONS
 {
-  .text   :
-     {
-       *(.text._Z4mainv);
-       *(.text.startup);
-       *(.text*);
-     }                                  > instrs
+  .text   : { *.o(.text*) }             > instrs
   .bss    : { *.o(.bss*) }              > globals = 0
   .rodata : { *.o(.rodata*) }           > globals
   .sdata  : { *.o(.sdata*) }            > globals
   .data   : { *.o(.data*) }             > globals
+  .captable : { *.o(.captable*) }       > globals
+  __cap_relocs : { *.o(__cap_relocs*) } > globals
+  .eh_frame_hdr : ONLY_IF_RW { KEEP (*(.eh_frame_hdr))
+                                     *(.eh_frame_hdr.*) } > globals
   .eh_frame : ONLY_IF_RW { KEEP (*(.eh_frame)) *(.eh_frame.*) } > globals
-  __heapBase = ALIGN(4);
 }

@@ -10,8 +10,8 @@ all:
 	$(BLC) -fno-cpr-anal $(BLC_FLAGS) -i$(PEBBLES_ROOT)/src $(BLC_INC) \
     -hidir $(BUILD_DIR) -odir $(BUILD_DIR) Main.hs -o Main
 	./Main
-	cp *.mif $(PEBBLES_ROOT)/soc/SIMTight/de10-pro
-	cp *.hex $(PEBBLES_ROOT)/soc/SIMTight/sim
+	@cp *.mif $(PEBBLES_ROOT)/soc/SIMTight/de10-pro 2> /dev/null || true
+	@cp *.hex $(PEBBLES_ROOT)/soc/SIMTight/sim 2> /dev/null || true
 
 clean:
 	rm -rf $(BUILD_DIR)

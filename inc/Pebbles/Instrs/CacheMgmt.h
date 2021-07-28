@@ -5,7 +5,7 @@
 #include <Pebbles/Instrs/Fence.h>
 
 // Cache line flush
-INLINE void pebblesCacheFlushLine(void* addr)
+INLINE void pebblesCacheFlushLine(uint32_t addr)
 {
   // Custom instruction
   // Opcode: 0000000 rs2 rs1 000 rd 0001000, with rd=0, rs1=x10, rs2=0
@@ -21,7 +21,7 @@ INLINE void pebblesCacheFlushFull()
   uint32_t numLines = 1 << SBDCacheLogLines;
   for (uint32_t i = 0; i < numLines; i++) {
     uint32_t addr = i * DRAMBeatBytes;
-    pebblesCacheFlushLine((void*) addr);
+    pebblesCacheFlushLine(addr);
   }
   // Issue a fence to ensure flush is complete
   pebblesFence();

@@ -108,6 +108,15 @@ makeScalarCore config inputs = mdo
   -- Divider
   divUnit <- makeSeqDivUnit
 
+  -- Memory requests from core
+  (memReqSink, capMemReqSink) <-
+      if config.scalarCoreEnableCHERI
+      then do
+        capMemReqSink <- makeCapMemReqSink (inputs.scalarMemUnit.memReqs)
+        let memReqSink = mapSink toCapMemReq capMemReqSink
+        return (memReqSink, capMemReqSink)
+      else return (inputs.scalarMemUnit.memReqs, nullSink)
+
   -- Pipeline resume requests from memory
   memResumeReqs <- makeMemRespToResumeReq
     (config.scalarCoreEnableCHERI)
@@ -122,6 +131,7 @@ makeScalarCore config inputs = mdo
     , capRegInitFile = config.scalarCoreCapRegInitFile
     , decodeStage = concat
         [ decodeI
+        , if config.scalarCoreEnableCHERI then [] else decodeI_NoCap
         , decodeM
         , decodeCacheMgmt
         , if config.scalarCoreEnableCHERI then decodeCHERI else []
@@ -129,12 +139,12 @@ makeScalarCore config inputs = mdo
     , executeStage = \s -> return
         ExecuteStage {
           execute = do
-            executeI Nothing csrUnit (inputs.scalarMemUnit) s
+            executeI Nothing csrUnit memReqSink s
             executeM mulUnit divUnit s
-            executeCacheMgmt (inputs.scalarMemUnit) s
+            executeCacheMgmt memReqSink s
             if config.scalarCoreEnableCHERI
-              then executeCHERI csrUnit (inputs.scalarMemUnit) s
-              else return ()
+              then executeCHERI csrUnit capMemReqSink s
+              else executeI_NoCap csrUnit memReqSink s
         , resumeReqs = mergeTree
             [ memResumeReqs
             , mulUnit.mulResps
