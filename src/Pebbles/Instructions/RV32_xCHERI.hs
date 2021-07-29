@@ -94,10 +94,9 @@ executeCHERI csrUnit memReqs s = do
     s.result <==
       select
         [ s.opcode `is` [CGetPerm] --> s.capA.getPerms.zeroExtend
-        -- TODO: missing in cheri-cap-lib
-        --, s.opcode `is` [CGetType] -->
-        --    let t = s.capA.getType in
-        --      if s.capA.isSealedWithType then zeroExtend t else signExtend t
+        , s.opcode `is` [CGetType] -->
+            let t = s.capA.getType in
+              if s.capA.isSealedWithType then zeroExtend t else signExtend t
         , s.opcode `is` [CGetBase] --> baseA
         , s.opcode `is` [CGetLen] -->
             let len = s.capA.getLength in
@@ -115,21 +114,6 @@ executeCHERI csrUnit memReqs s = do
   -- Non-compliant; always returns the almighty capability
   when (s.opcode `is` [CSpecialRW]) do
     s.resultCap <== almightyCapVal
-
-  -- Permission modification instructions
-  -- ------------------------------------
-
-  when (s.opcode `is` [CAndPerm]) do
-    -- Exception path
-    if s.capA.isValidCap.inv then
-      trap s cheri_exc_tagViolation
-    else if s.capA.isSealed then
-      trap s cheri_exc_sealViolation
-    else return ()
-
-    -- Result path
-    let newPerms = s.capA.getPerms .&. s.opB.lower
-    s.resultCap <== setPerms (s.capA) newPerms
 
   -- Bounds setting instructions
   -- ---------------------------
@@ -153,23 +137,25 @@ executeCHERI csrUnit memReqs s = do
     -- Result path
     s.resultCap <== newCap.value
 
-  -- Capability tag clearing
-  -- -----------------------
-
-  when (s.opcode `is` [CClearTag]) do
-    s.resultCap <== setValidCap (s.capA) 0
-
   -- Other capability modification instructions
   -- ------------------------------------------
 
-  -- Common exceptions
+  -- Exception paths
   when (s.opcode `is` [CSetFlags, CSetOffset, CSetAddr, CIncOffset]) do
     when (s.capA.isValidCap .&&. s.capA.isSealed) do
       trap s cheri_exc_sealViolation
 
-  when (s.opcode `is` [CSetFlags]) do
-    s.resultCap <== setFlags (s.capA) (s.opB.lower)
+  when (s.opcode `is` [CSealEntry, CAndPerm]) do
+    if s.capA.isValidCap.inv then
+      trap s cheri_exc_tagViolation
+    else if s.capA.isSealed then
+      trap s cheri_exc_sealViolation
+    else if s.opcode `is` [CSealEntry] .&&. permsA.permitExecute.inv then
+      trap s cheri_exc_permitExecuteViolation
+    else
+      return ()
 
+  -- Result paths
   when (s.opcode `is` [CSetOffset, CIncOffset]) do
     let newCap = modifyOffset (s.capA) (s.opBorImm)
                    (s.opcode `is` [CIncOffset])
@@ -179,15 +165,31 @@ executeCHERI csrUnit memReqs s = do
     let newCap = setAddr (s.capA) (s.opB)
     s.resultCap <== newCap.value
 
-  -- Capability subtract & move
-  -- --------------------------
+  when (s.opcode `is` [CMove, CSealEntry, CSetFlags, CClearTag, CAndPerm]) do
+    let newType  = if s.opcode `is` [CSealEntry]
+                     then -2
+                     else s.capA.getType
+    let newValid = if s.opcode `is` [CClearTag]
+                     then 0
+                     else s.capA.isValidCap
+    let newFlags = if s.opcode `is` [CSetFlags]
+                     then s.opB.lower
+                     else s.capA.getFlags
+    let newPerms = if s.opcode `is` [CAndPerm]
+                     then s.capA.getPerms .&. s.opB.lower
+                     else s.capA.getPerms
+    s.resultCap <==
+      ( flip setValidCap newValid
+      $ flip setFlags newFlags
+      $ flip setType newType
+      $ flip setPerms newPerms
+      $ s.capA )
+
+  -- Capability subtraction
+  -- ----------------------
 
   when (s.opcode `is` [CSub]) do
     s.result <== addrA - s.capB.getAddr
-
-  when (s.opcode `is` [CMove, CSealEntry]) do
-    -- TODO: support sentries
-    s.resultCap <== s.capA
 
   -- PCC-related instructions
   -- ------------------------
@@ -197,11 +199,15 @@ executeCHERI csrUnit memReqs s = do
     s.resultCap <== newCap.value
 
   when (s.opcode `is` [CJALR]) do
-    -- TODO: support sentries
+    -- Exception path
+    when (s.capA.isSealed .&&. s.capA.isSentry.inv) do
+      trap s cheri_exc_sealViolation
+
+    -- Result path
     let linkCap = setAddr (s.pcc.val) (s.pc.val + 4)
-    s.resultCap <== linkCap.value
+    s.resultCap <== setType (linkCap.value) (-2) {- Seal as sentry -}
     s.pc <== s.capA.getAddr.upper # (0 :: Bit 1)
-    s.pcc <== s.capA
+    s.pcc <== setType (s.capA) (-1) {- Unseal -}
 
   -- Memory access
   -- -------------
