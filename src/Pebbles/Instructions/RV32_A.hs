@@ -1,5 +1,8 @@
 -- RISC-V atomics extension
-module Pebbles.Instructions.RV32_A where
+module Pebbles.Instructions.RV32_A
+  ( decodeA
+  , executeA
+  ) where
 
 -- Blarney imports
 import Blarney

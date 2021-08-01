@@ -59,7 +59,8 @@ v-files: $(call v-files-for,cpu,I) \
          $(if $(CHERI_EN_COND), , $(call v-files-for,cpu,I/NoCap)) \
          $(if $(CHERI_EN_COND), , $(call v-files-for,simt,I/NoCap)) \
          $(if $(CHERI_EN_COND), , $(call v-files-for,simt,A)) \
-         $(if $(CHERI_EN_COND), $(call v-files-for,cpu,CHERI), )
+         $(if $(CHERI_EN_COND), $(call v-files-for,cpu,CHERI), ) \
+         $(if $(CHERI_EN_COND), $(call v-files-for,simt,CHERI), )
 
 %.code.v: %.elf
 	@$(RV_OBJCOPY) -O verilog --only-section=.text $< $@

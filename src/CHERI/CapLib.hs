@@ -5,6 +5,7 @@ module CHERI.CapLib
   , maskValidBitMeta
   , nullCapVal
   , almightyCapVal
+  , almightyCapMetaVal
   , nullCapMetaVal
   , nullCapMetaInteger
   ) where
@@ -35,6 +36,10 @@ maskValidBitMeta mask meta = (mask .&&. tag) # lower meta
 -- | Direct almighty capability (not via Verilog)
 almightyCapVal :: InternalCap
 almightyCapVal = fromInteger almightyCapInteger
+
+-- | Almighty capability meta-data
+almightyCapMetaVal :: InternalCapMetaData
+almightyCapMetaVal = fst (splitCap almightyCapVal)
 
 -- | Direct null capability (not via Verilog)
 nullCapVal :: InternalCap

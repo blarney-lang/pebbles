@@ -110,7 +110,7 @@ makeScalarCore config inputs = mdo
 
   -- Memory requests from core
   (memReqSink, capMemReqSink) <-
-      if config.scalarCoreEnableCHERI
+    if config.scalarCoreEnableCHERI
       then do
         capMemReqSink <- makeCapMemReqSink (inputs.scalarMemUnit.memReqs)
         let memReqSink = mapSink toCapMemReq capMemReqSink

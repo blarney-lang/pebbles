@@ -1715,7 +1715,8 @@ set_global_assignment -name ACTIVE_SERIAL_CLOCK AS_FREQ_100MHZ
 set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 1
 set_global_assignment -name IP_FILE reset_release.ip
 set_global_assignment -name MIF_FILE boot.mif
-set_global_assignment -name MIF_FILE CapRegFileInit.mif
+set_global_assignment -name MIF_FILE ScalarCapRegFileInit.mif
+set_global_assignment -name MIF_FILE SIMTCapRegFileInit.mif
 set_global_assignment -name QSYS_FILE DE10_Pro_QSYS.qsys
 set_global_assignment -name SDC_FILE DE10_Pro.sdc
 set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_emif_s10_ddr4.ip
@@ -1734,4 +1735,4 @@ set_global_assignment -name IP_FILE ip/DE10_Pro_QSYS/DE10_Pro_QSYS_mm_clockcross
 set_global_assignment -name SEARCH_PATH ../src
 set_global_assignment -name SEARCH_PATH ../../../blarney/Verilog/Altera/
 set_global_assignment -name SEARCH_PATH ../../../src/CHERI/Verilog/
-set_global_assignment -name SEED 20
+set_global_assignment -name SEED 10

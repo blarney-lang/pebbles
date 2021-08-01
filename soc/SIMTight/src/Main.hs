@@ -124,7 +124,7 @@ makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
       , scalarCoreEnableCHERI = EnableCHERI == 1
       , scalarCoreCapRegInitFile =
           if EnableCHERI == 1
-            then Just (capRegInitFile ++ ".mif")
+            then Just (scalarCapRegInitFile ++ ".mif")
             else Nothing
       }
 
@@ -140,6 +140,11 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
       , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , simtCoreInstrMemBase = MemBase
       , simtCoreExecBoundary = True
+      , simtCoreEnableCHERI = EnableCHERI == 1
+      , simtCoreCapRegInitFile =
+          if EnableCHERI == 1
+            then Just (simtCapRegInitFile ++ ".mif")
+            else Nothing
       }
 
 -- SIMT memory subsystem
@@ -234,15 +239,21 @@ makeSIMTBankedSRAMs route =
 -- Initialisation files
 -- ====================
 
-capRegInitFile :: String
-capRegInitFile = "CapRegFileInit"
+scalarCapRegInitFile :: String
+scalarCapRegInitFile = "ScalarCapRegFileInit"
+
+simtCapRegInitFile :: String
+simtCapRegInitFile = "SIMTCapRegFileInit"
 
 writeInitFiles :: IO ()
 writeInitFiles = do
   if EnableCHERI == 1
     then do
-      writeScalarCapRegFileMif (capRegInitFile ++ ".mif")
-      writeScalarCapRegFileHex (capRegInitFile ++ ".hex")
+      let numWarps = 2 ^ SIMTLogWarps
+      writeSIMTCapRegFileMif numWarps (simtCapRegInitFile ++ ".mif")
+      writeSIMTCapRegFileHex numWarps (simtCapRegInitFile ++ ".hex")
+      writeScalarCapRegFileMif (scalarCapRegInitFile ++ ".mif")
+      writeScalarCapRegFileHex (scalarCapRegInitFile ++ ".hex")
     else return ()
 
 -- Main function
