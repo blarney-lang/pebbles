@@ -46,7 +46,7 @@ decodeCHERI =
   , "1111111 01010  rs1<5> 000 rd<5> 1011011" --> CMove
   , "1111111 01011  rs1<5> 000 rd<5> 1011011" --> CClearTag
   , "0000001 scr<5> rs1<5> 000 rd<5> 1011011" --> CSpecialRW
-  , "1111111 10001 rs1<5> 000 rd<5> 1011011"  --> CSealEntry
+  , "1111111 10001  rs1<5> 000 rd<5> 1011011" --> CSealEntry
   , "imm[31:12] rd<5> 0010111"                --> AUIPCC
   , "1111111 01100  rs1<5> 000 rd<5> 1011011" --> CJALR
   , "imm[11:0] rs1<5> ul<1> aw<2> rd<5> 0000011" --> LOAD
@@ -169,9 +169,10 @@ executeCHERI csrUnit memReqs s = do
       return ()
 
   -- Result paths
-  when (s.opcode `is` [CSetOffset, CIncOffset]) do
-    let newCap = modifyOffset (s.capA) (s.opBorImm)
-                   (s.opcode `is` [CIncOffset])
+  when (s.opcode `is` [CSetOffset, CIncOffset, AUIPCC]) do
+    let oldCap = if s.opcode `is` [AUIPCC] then s.pcc.val else s.capA
+    let newCap = modifyOffset oldCap (s.opBorImm)
+                   (s.opcode `is` [CIncOffset, AUIPCC])
     s.resultCap <== newCap.value
 
   when (s.opcode `is` [CSetAddr]) do
@@ -204,12 +205,8 @@ executeCHERI csrUnit memReqs s = do
   when (s.opcode `is` [CSub]) do
     s.result <== addrA - s.capB.getAddr
 
-  -- PCC-related instructions
-  -- ------------------------
-
-  when (s.opcode `is` [AUIPCC]) do
-    let newCap = incOffset (s.pcc.val) (s.opBorImm)
-    s.resultCap <== newCap.value
+  -- Capability jump
+  -- ---------------
 
   when (s.opcode `is` [CJALR]) do
     -- Exception path
