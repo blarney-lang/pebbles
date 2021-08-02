@@ -109,10 +109,11 @@ makeSIMTExecuteStage enCHERI = makeBoundary "SIMTExecuteStage" \ins s -> do
       execute = do
         executeI (Just mulUnit) csrUnit memReqSink s
         executeM mulUnit divUnit s
-        executeA memReqSink s -- TODO: CHERIfy
         if enCHERI
           then executeCHERI csrUnit capMemReqSink s
-          else executeI_NoCap csrUnit memReqSink s
+          else do
+            executeI_NoCap csrUnit memReqSink s
+            executeA memReqSink s
     , resumeReqs = resumeQueue.toStream
     }
 
@@ -170,9 +171,12 @@ makeSIMTCore config mgmtReqs memUnitsVec = mdo
         , decodeStage = concat
             [ decodeI
             , if config.simtCoreEnableCHERI
-                then decodeCHERI else decodeI_NoCap
+                then decodeCHERI
+                else decodeI_NoCap
             , decodeM
-            , decodeA
+            , if config.simtCoreEnableCHERI
+                then decodeCHERI_A
+                else decodeA
             , decodeSIMT
             ]
         , executeStage =

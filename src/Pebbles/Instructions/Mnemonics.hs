@@ -66,8 +66,6 @@ data Mnemonic =
   | CMove
   | CJALR
   | CSpecialRW
-  | CLoad
-  | CStore
   | CSealEntry
   | AUIPCC
 

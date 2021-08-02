@@ -1,10 +1,10 @@
 # See LICENSE for license details.
 
 #*****************************************************************************
-# amominu_w.S
+# camomax_w.S
 #-----------------------------------------------------------------------------
 #
-# Test amominu.w instruction.
+# Test camomax.w instruction.
 #
 
 #include "riscv_test.h"
@@ -33,17 +33,20 @@ RVTEST_CODE_BEGIN
 
 #endif
 
-  TEST_CASE(2, a4, 1, \
-    li a0, ADDR+4; \
-    li a3, 1; \
-    sw a3, 0(a0); \
-    li a3, -3; \
-    amominu.w a4, a3, 0(a0); \
+  # Read almighty cap and set address
+  cspecialrw c1, ddc, c0
+  li x2, ADDR
+  csetaddr c1, c1, x2
+
+  TEST_CASE(2, x4, 1, \
+    li x2, 1; \
+    csw x2, 0(c1); \
+    li x3, -3; \
+    camomax.w x4, x3, 0(c1); \
   )
 
-  TEST_CASE(3, a4, 1, \
-    li a0, ADDR+4; \
-    lw a4, 0(a0); \
+  TEST_CASE(3, x4, 1, \
+    clw x4, 0(c1); \
   )
 
   TEST_PASSFAIL

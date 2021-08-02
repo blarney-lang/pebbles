@@ -60,7 +60,8 @@ v-files: $(call v-files-for,cpu,I) \
          $(if $(CHERI_EN_COND), , $(call v-files-for,simt,I/NoCap)) \
          $(if $(CHERI_EN_COND), , $(call v-files-for,simt,A)) \
          $(if $(CHERI_EN_COND), $(call v-files-for,cpu,CHERI), ) \
-         $(if $(CHERI_EN_COND), $(call v-files-for,simt,CHERI), )
+         $(if $(CHERI_EN_COND), $(call v-files-for,simt,CHERI), ) \
+         $(if $(CHERI_EN_COND), $(call v-files-for,simt,CHERI/A), )
 
 %.code.v: %.elf
 	@$(RV_OBJCOPY) -O verilog --only-section=.text $< $@
@@ -116,25 +117,29 @@ TestSIMTSim: TestSIMT.cpp
     -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
     -o TestSIMTSim TestSIMT.cpp
 
-TESTS = $(if $(CHERI_EN_COND), \
+CPU_TESTS = $(if $(CHERI_EN_COND), \
   I/*.S M/*.S CHERI/*.S, \
   I/*.S I/NoCap/*.S M/*.S)
 
+SIMT_TESTS = $(if $(CHERI_EN_COND), \
+  I/*.S M/*.S CHERI/*.S CHERI/A/*.S, \
+  I/*.S I/NoCap/*.S M/*.S A/*.S)
+
 .PHONY: test-cpu
 test-cpu: v-files TestCPU
-	@./TestCPU $(TESTS)
+	@./TestCPU $(CPU_TESTS)
 
 .PHONY: test-cpu-sim
 test-cpu-sim: v-files TestCPUSim
-	@./TestCPUSim $(TESTS)
+	@./TestCPUSim $(CPU_TESTS)
 
 .PHONY: test-simt
 test-simt: v-files TestSIMT
-	@./TestSIMT I/*.S I/NoCap/*.S M/*.S A/*.S
+	@./TestSIMT $(SIMT_TESTS)
 
 .PHONY: test-simt-sim
 test-simt-sim: v-files TestSIMTSim
-	@./TestSIMTSim I/*.S I/NoCap/*.S M/*.S A/*.S
+	@./TestSIMTSim $(SIMT_TESTS)
 
 # Raise error if QUARTUS_ROOTDIR not set
 .PHONY: checkenv
@@ -149,4 +154,5 @@ clean:
     M/*.o M/*.elf M/*.v \
     A/*.o A/*.elf A/*.v \
     CHERI/*.o CHERI/*.elf CHERI/*.v \
+    CHERI/A/*.o CHERI/A/*.elf CHERI/A/*.v \
     TestCPU TestCPUSim TestSIMT TestSIMTSim

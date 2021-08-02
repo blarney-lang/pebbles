@@ -42,15 +42,19 @@ decodeCHERI =
   , "0001000 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetBounds
   , "imm[11:0]      rs1<5> 010 rd<5> 1011011" --> CSetBounds
   , "0001001 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetBoundsExact
-  , "imm[31:12] rd<5> 0010111" --> AUIPCC
-  , "1111111 01100  rs1<5> 000 rd<5> 1011011" --> CJALR
   , "0010100 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSub
   , "1111111 01010  rs1<5> 000 rd<5> 1011011" --> CMove
   , "1111111 01011  rs1<5> 000 rd<5> 1011011" --> CClearTag
   , "0000001 scr<5> rs1<5> 000 rd<5> 1011011" --> CSpecialRW
-  , "imm[11:0] rs1<5> ul<1> aw<2> rd<5> 0000011" --> CLoad
-  , "imm[11:5] rs2<5> rs1<5> 0 aw<2> imm[4:0] 0100011" --> CStore
-  , "1111111 10001 rs1<5> 000 rd<5> 1011011" --> CSealEntry
+  , "1111111 10001 rs1<5> 000 rd<5> 1011011"  --> CSealEntry
+  , "imm[31:12] rd<5> 0010111"                --> AUIPCC
+  , "1111111 01100  rs1<5> 000 rd<5> 1011011" --> CJALR
+  , "imm[11:0] rs1<5> ul<1> aw<2> rd<5> 0000011" --> LOAD
+  , "imm[11:5] rs2<5> rs1<5> 0 aw<2> imm[4:0] 0100011" --> STORE
+  ]
+
+decodeCHERI_A =
+  [ "imm<0> amo<5> aq<1> rl<1> rs2<5> rs1<5> 010 rd<5> 0101111" --> AMO
   ]
 
 -- Field selectors
@@ -61,6 +65,15 @@ getAccessWidth = makeFieldSelector decodeCHERI "aw"
 
 getIsUnsignedLoad :: Bit 32 -> Bit 1
 getIsUnsignedLoad = makeFieldSelector decodeCHERI "ul"
+
+getAMO :: Bit 32 -> Bit 5
+getAMO = makeFieldSelector decodeCHERI_A "amo"
+
+getAcquire :: Bit 32 -> Bit 1
+getAcquire = makeFieldSelector decodeCHERI_A "aq"
+
+getRelease :: Bit 32 -> Bit 1
+getRelease = makeFieldSelector decodeCHERI_A "rl"
 
 -- Execute stage
 -- =============
@@ -212,7 +225,7 @@ executeCHERI csrUnit memReqs s = do
   -- Memory access
   -- -------------
 
-  when (s.opcode `is` [CLoad, CStore]) do
+  when (s.opcode `is` [LOAD, STORE, AMO]) do
     if memReqs.canPut.inv
       then s.retry
       else do
@@ -230,7 +243,7 @@ executeCHERI csrUnit memReqs s = do
               (slice @2 @0 memAddr .&. alignmentMask) .==. 0
         -- Permission to load/store?
         let havePermission =
-              if s.opcode `is` [CLoad]
+              if s.opcode `is` [LOAD]
                 then permsA.permitLoad
                 else permsA.permitStore
         -- Convert capability to in-memory format for storing
@@ -241,25 +254,25 @@ executeCHERI csrUnit memReqs s = do
                   --> cheri_exc_tagViolation
               , s.capA.isSealed
                   --> cheri_exc_sealViolation
-              , s.opcode `is` [CLoad]
+              , s.opcode `is` [LOAD]
                  .&&. permsA.permitLoad.inv
                   --> cheri_exc_permitLoadViolation
-              , s.opcode `is` [CStore]
+              , s.opcode `is` [STORE]
                  .&&. permsA.permitStore.inv
                   --> cheri_exc_permitStoreViolation
-              , s.opcode `is` [CStore]
+              , s.opcode `is` [STORE]
                  .&&. isCapAccess
                  .&&. permsA.permitStoreCap.inv
                  .&&. s.capB.isValidCap
                   --> cheri_exc_permitStoreCapViolation
-              , s.opcode `is` [CStore]
+              , s.opcode `is` [STORE]
                  .&&. isCapAccess
                  .&&. permsA.permitStoreLocalCap.inv
                  .&&. s.capB.isValidCap
                  .&&. permsB.global
                   --> cheri_exc_permitStoreLocalCapViolation
               , inv alignmentOk
-                  --> if s.opcode `is` [CLoad]
+                  --> if s.opcode `is` [LOAD]
                         then exc_loadAddrMisaligned
                         else exc_storeAMOAddrMisaligned
               , memAddr .<. baseA
@@ -274,7 +287,8 @@ executeCHERI csrUnit memReqs s = do
           else do
             -- Currently the memory subsystem doesn't issue store responses
             -- so we make sure to only suspend on a load
-            let hasResp = s.opcode `is` [CLoad]
+            let hasResp = s.opcode `is` [LOAD]
+                     .||. s.opcode `is` [AMO] .&&. s.resultIndex .!=. 0
             info <- whenR hasResp (s.suspend)
             -- Send request to memory unit
             put memReqs
@@ -289,8 +303,18 @@ executeCHERI csrUnit memReqs s = do
                       -- Capability accesses are serialised
                       if isCapAccess then 2 else accessWidth
                   , memReqOp =
-                      if s.opcode `is` [CLoad] then memLoadOp else memStoreOp
-                  , memReqAMOInfo = dontCare
+                      select
+                        [ s.opcode `is` [LOAD]  --> memLoadOp
+                        , s.opcode `is` [STORE] --> memStoreOp
+                        , s.opcode `is` [AMO]   --> memAtomicOp
+                        ]
+                  , memReqAMOInfo =
+                      AMOInfo {
+                        amoOp = s.instr.getAMO
+                      , amoAcquire = s.instr.getAcquire
+                      , amoRelease = s.instr.getRelease
+                      , amoNeedsResp = hasResp
+                      }
                   , memReqAddr = memAddr
                   , memReqData =
                       if isCapAccess then lower memCap else s.opB
