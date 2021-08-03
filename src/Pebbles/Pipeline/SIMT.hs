@@ -622,6 +622,7 @@ makeSIMTPipeline c inputs =
             , trap = \code -> do
                 exc <== true
                 display "SIMT exception occurred: " code
+                        " pc=0x" (formatHex 8 (state5.val.simtPC.toPC))
             }
 
           always do

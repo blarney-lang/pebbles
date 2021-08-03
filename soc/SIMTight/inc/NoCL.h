@@ -4,6 +4,7 @@
 #define _NOCL_H_
 
 #include <Config.h>
+#include <MemoryMap.h>
 #include <Pebbles/Common.h>
 #include <Pebbles/UART/IO.h>
 #include <Pebbles/Instrs/Fence.h>
@@ -16,11 +17,12 @@
 #include <Pebbles/CSRs/SIMTDevice.h>
 #include <Pebbles/CSRs/CycleCount.h>
 
+#if EnableCHERI
+#include <cheriintrin.h>
+#endif
+
 // Arrays should be aligned to support coalescing unit
 #define nocl_aligned __attribute__ ((aligned (SIMTLanes * 4)))
-
-// Base address of shared local memory
-extern char __localBase;
 
 // Utility functions
 // =================
@@ -96,6 +98,7 @@ template <typename T> struct Array3D {
 
 // For shared local memory allocation
 // Memory is allocated/released using a stack
+// TODO: constraint bounds when CHERI enabled
 struct SharedLocalMem {
   // This points to the top of the stack (which grows upwards)
   char* top;
@@ -181,7 +184,13 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   pebblesSIMTPush();
 
   // Get pointer to kernel closure
-  K* kernelPtr = (K*) pebblesKernelClosureAddr();
+  #if EnableCHERI
+    void* almighty = cheri_ddc_get();
+    K* kernelPtr = (K*) cheri_address_set(almighty,
+                          pebblesKernelClosureAddr());
+  #else
+    K* kernelPtr = (K*) pebblesKernelClosureAddr();
+  #endif
   K k = *kernelPtr;
 
   // Block dimensions are all powers of two
@@ -208,7 +217,15 @@ template <typename K> __attribute__ ((noinline)) void _noclSIMTMain_() {
   // Invoke kernel
   while (k.blockIdx.y < k.gridDim.y) {
     while (k.blockIdx.x < k.gridDim.x) {
-      k.shared.top = &__localBase + localBytesPerBlock * blockIdxWithinSM;
+      uint32_t localBase = LOCAL_MEM_BASE +
+                 localBytesPerBlock * blockIdxWithinSM;
+      #if EnableCHERI
+        // TODO: constrain bounds
+        void* almighty = cheri_ddc_get();
+        k.shared.top = (char*) cheri_address_set(almighty, localBase);
+      #else
+        k.shared.top = (char*) localBase;
+      #endif
       k.kernel();
       pebblesSIMTConverge();
       pebblesSIMTLocalBarrier();
@@ -235,7 +252,14 @@ template <typename K> __attribute__ ((noinline))
              SIMTLogBytesPerStack;
     top -= 8;
     // Set stack pointer
-    asm volatile("mv sp, %0\n" : : "r"(top));
+    #if EnableCHERI
+      // TODO: constrain bounds
+      asm volatile("cspecialr csp, ddc\n"
+                   "csetaddr csp, csp, %0\n"
+                   : : "r"(top));
+    #else
+      asm volatile("mv sp, %0\n" : : "r"(top));
+    #endif
     // Invoke main function
     _noclSIMTMain_<K>();
   }
@@ -269,7 +293,11 @@ template <typename K> __attribute__ ((noinline))
     //  "NoCL: blocks-per-SM does not divide evenly into grid width");
 
     // Set address of kernel closure
-    uintptr_t kernelAddr = (uintptr_t) k;
+    #if EnableCHERI
+      uint32_t kernelAddr = cheri_address_get(k);
+    #else
+      uint32_t kernelAddr = (uint32_t) k;
+    #endif
     while (!pebblesSIMTCanPut()) {}
     pebblesSIMTSetKernel(kernelAddr);
 
@@ -277,7 +305,12 @@ template <typename K> __attribute__ ((noinline))
     pebblesCacheFlushFull();
 
     // Start kernel on SIMT core
-    uintptr_t entryAddr = (uintptr_t) _noclSIMTEntry_<K>;
+    #if EnableCHERI
+      void (*entryFun)() = _noclSIMTEntry_<K>;
+      uint32_t entryAddr = cheri_address_get(entryFun);
+    #else
+      uint32_t entryAddr = (uint32_t) _noclSIMTEntry_<K>;
+    #endif
     while (!pebblesSIMTCanPut()) {}
     pebblesSIMTStartKernel(entryAddr);
 

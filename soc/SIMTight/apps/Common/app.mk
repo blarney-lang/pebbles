@@ -20,7 +20,7 @@ else
 endif
 
 ifeq ($(USE_CLANG), 1)
-CFLAGS     = -fuse-ld=lld
+CFLAGS     = -fuse-ld=lld -g
 RV_CC      = riscv64-unknown-freebsd-clang++
 RV_LD      = riscv64-unknown-freebsd-ld.lld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
