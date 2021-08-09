@@ -19,13 +19,13 @@ two pipelines:
 
 ## SIMTight SoC
 
-SIMTight is an FPGA-optimised GPGPU being developed on the
-[CAPcelerate
+SIMTight is a prototype GPGPU being developed on the [CAPcelerate
 project](https://gow.epsrc.ukri.org/NGBOViewGrant.aspx?GrantRef=EP/V000381/1)
-to explore the impact of [CHERI](https://cheri-cpu.org) on SIMT
-(Single Instruction Multiple Threads) style accelerators popularised
-by NVIDIA and AMD.  The SoC consists of a scalar CPU and a 32-lane
-64-warp GPGPU sharing DRAM, both supporting the CHERI-RISC-V ISA:
+to explore the impact of [CHERI capabilities](http://cheri-cpu.org) on
+SIMT-style accelerators popularised by NVIDIA and AMD.  The SoC
+consists of a scalar CPU and a 32-lane 64-warp GPGPU sharing DRAM,
+both supporting the CHERI-RISC-V ISA, though CHERI support is entirely
+optional.
 
 <img src="soc/SIMTight/doc/SoC.svg" width="450">
 
