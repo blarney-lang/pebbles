@@ -47,6 +47,12 @@ NOTE("Enable SIMT stat counters")
 NOTE("Size of SRAM multicast id in coalescing unit")
 #define SIMTMcastIdSize 4
 
+NOTE("Use full-throughput Intel divider (rather than sequential divider)")
+#define SIMTUseIntelDivider 0
+
+NOTE("Latency of full-throughput Intel divider")
+#define SIMTIntelDividerLatency 12
+
 NOTE("CPU configuration")
 NOTE("=================")
 
@@ -81,7 +87,7 @@ NOTE("CHERI support")
 NOTE("=============")
 
 NOTE("Is CHERI enabled? (If so, see UseClang parameter)")
-#define EnableCHERI 1
+#define EnableCHERI 0
 
 NOTE("Compiler")
 NOTE("========")

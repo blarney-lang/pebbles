@@ -38,6 +38,7 @@ download-sof: checkenv
 clean:
 	rm -rf tmp-clearbox synth_dumps qdb output_files
 	rm -rf DE10_Pro_QSYS reset_release
+	rm -rf ip/IntelDivider
 	rm -f DE10_Pro.qws *.rpt *.csv *.mif
 	ls ip/DE10_Pro_QSYS/ | grep -v -E '\.ip$$' \
     | xargs -i rm -rf ip/DE10_Pro_QSYS/{}

@@ -1736,3 +1736,4 @@ set_global_assignment -name SEARCH_PATH ../src
 set_global_assignment -name SEARCH_PATH ../../../blarney/Verilog/Altera/
 set_global_assignment -name SEARCH_PATH ../../../src/CHERI/Verilog/
 set_global_assignment -name SEED 10
+set_global_assignment -name IP_FILE ip/IntelDivider.ip

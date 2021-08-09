@@ -61,61 +61,70 @@ data SIMTExecuteIns =
   } deriving (Generic, Interface)
 
 -- | Execute stage for a SIMT lane (synthesis boundary)
-makeSIMTExecuteStage :: Bool -> SIMTExecuteIns -> State -> Module ExecuteStage
-makeSIMTExecuteStage enCHERI = makeBoundary "SIMTExecuteStage" \ins s -> do
-  -- Multiplier per vector lane
-  mulUnit <- makeFullMulUnit
+makeSIMTExecuteStage ::
+     Bool
+     -- ^ Enable CHERI?
+  -> Maybe Int
+     -- ^ Use intel divider? (If so, what is its latency?)
+  -> SIMTExecuteIns -> State -> Module ExecuteStage
+makeSIMTExecuteStage enCHERI useIntelDiv =
+  makeBoundary "SIMTExecuteStage" \ins s -> do
+    -- Multiplier per vector lane
+    mulUnit <- makeFullMulUnit
 
-  -- Divider per vector lane
-  divUnit <- makeSeqDivUnit
+    -- Divider per vector lane
+    divUnit <-
+      case useIntelDiv of
+        Nothing -> makeSeqDivUnit
+        Just latency -> makeIntelDivUnit latency
 
-  -- SIMT warp control CSRs
-  csr_WarpCmd <- makeCSR_WarpCmd (ins.execLaneId) (ins.execWarpCmd)
-  csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
+    -- SIMT warp control CSRs
+    csr_WarpCmd <- makeCSR_WarpCmd (ins.execLaneId) (ins.execWarpCmd)
+    csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
 
-  -- CSR unit
-  let hartId = zeroExtend (ins.execWarpId # ins.execLaneId)
-  csrUnit <- makeCSRUnit $
-       csrs_Sim
-    ++ [csr_HartId hartId]
-    ++ [csr_WarpCmd]
-    ++ [csr_WarpGetKernel]
+    -- CSR unit
+    let hartId = zeroExtend (ins.execWarpId # ins.execLaneId)
+    csrUnit <- makeCSRUnit $
+         csrs_Sim
+      ++ [csr_HartId hartId]
+      ++ [csr_WarpCmd]
+      ++ [csr_WarpGetKernel]
  
-  -- Memory requests from execute stage
-  (memReqSink, capMemReqSink) <-
-    if enCHERI
-      then do
-        capMemReqSink <- makeCapMemReqSink (ins.execMemUnit.memReqs)
-        let memReqSink = mapSink toCapMemReq capMemReqSink
-        return (memReqSink, capMemReqSink)
-      else return (ins.execMemUnit.memReqs, nullSink)
+    -- Memory requests from execute stage
+    (memReqSink, capMemReqSink) <-
+      if enCHERI
+        then do
+          capMemReqSink <- makeCapMemReqSink (ins.execMemUnit.memReqs)
+          let memReqSink = mapSink toCapMemReq capMemReqSink
+          return (memReqSink, capMemReqSink)
+        else return (ins.execMemUnit.memReqs, nullSink)
 
-  -- Pipeline resume requests from memory
-  memResumeReqs <- makeMemRespToResumeReq
-    enCHERI
-    (ins.execMemUnit.memResps)
+    -- Pipeline resume requests from memory
+    memResumeReqs <- makeMemRespToResumeReq
+      enCHERI
+      (ins.execMemUnit.memResps)
 
-  -- Merge resume requests
-  let resumeReqStream =
-        memResumeReqs `mergeTwo`
-          mergeTwo (mulUnit.mulResps) (divUnit.divResps)
+    -- Merge resume requests
+    let resumeReqStream =
+          memResumeReqs `mergeTwo`
+            mergeTwo (mulUnit.mulResps) (divUnit.divResps)
 
-  -- Resume queue
-  resumeQueue <- makePipelineQueue 1
-  makeConnection resumeReqStream (resumeQueue.toSink)
+    -- Resume queue
+    resumeQueue <- makePipelineQueue 1
+    makeConnection resumeReqStream (resumeQueue.toSink)
 
-  return
-    ExecuteStage {
-      execute = do
-        executeI (Just mulUnit) csrUnit memReqSink s
-        executeM mulUnit divUnit s
-        if enCHERI
-          then executeCHERI csrUnit capMemReqSink s
-          else do
-            executeI_NoCap csrUnit memReqSink s
-            executeA memReqSink s
-    , resumeReqs = resumeQueue.toStream
-    }
+    return
+      ExecuteStage {
+        execute = do
+          executeI (Just mulUnit) csrUnit memReqSink s
+          executeM mulUnit divUnit s
+          if enCHERI
+            then executeCHERI csrUnit capMemReqSink s
+            else do
+              executeI_NoCap csrUnit memReqSink s
+              executeA memReqSink s
+      , resumeReqs = resumeQueue.toStream
+      }
 
 -- Core
 -- ====
@@ -135,6 +144,8 @@ data SIMTCoreConfig =
     -- ^ Enable CHERI extensions?
   , simtCoreCapRegInitFile :: Maybe String
     -- ^ File containing initial capability register file (meta-data only)
+  , simtCoreUseIntelDivider :: Maybe Int
+    -- ^ Use fast Intel divider? (If so, what latency? If not, slow seq divider used)
   }
 
 -- | RV32IM SIMT core
@@ -182,6 +193,7 @@ makeSIMTCore config mgmtReqs memUnitsVec = mdo
         , executeStage =
             [ makeSIMTExecuteStage
                 (config.simtCoreEnableCHERI)
+                (config.simtCoreUseIntelDivider)
                 SIMTExecuteIns {
                   execLaneId = fromInteger i
                 , execWarpId = pipelineOuts.simtCurrentWarpId.truncate

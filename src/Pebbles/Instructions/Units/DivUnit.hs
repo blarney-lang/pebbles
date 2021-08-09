@@ -3,34 +3,41 @@ module Pebbles.Instructions.Units.DivUnit where
 -- Blarney imports
 import Blarney
 import Blarney.Stmt
+import Blarney.Queue
 import Blarney.Option
 import Blarney.SourceSink
+import Blarney.Core.BV
 
 -- Pebbles imports
+import Pebbles.Util.List
+import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 
--- Request to divider unit
+-- | Request to divider unit
 data DivReq =
   DivReq {
-    -- Instruction info from pipeline
     divReqInfo :: InstrInfo
-    -- Numerator and denominator
+    -- ^ Instruction info from pipeline
   , divReqNum :: Bit 32
   , divReqDenom :: Bit 32
-    -- Signed or unsigned division?
+    -- ^ Numerator and denominator
   , divReqIsSigned :: Bit 1
-    -- Do we want the quotient or remainder?
+    -- ^ Signed or unsigned division?
   , divReqGetRemainder :: Bit 1
+    -- ^ Do we want the quotient or remainder?
   } deriving (Generic, Bits)
 
--- Divider unit interface
+-- | Divider unit interface
 data DivUnit =
   DivUnit {
     divReqs :: Sink DivReq
   , divResps :: Source ResumeReq
   }
 
--- Divider unit (sequential state machine version)
+-- Sequential divider
+-- ==================
+
+-- | Divider unit (sequential state machine version)
 makeSeqDivUnit :: Module DivUnit
 makeSeqDivUnit = do
   -- Numerator, denominator, quotient, and remainder
@@ -132,3 +139,97 @@ makeSeqDivUnit = do
         , consume = do done <== false
         }
     }
+
+-- Full-throughput divider (using Intel IP)
+-- ========================================
+
+-- | Divider unit (full throughput using Intel IP)
+makeIntelDivUnit :: Int -> Module DivUnit
+makeIntelDivUnit latency
+    -- Check that latency is small enough to allow result queue to fit in MLABs
+  | latency >= 32 = error "makeIntelDivUnit: latency too large"
+  | otherwise = do
+
+      -- Result and request info queues
+      resultQueue :: Queue (Bit 32) <- makeSizedQueue 5
+      infoQueue :: Queue InstrInfo <- makeSizedQueue 5
+
+      -- Track size of the infoQueue
+      inflightCount :: Counter 6 <- makeCounter 32
+
+      -- Wires (numerator, denominator, want remainder)
+      numWire :: Wire (Bit 33) <- makeWire dontCare
+      denomWire :: Wire (Bit 33) <- makeWire dontCare
+      remWire :: Wire (Bit 1) <- makeWire dontCare
+
+      always do
+        -- Output of pipelined divider megafunction
+        let (quot, rem) = intelDivMegaFun (numWire.val, denomWire.val)
+        -- Wait 'latency' cycles for result to be ready
+        let (ready, wantRem, divByZero) =
+              iterateN latency
+                (delay (false, false, false))
+                (remWire.active, remWire.val, denomWire.val .==. 0)
+        -- Fill result queue
+        when ready do
+          let result =
+                if wantRem
+                  then rem
+                  else divByZero ? (ones, quot)
+          -- Result queue must have space
+          dynamicAssert (resultQueue.notFull) "DivUnit: result queue overflow"
+          -- Enqueue result
+          enq resultQueue (truncate result)
+
+      return
+        DivUnit {
+          divReqs =
+            Sink {
+              canPut = inflightCount.isFull.inv
+            , put = \req -> do
+                incrBy inflightCount 1
+                enq infoQueue (req.divReqInfo)
+                -- Extend inputs to 33 bits
+                let numExt = req.divReqIsSigned ?
+                               (req.divReqNum.upper, false)
+                let denomExt = req.divReqIsSigned ?
+                                 (req.divReqDenom.upper, false)
+                numWire <== numExt # req.divReqNum
+                denomWire <== denomExt # req.divReqDenom
+                remWire <== req.divReqGetRemainder
+
+            }
+        , divResps =
+            Source {
+              canPeek = resultQueue.canDeq .&&. infoQueue.canDeq
+            , peek =
+                ResumeReq {
+                  resumeReqInfo = infoQueue.first
+                , resumeReqData = resultQueue.first
+                , resumeReqCap = none
+                }
+            , consume = do
+                resultQueue.deq
+                infoQueue.deq
+                decrBy inflightCount 1
+            }
+        }
+
+-- | Intel pipelined divider megafunction
+intelDivMegaFun :: (Bit 33, Bit 33) -> (Bit 33, Bit 33)
+intelDivMegaFun (num, denom) = (FromBV quot, FromBV rem)
+  where
+    custom =
+      Custom {
+        customName      = "IntelDivider"
+      , customInputs    = [("numer", 33), ("denom", 33)]
+      , customOutputs   = [("quotient", 33), ("remain", 33)]
+      , customParams    = []
+      , customIsClocked = True
+      , customResetable = False
+      , customNetlist   = Nothing
+      }
+
+    [quot, rem] =
+      makePrim custom [toBV num, toBV denom]
+                      [Just "quotient", Just "remain"]

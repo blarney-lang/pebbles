@@ -9,6 +9,7 @@ sim: Main.cpp ../src/SIMTight.v boot.hex
     -Wno-UNSIGNED -y $(PEBBLES_ROOT)/soc/SIMTight/src/ \
     -y $(BLARNEY_ROOT)/Verilog \
     -y $(PEBBLES_ROOT)/src/CHERI/Verilog \
+    -y $(PEBBLES_ROOT)/src/Pebbles/Instructions/Units/DivUnit \
     --x-assign unique --x-initial unique \
     -CFLAGS "$(SIM_CFLAGS)"
 	make -C obj_dir -j -f VSIMTight.mk sim

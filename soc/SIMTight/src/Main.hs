@@ -145,6 +145,10 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
           if EnableCHERI == 1
             then Just (simtCapRegInitFile ++ ".mif")
             else Nothing
+      , simtCoreUseIntelDivider =
+          if SIMTUseIntelDivider == 1
+            then Just SIMTIntelDividerLatency
+            else Nothing
       }
 
 -- SIMT memory subsystem
