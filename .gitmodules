@@ -4,5 +4,5 @@
 	branch = master
 [submodule "src/CHERI/cheri-cap-lib"]
 	path = src/CHERI/cheri-cap-lib
-	url = git@github.com:CTSRD-CHERI/cheri-cap-lib.git
+	url = https://github.com/CTSRD-CHERI/cheri-cap-lib
 	branch = mn416-blarney

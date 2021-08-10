@@ -1,12 +1,9 @@
-CapLibBase.hs: cheri-cap-lib/Makefile
+CapLibBase.hs:
 	make -C cheri-cap-lib
 	cd cheri-cap-lib && \
     CHERICapWrapBlarney.py CHERI.CapLibBase > ../CapLibBase.hs
 	mkdir -p Verilog
 	cp cheri-cap-lib/*.v Verilog
-
-cheri-cap-lib/Makefile:
-	git submodule update --init --recursive
 
 .PHONY: clean
 clean:

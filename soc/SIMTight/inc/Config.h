@@ -1,1 +1,0 @@
-../../../inc/SampleConfig.h
