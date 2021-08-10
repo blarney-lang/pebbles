@@ -121,6 +121,11 @@ makeCPUCore = makeBoundary "CPUCore" (makeScalarCore config)
         scalarCoreInstrMemInitFile = Just "boot.mif"
       , scalarCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , scalarCoreInitialPC = MemBase
+      , scalarCoreEnableCHERI = EnableCHERI == 1
+      , scalarCoreCapRegInitFile =
+          if EnableCHERI == 1
+            then Just (scalarCapRegInitFile ++ ".mif")
+            else Nothing
       }
 
 -- CPU data cache (synthesis boundary)
@@ -135,6 +140,15 @@ makeSIMTAccelerator = makeBoundary "SIMTAccelerator" (makeSIMTCore config)
       , simtCoreInstrMemLogNumInstrs = CPUInstrMemLogWords
       , simtCoreInstrMemBase = MemBase
       , simtCoreExecBoundary = True
+      , simtCoreEnableCHERI = EnableCHERI == 1
+      , simtCoreCapRegInitFile =
+          if EnableCHERI == 1
+            then Just (simtCapRegInitFile ++ ".mif")
+            else Nothing
+      , simtCoreUseIntelDivider =
+          if SIMTUseIntelDivider == 1
+            then Just SIMTIntelDividerLatency
+            else Nothing
       }
 
 -- SIMT memory subsystem
@@ -226,10 +240,31 @@ makeSIMTBankedSRAMs route =
   makeBoundary "SIMTBankedSRAMs"
     (makeBankedSRAMs @(BankInfo SIMTMemReqId) route)
 
+-- Initialisation files
+-- ====================
+
+scalarCapRegInitFile :: String
+scalarCapRegInitFile = "ScalarCapRegFileInit"
+
+simtCapRegInitFile :: String
+simtCapRegInitFile = "SIMTCapRegFileInit"
+
+writeInitFiles :: IO ()
+writeInitFiles = do
+  if EnableCHERI == 1
+    then do
+      let numWarps = 2 ^ SIMTLogWarps
+      writeSIMTCapRegFileMif numWarps (simtCapRegInitFile ++ ".mif")
+      writeSIMTCapRegFileHex numWarps (simtCapRegInitFile ++ ".hex")
+      writeScalarCapRegFileMif (scalarCapRegInitFile ++ ".mif")
+      writeScalarCapRegFileHex (scalarCapRegInitFile ++ ".hex")
+    else return ()
+
 -- Main function
 -- =============
 
 -- Generate code
 main :: IO ()
 main = do
+  writeInitFiles
   writeVerilogModule makeTop "SIMTight" "./"

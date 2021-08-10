@@ -21,11 +21,18 @@ import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
+import Pebbles.Instructions.RV32_xCHERI
 import Pebbles.Instructions.Units.MulUnit
 import Pebbles.Instructions.Units.DivUnit
 import Pebbles.Instructions.Custom.CacheManagement
 import Pebbles.Memory.Interface
 import Pebbles.Memory.DRAM.Interface
+
+-- CHERI imports
+import CHERI.CapLib
+
+-- Haskell imports
+import Numeric (showHex)
 
 -- | Configuration parameters
 data ScalarCoreConfig =
@@ -36,6 +43,10 @@ data ScalarCoreConfig =
     -- ^ Size of tightly coupled instruction memory
   , scalarCoreInitialPC :: Integer
     -- ^ Initial PC
+  , scalarCoreEnableCHERI :: Bool
+    -- ^ Enable CHERI extensions
+  , scalarCoreCapRegInitFile :: Maybe String
+    -- ^ File containing initial capability register file (meta-data only)
   }
 
 -- | Scalar core inputs
@@ -97,26 +108,52 @@ makeScalarCore config inputs = mdo
   -- Divider
   divUnit <- makeSeqDivUnit
 
+  -- Memory requests from core
+  (memReqSink, capMemReqSink) <-
+    if config.scalarCoreEnableCHERI
+      then do
+        capMemReqSink <- makeCapMemReqSink (inputs.scalarMemUnit.memReqs)
+        let memReqSink = mapSink toCapMemReq capMemReqSink
+        return (memReqSink, capMemReqSink)
+      else return (inputs.scalarMemUnit.memReqs, nullSink)
+
+  -- Pipeline resume requests from memory
+  memResumeReqs <- makeMemRespToResumeReq
+    (config.scalarCoreEnableCHERI)
+    (inputs.scalarMemUnit.memResps)
+
   -- Processor pipeline
   pipeline <- makeScalarPipeline
     ScalarPipelineConfig {
       instrMemInitFile = config.scalarCoreInstrMemInitFile
     , instrMemLogNumInstrs = config.scalarCoreInstrMemLogNumInstrs
     , initialPC = config.scalarCoreInitialPC
-    , decodeStage = decodeI ++ decodeM ++ decodeCacheMgmt
+    , capRegInitFile = config.scalarCoreCapRegInitFile
+    , decodeStage = concat
+        [ decodeI
+        , if config.scalarCoreEnableCHERI then [] else decodeI_NoCap
+        , decodeM
+        , decodeCacheMgmt
+        , if config.scalarCoreEnableCHERI then decodeCHERI else []
+        ]
     , executeStage = \s -> return
         ExecuteStage {
           execute = do
-            executeI Nothing csrUnit (inputs.scalarMemUnit) s
+            executeI Nothing csrUnit memReqSink s
             executeM mulUnit divUnit s
-            executeCacheMgmt (inputs.scalarMemUnit) s
+            executeCacheMgmt memReqSink s
+            if config.scalarCoreEnableCHERI
+              then executeCHERI csrUnit capMemReqSink s
+              else executeI_NoCap csrUnit memReqSink s
         , resumeReqs = mergeTree
-            [ fmap memRespToResumeReq (inputs.scalarMemUnit.memResps)
+            [ memResumeReqs
             , mulUnit.mulResps
             , divUnit.divResps
             ]
         }
     , trapCSRs = trapRegs
+    , checkPCCFunc =
+        if config.scalarCoreEnableCHERI then Just checkPCC else Nothing
     }
 
   return
@@ -124,3 +161,30 @@ makeScalarCore config inputs = mdo
       scalarUartOut = uartOut
     , scalarSIMTReqs = simtReqs
     }
+
+-- Register file initialisation
+-- ============================
+
+-- | Write initial capability reg file (meta-data only, mif format)
+writeScalarCapRegFileMif :: String -> IO ()
+writeScalarCapRegFileMif filename =
+  writeFile filename $ unlines $
+    [ "DEPTH = 32;"
+    , "WIDTH = " ++ show (valueOf @InternalCapMetaDataWidth) ++ ";"
+    , "ADDRESS_RADIX = DEC;"
+    , "DATA_RADIX = HEX;"
+    , "CONTENT"
+    , "BEGIN"
+    ] ++
+    [ show i ++ " : " ++ showHex nullCapMetaInteger ";"
+    | i <- [0..31]
+    ] ++
+    ["END"]
+
+-- | Write initial capability reg file (meta-data only, hex format)
+writeScalarCapRegFileHex :: String -> IO ()
+writeScalarCapRegFileHex filename =
+  writeFile filename $ unlines $
+    [ showHex nullCapMetaInteger ""
+    | i <- [0..31]
+    ]

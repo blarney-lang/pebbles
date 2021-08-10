@@ -29,9 +29,9 @@
   1: bnez a0, 1b
 
 #ifdef _TEST_SIMT_
-  #define RVTEST_CODE_BEGIN .global _start; _start: SIMT_Push
+  #define RVTEST_CODE_BEGIN .global _test_start; _test_start: SIMT_Push
 #else
-  #define RVTEST_CODE_BEGIN .global _start; _start:
+  #define RVTEST_CODE_BEGIN .global _test_start; _test_start:
 #endif
 
 //-----------------------------------------------------------------------
@@ -57,14 +57,16 @@
         1: csrrw t0, CSR_UARTCanPut, zero;                              \
         beq t0, zero, 1b;                                               \
         csrw CSR_UARTPut, TESTNUM;                                      \
-        j MemBase;
+        li t0, MemBase;                                                 \
+        jr t0;
 
 #define RVTEST_FAIL                                                     \
         sll TESTNUM, TESTNUM, 1;                                        \
         1:csrrw t0, CSR_UARTCanPut, zero;                               \
         beq t0, zero, 1b;                                               \
         csrw CSR_UARTPut, TESTNUM;                                      \
-        j MemBase;
+        li t0, MemBase;                                                 \
+        jr t0;
 
 #else
 

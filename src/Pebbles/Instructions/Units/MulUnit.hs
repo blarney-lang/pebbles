@@ -3,6 +3,7 @@ module Pebbles.Instructions.Units.MulUnit where
 -- Blarney imports
 import Blarney
 import Blarney.Queue
+import Blarney.Option
 import Blarney.Stream
 import Blarney.SourceSink
 
@@ -70,6 +71,7 @@ makeHalfMulUnit = do
               resumeReqInfo = reqReg.val.mulReqInfo
             , resumeReqData = reqReg.val.mulReqLower ?
                 (resultReg.val.lower, resultReg.val.upper)
+            , resumeReqCap = none
             }
         , canPeek = fullReg.val
         , consume = fullReg <== false
@@ -148,6 +150,7 @@ makeFullMulUnit = do
               resumeReqInfo = req3.val.mulReqInfo
             , resumeReqData = req3.val.mulReqLower ?
                 (sum.val.lower, sum.val.upper)
+            , resumeReqCap = none
             }
       else do
         stall <== true

@@ -6,13 +6,13 @@ import Blarney
 -- Pebbles imports
 import Pebbles.CSRs.TrapCodes.Interface
 
-exc_instrAddrMissaligned    = excCode 0
+exc_instrAddrMisaligned     = excCode 0
 exc_instrAccessFault        = excCode 1
 exc_illegalInstr            = excCode 2
 exc_breakpoint              = excCode 3
-exc_loadAddrMissaligned     = excCode 4
+exc_loadAddrMisaligned      = excCode 4
 exc_loadAccessFault         = excCode 5
-exc_storeAMOAddrMissaligned = excCode 6
+exc_storeAMOAddrMisaligned  = excCode 6
 exc_storeAMOAccessFault     = excCode 7
 exc_eCallFromU              = excCode 8
 exc_eCallFromS              = excCode 9

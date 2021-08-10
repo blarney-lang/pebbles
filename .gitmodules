@@ -1,3 +1,8 @@
 [submodule "blarney"]
 	path = blarney
 	url = https://github.com/blarney-lang/blarney
+	branch = master
+[submodule "src/CHERI/cheri-cap-lib"]
+	path = src/CHERI/cheri-cap-lib
+	url = git@github.com:CTSRD-CHERI/cheri-cap-lib.git
+	branch = mn416-blarney

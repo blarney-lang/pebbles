@@ -1,20 +1,36 @@
 PEBBLES_ROOT ?= $(realpath ../../../..)
+CONFIG_H = $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h
+
+# Is CHERI enabled?
+CHERI_EN ?= $(shell echo -n EnableCHERI \
+              | cpp -P -imacros $(CONFIG_H) - | xargs)
+CHERI_EN_COND = $(findstring 1, $(CHERI_EN))
+
+# Use Clang or GCC
+USE_CLANG ?= $(shell echo -n UseClang \
+              | cpp -P -imacros $(CONFIG_H) - | xargs)
 
 # RISC-V subset
-RV_ARCH = rv32ima
+ifeq ($(CHERI_EN), 1)
+  RV_ARCH = rv32imaxcheri
+  RV_ABI = il32pc64
+else
+  RV_ARCH = rv32ima
+  RV_ABI = ilp32
+endif
 
 # Compiler and linker flags
-CFLAGS  = -mabi=ilp32 -march=$(RV_ARCH) -O2 -I./inc \
-          -I$(PEBBLES_ROOT)/soc/SIMTight/inc
+CFLAGS  = -mabi=$(RV_ABI) -march=$(RV_ARCH) -O2 -I./inc \
+          -I$(PEBBLES_ROOT)/soc/SIMTight/inc \
+          -I$(PEBBLES_ROOT)/inc \
+          -nostdlib -ffp-contract=off \
+          -fno-builtin -ffreestanding
 LDFLAGS = -melf32lriscv -G 0
 
-# Can use Clang or GCC
-USE_CLANG ?= false
-
-ifeq ($(USE_CLANG), true)
+ifeq ($(USE_CLANG), 1)
 CFLAGS    += --target=riscv64-unknown -mno-relax
-RV_CC      = clang++-11
-RV_LD      = ld.lld-11
+RV_CC      = riscv64-unknown-freebsd-clang++
+RV_LD      = riscv64-unknown-freebsd-ld.lld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 else
 RV_CC      = riscv64-unknown-elf-g++
@@ -37,10 +53,15 @@ v-files-for = $(patsubst %.S,%.$(1).code.v,$(wildcard $(2)/*.S)) \
 
 .PHONY: v-files
 v-files: $(call v-files-for,cpu,I) \
-         $(call v-files-for,simt,I) \
          $(call v-files-for,cpu,M) \
+         $(call v-files-for,simt,I) \
          $(call v-files-for,simt,M) \
-         $(call v-files-for,simt,A)
+         $(if $(CHERI_EN_COND), , $(call v-files-for,cpu,I/NoCap)) \
+         $(if $(CHERI_EN_COND), , $(call v-files-for,simt,I/NoCap)) \
+         $(if $(CHERI_EN_COND), , $(call v-files-for,simt,A)) \
+         $(if $(CHERI_EN_COND), $(call v-files-for,cpu,CHERI), ) \
+         $(if $(CHERI_EN_COND), $(call v-files-for,simt,CHERI), ) \
+         $(if $(CHERI_EN_COND), $(call v-files-for,simt,CHERI/A), )
 
 %.code.v: %.elf
 	@$(RV_OBJCOPY) -O verilog --only-section=.text $< $@
@@ -49,12 +70,22 @@ v-files: $(call v-files-for,cpu,I) \
 	@$(RV_OBJCOPY) -O verilog --remove-section=.text \
                  --set-section-flags .bss=alloc,load,contents $< $@
 
-.PRECIOUS: %.elf
-%.elf: %.o link.ld
-	@$(RV_LD) $(LDFLAGS) -T link.ld -o $@ $<
+.PRECIOUS: %.cpu.elf
+%.cpu.elf: %.cpu.o StartCPU.o link.ld
+	@$(RV_LD) $(LDFLAGS) --entry _start -T link.ld -o $@ StartCPU.o $<
+
+.PRECIOUS: %.simt.elf
+%.simt.elf: %.simt.o StartSIMT.o link.ld
+	@$(RV_LD) $(LDFLAGS) --entry _start -T link.ld -o $@ StartSIMT.o $<
 
 link.ld: $(PEBBLES_ROOT)/soc/SIMTight/apps/Common/link.ld.h
 	@cpp -P -I $(PEBBLES_ROOT)/soc/SIMTight/inc $< > link.ld
+
+StartCPU.o: StartCPU.cpp
+	@$(RV_CC) $(CFLAGS) -Wall -c -o $@ $<
+
+StartSIMT.o: StartSIMT.cpp
+	@$(RV_CC) $(CFLAGS) -Wall -c -o $@ $<
 
 .PRECIOUS: %.cpu.o
 %.cpu.o: %.S
@@ -86,21 +117,29 @@ TestSIMTSim: TestSIMT.cpp
     -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
     -o TestSIMTSim TestSIMT.cpp
 
+CPU_TESTS = $(if $(CHERI_EN_COND), \
+  I/*.S M/*.S CHERI/*.S, \
+  I/*.S I/NoCap/*.S M/*.S)
+
+SIMT_TESTS = $(if $(CHERI_EN_COND), \
+  I/*.S M/*.S CHERI/*.S CHERI/A/*.S, \
+  I/*.S I/NoCap/*.S M/*.S A/*.S)
+
 .PHONY: test-cpu
 test-cpu: v-files TestCPU
-	@./TestCPU I/*.S M/*.S
+	@./TestCPU $(CPU_TESTS)
 
 .PHONY: test-cpu-sim
 test-cpu-sim: v-files TestCPUSim
-	@./TestCPUSim I/*.S M/*.S
+	@./TestCPUSim $(CPU_TESTS)
 
 .PHONY: test-simt
 test-simt: v-files TestSIMT
-	@./TestSIMT I/*.S M/*.S A/*.S
+	@./TestSIMT $(SIMT_TESTS)
 
 .PHONY: test-simt-sim
 test-simt-sim: v-files TestSIMTSim
-	@./TestSIMTSim I/*.S M/*.S A/*.S
+	@./TestSIMTSim $(SIMT_TESTS)
 
 # Raise error if QUARTUS_ROOTDIR not set
 .PHONY: checkenv
@@ -109,8 +148,11 @@ checkenv:
 
 .PHONY: clean
 clean:
-	@rm -f link.ld \
+	@rm -f link.ld *.o \
     I/*.o I/*.elf I/*.v \
+    I/NoCap/*.o I/NoCap/*.elf I/NoCap/*.v \
     M/*.o M/*.elf M/*.v \
     A/*.o A/*.elf A/*.v \
+    CHERI/*.o CHERI/*.elf CHERI/*.v \
+    CHERI/A/*.o CHERI/A/*.elf CHERI/A/*.v \
     TestCPU TestCPUSim TestSIMT TestSIMTSim

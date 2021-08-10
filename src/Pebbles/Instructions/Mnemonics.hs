@@ -44,6 +44,31 @@ data Mnemonic =
     -- A extension
   | AMO
 
+    -- CHERI extension
+  | CGetPerm
+  | CGetType
+  | CGetBase
+  | CGetLen
+  | CGetTag
+  | CGetSealed
+  | CGetOffset
+  | CGetFlags
+  | CGetAddr
+  | CAndPerm
+  | CSetFlags
+  | CSetOffset
+  | CSetAddr
+  | CIncOffset
+  | CClearTag
+  | CSetBounds
+  | CSetBoundsExact
+  | CSub
+  | CMove
+  | CJALR
+  | CSpecialRW
+  | CSealEntry
+  | AUIPCC
+
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE
 

@@ -47,6 +47,12 @@ NOTE("Enable SIMT stat counters")
 NOTE("Size of SRAM multicast id in coalescing unit")
 #define SIMTMcastIdSize 4
 
+NOTE("Use full-throughput Intel divider (rather than sequential divider)")
+#define SIMTUseIntelDivider 0
+
+NOTE("Latency of full-throughput Intel divider")
+#define SIMTIntelDividerLatency 12
+
 NOTE("CPU configuration")
 NOTE("=================")
 
@@ -54,7 +60,7 @@ NOTE("Size of tightly coupled instruction memory")
 #define CPUInstrMemLogWords 13
 
 NOTE("Number of cache lines (line size == DRAM beat size)")
-#define SBDCacheLogLines 7
+#define SBDCacheLogLines 9
 
 NOTE("Tagged memory")
 NOTE("=============")
@@ -77,6 +83,18 @@ NOTE("Tag cache: max number of inflight memory requests")
 NOTE("Tag cache: max number of pending requests per way")
 #define TagCachePendingReqsPerWay 16
 
+NOTE("CHERI support")
+NOTE("=============")
+
+NOTE("Is CHERI enabled? (If so, see UseClang parameter)")
+#define EnableCHERI 0
+
+NOTE("Compiler")
+NOTE("========")
+
+NOTE("Use clang rather than gcc? (Currently required if CHERI enabled)")
+#define UseClang 1
+
 NOTE("Memory map")
 NOTE("==========")
 
@@ -84,4 +102,4 @@ NOTE("Memory base (after tag bit region)")
 #define MemBase 134217728
 
 NOTE("Space reserved for boot loader")
-#define MaxBootImageBytes 512
+#define MaxBootImageBytes 1024

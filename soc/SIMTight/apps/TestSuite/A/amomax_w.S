@@ -1,10 +1,10 @@
 # See LICENSE for license details.
 
 #*****************************************************************************
-# amoadd_w.S
+# amomax_w.S
 #-----------------------------------------------------------------------------
 #
-# Test amoadd.w instruction.
+# Test amomax.w instruction.
 #
 
 #include "riscv_test.h"

@@ -42,11 +42,13 @@ import Blarney.Queue
 import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
+import Blarney.QuadPortRAM
 import Blarney.Interconnect
 
 -- General imports
 import Data.List
 import Data.Proxy
+import Data.Maybe
 import qualified Data.Map as Map
 import Control.Applicative hiding (some)
 
@@ -55,7 +57,11 @@ import Pebbles.Util.List
 import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
+import Pebbles.CSRs.TrapCodes
 import Pebbles.CSRs.Custom.SIMTDevice
+
+-- CHERI imports
+import CHERI.CapLib
 
 -- | SIMT pipeline configuration
 data SIMTPipelineConfig tag =
@@ -72,6 +78,10 @@ data SIMTPipelineConfig tag =
     -- ^ Number of bits used to track divergence nesting level
   , enableStatCounters :: Bool
     -- ^ Are stat counters enabled?
+  , capRegInitFile :: Maybe String
+    -- ^ File containing initial capability reg file meta-data
+  , checkPCCFunc :: Maybe (InternalCap -> [(Bit 1, TrapCode)])
+    -- ^ When CHERI is enabled, function to check PCC
   , decodeStage :: [(String, tag)]
     -- ^ Decode table
   , executeStage :: [State -> Module ExecuteStage]
@@ -79,7 +89,7 @@ data SIMTPipelineConfig tag =
     -- The size of this list is the warp size
   , simtPushTag :: tag
   , simtPopTag :: tag
-    -- ^ Tags for SIMT explicit convergence instructions
+    -- ^ Mnemonics for SIMT explicit convergence instructions
   }
 
 -- | SIMT pipeline inputs
@@ -139,6 +149,9 @@ makeSIMTPipeline c inputs =
     let numWarps = 2 ^ c.logNumWarps
     let warpSize = c.executeStage.length
 
+    -- Is CHERI enabled?
+    let enableCHERI = c.checkPCCFunc.isJust
+
     -- Compute field selector functions from decode table
     let selMap = matchSel (c.decodeStage)
 
@@ -155,6 +168,13 @@ makeSIMTPipeline c inputs =
                        (SIMTThreadState t_logInstrs t_logMaxNestLevel) ] <-
       replicateM warpSize makeDualRAM
 
+    -- One program counter capability RAM (meta-data only) per lane
+    pccMems :: [RAM (Bit t_logWarps) InternalCapMetaData] <-
+      replicateM warpSize $
+        if enableCHERI
+          then makeDualRAM
+          else return nullRAM
+
     -- Instruction memory
     instrMem :: RAM (Bit t_logInstrs) Instr <-
       makeDualRAMCore (c.instrMemInitFile)
@@ -164,10 +184,19 @@ makeSIMTPipeline c inputs =
       replicateM warpSize (replicateM numWarps (makeReg false))
 
     -- Register files
-    regFilesA :: [RAM (Bit t_logWarps, RegId) (Bit 32)] <-
-      replicateM warpSize makeDualRAM
-    regFilesB :: [RAM (Bit t_logWarps, RegId) (Bit 32)] <-
-      replicateM warpSize makeDualRAM
+    (regFilesA, regFilesB) ::
+      ([RAM (Bit t_logWarps, RegId) (Bit 32)],
+       [RAM (Bit t_logWarps, RegId) (Bit 32)]) <-
+         unzip <$> replicateM warpSize makeQuadRAM
+
+    -- Capability register files (meta-data only)
+    (capRegFilesA, capRegFilesB) ::
+      ([RAM (Bit t_logWarps, RegId) InternalCapMetaData],
+       [RAM (Bit t_logWarps, RegId) InternalCapMetaData]) <-
+         unzip <$> replicateM warpSize
+           (if enableCHERI
+              then makeQuadRAMCore (c.capRegInitFile)
+              else return (nullRAM, nullRAM))
 
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM numWarps (makeReg 0)
@@ -254,8 +283,15 @@ makeSIMTPipeline c inputs =
               , simtNestLevel = 0
               , simtRetry = false
               }
-        sequence_ [ store stateMem (warpIdCounter.val) initState
-                  | stateMem <- stateMems ]
+        sequence_
+          [ do store stateMem (warpIdCounter.val) initState
+               if enableCHERI
+                 then do
+                   -- TODO: constrain initial PCCs
+                   let initPCC = almightyCapMetaVal
+                   store pccMem (warpIdCounter.val) initPCC
+                 else return ()
+          | (stateMem, pccMem) <- zip stateMems pccMems ]
 
         -- Reset various state
         exc <== false
@@ -316,6 +352,13 @@ makeSIMTPipeline c inputs =
       forM_ stateMems \stateMem -> do
         load stateMem (warpStream.peek)
 
+      -- Load PCC for next warp on each lane
+      if enableCHERI
+        then do
+          forM_ pccMems \pccMem -> do
+            load pccMem (warpStream.peek)
+        else return ()
+
       -- Buffer warp id for stage 1
       warpId1 <== warpStream.peek
 
@@ -338,6 +381,12 @@ makeSIMTPipeline c inputs =
     let state2 = pipelinedTree1 stage1Substages maxOf
                    [mem.out | mem <- stateMems]
 
+    -- Latch PCCs
+    let pcs2 = [ iterateN stage1Substages (delay dontCare) (mem.out.simtPC)
+               | mem <- stateMems]
+    let pccs2 = [ iterateN stage1Substages (delay dontCare) (mem.out)
+                | mem <- pccMems]
+
     -- Trigger stage 2
     let stateMemOuts2 =
           [iterateN stage1Substages buffer (mem.out) | mem <- stateMems]
@@ -346,6 +395,19 @@ makeSIMTPipeline c inputs =
 
     -- Stage 2: Instruction Fetch
     -- ==========================
+
+    -- Functions to convert between 32-bit PC and instruction address
+    let fromPC :: Bit 32 -> Bit t_logInstrs =
+          \pc -> truncateCast (slice @31 @2 pc)
+    let toPC :: Bit t_logInstrs -> Bit 32 =
+          \addr -> fromInteger (c.instrMemBase) .|.
+                     zeroExtendCast addr # (0 :: Bit 2)
+
+    -- Set address of for each PCC
+    let pccs3 =
+          [ let pccCap = unsplitCap (pcc, toPC 0) in
+              delay dontCare $ setAddr pccCap (toPC pc)
+          | (pc, pcc) <- zip pcs2 pccs2]
 
     always do
       -- Compute active thread mask
@@ -369,15 +431,37 @@ makeSIMTPipeline c inputs =
     -- Stage 3: Operand Fetch
     -- ======================
 
+    let pccs4 = [delay dontCare (pcc.value) | pcc <- pccs3]
+
     always do
       -- Fetch operands from each register file
       forM_ (zip regFilesA regFilesB) \(rfA, rfB) -> do
         load rfA (warpId3.val, instrMem.out.srcA)
         load rfB (warpId3.val, instrMem.out.srcB)
 
+      -- Fetch capability meta-data from each register file
+      forM_ (zip capRegFilesA capRegFilesB) \(rfA, rfB) -> do
+        load rfA (warpId3.val, instrMem.out.srcA)
+        load rfB (warpId3.val, instrMem.out.srcB)
+
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
       isSusp4 <== orList [map val regs ! warpId3.val | regs <- suspBits]
+
+      -- Check PCC
+      case c.checkPCCFunc of
+        Nothing -> return ()
+        Just checkPCC -> sequence_
+          [ do let table = checkPCC (pcc.value)
+               let exception = orList [cond | (cond, _) <- table]
+               let ok = inv active .||. pcc.exact .&&. inv exception
+               when (go3.val) do
+                 when (inv ok) do
+                   exc <== true
+                   let trapCode = priorityIf table (excCapCode 0)
+                   display "SIMT pipeline: PCC exception: "
+                           " code=" trapCode
+          | (pcc, active) <- zip pccs3 (activeMask3.val.toBitList) ]
 
       -- Trigger stage 4
       warpId4 <== warpId3.val
@@ -388,6 +472,8 @@ makeSIMTPipeline c inputs =
 
     -- Stage 4: Operand Latch
     -- ======================
+
+    let pccs5 = map (delay dontCare) pccs4
 
     -- Decode instruction
     let (tagMap4, fieldMap4) = matchMap False (c.decodeStage) (instr4.val)
@@ -410,13 +496,6 @@ makeSIMTPipeline c inputs =
 
     -- Stages 5 and 6: Execute and Writeback
     -- =====================================
-
-    -- Functions to convert between 32-bit PC and instruction address
-    let fromPC :: Bit 32 -> Bit t_logInstrs =
-          \pc -> truncateCast (slice @31 @2 pc)
-    let toPC :: Bit t_logInstrs -> Bit 32 =
-          \addr -> fromInteger (c.instrMemBase) .|.
-                     zeroExtendCast addr # (0 :: Bit 2)
 
     -- Buffer the decode tables
     let tagMap5 = Map.map buffer tagMap4
@@ -477,42 +556,73 @@ makeSIMTPipeline c inputs =
 
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
-                 regFileB stateMem incInstrCount = do
+                 regFileB capRegFileA capRegFileB
+                 stateMem incInstrCount pcc pccMem = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
             makeWire (state5.val.simtPC + 1)
+          pccNextWire :: Wire InternalCapMetaData <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
           resultWire :: Wire (Bit 32) <- makeWire dontCare
+          resultCapWire :: Wire InternalCapMetaData <- makeWire dontCare
+
+          -- Register operands
+          let regA = regFileA.out.old
+          let regB = regFileB.out.old
+          let capRegA = capRegFileA.out.old
+          let capRegB = capRegFileB.out.old
+
+          -- Is destination register non-zero?
+          let destNonZero = instr5.val.dst .!=. 0
 
           -- Instantiate execute stage
           execStage <- makeExecStage
             State {
               instr = instr5.val
-            , opA = regFileA.out.old
-            , opB = regFileB.out.old
+            , opA = regA
+            , opB = regB
+            , capA = unsplitCap (capRegA, regA)
+            , capB = unsplitCap (capRegB, regB)
             , opBorImm = regFileB.out.getRegBOrImm.old
             , opAIndex = instr5.val.srcA
             , opBIndex = instr5.val.srcB
             , resultIndex = instr5.val.dst
             , pc = ReadWrite (state5.val.simtPC.toPC) \writeVal -> do
                      pcNextWire <== writeVal.fromPC
+            , pcc = ReadWrite pcc \cap -> do
+                      if enableCHERI
+                        then do
+                          let (meta, addr) = splitCap cap
+                          pcNextWire <== fromPC addr
+                          pccNextWire <== meta
+                        else return ()
             , result = WriteOnly \writeVal ->
-                         when (instr5.val.dst .!=. 0) do
+                         when destNonZero do
                            resultWire <== writeVal
+                           if enableCHERI
+                             then resultCapWire <== nullCapMetaVal
+                             else return ()
+            , resultCap = WriteOnly \cap ->
+                            when destNonZero do
+                              let (meta, addr) = splitCap cap
+                              resultWire <== addr
+                              resultCapWire <== meta
             , suspend = do
                 suspWire <== true
                 return
                   InstrInfo {
                     instrId = warpId5.val.zeroExtendCast
                   , instrDest = instr5.val.dst
+                  , instrTagMask = false
                   }
             , retry = retryWire <== true
             , opcode = packTagMap tagMap5
             , trap = \code -> do
                 exc <== true
                 display "SIMT exception occurred: " code
+                        " pc=0x" (formatHex 8 (state5.val.simtPC.toPC))
             }
 
           always do
@@ -538,6 +648,8 @@ makeSIMTPipeline c inputs =
                   , simtNestLevel = (nestLevel + nestInc) - nestDec
                   , simtRetry = retryWire.val
                   }
+              when (pccNextWire.active) do
+                store pccMem (warpId5.val) (pccNextWire.val)
 
               -- Increment instruction count
               when (retryWire.val.inv) do
@@ -548,23 +660,30 @@ makeSIMTPipeline c inputs =
                 suspMask!(warpId5.val) <== true
 
             -- Writeback stage
-            if delay false (resultWire.active) .&&. exc.val.inv
-              then do
-                let idx = (warpId5.val.old, instr5.val.dst.old)
-                let value = resultWire.val.old
-                store regFileA idx value
-                store regFileB idx value
-              else do
-                -- Thread resumption
-                when (execStage.resumeReqs.canPeek) do
-                  let req = execStage.resumeReqs.peek
-                  let idx = (req.resumeReqInfo.instrId.truncateCast,
-                             req.resumeReqInfo.instrDest)
-                  when (req.resumeReqInfo.instrDest .!=. 0 .&&. exc.val.inv) do
-                    store regFileA idx (req.resumeReqData)
-                    store regFileB idx (req.resumeReqData)
-                  suspMask!(req.resumeReqInfo.instrId) <== false
-                  execStage.resumeReqs.consume
+            when (exc.val.inv) do
+              let idx = (warpId5.val.old, instr5.val.dst.old)
+              when (delay false (resultWire.active)) do
+                store regFileA idx (resultWire.val.old)
+              if enableCHERI
+                then do
+                  when (delay false (resultCapWire.active)) do
+                    store capRegFileA idx (resultCapWire.val.old)
+                else return ()
+
+            -- Thread resumption
+            when (execStage.resumeReqs.canPeek) do
+              let req = execStage.resumeReqs.peek
+              let idx = (req.resumeReqInfo.instrId.truncateCast,
+                         req.resumeReqInfo.instrDest)
+              when (req.resumeReqInfo.instrDest .!=. 0 .&&. exc.val.inv) do
+                store regFileB idx (req.resumeReqData)
+                if enableCHERI
+                  then do
+                    when (req.resumeReqCap.isSome) do
+                      store capRegFileB idx (req.resumeReqCap.val)
+                  else return ()
+              suspMask!(req.resumeReqInfo.instrId) <== false
+              execStage.resumeReqs.consume
 
     -- Create vector lanes
     sequence $ getZipList $
@@ -573,8 +692,12 @@ makeSIMTPipeline c inputs =
                <*> ZipList suspBits
                <*> ZipList regFilesA
                <*> ZipList regFilesB
+               <*> ZipList capRegFilesA
+               <*> ZipList capRegFilesB
                <*> ZipList stateMems
                <*> ZipList incInstrCountRegs
+               <*> ZipList pccs5
+               <*> ZipList pccMems
 
     -- Handle barrier release
     -- ======================

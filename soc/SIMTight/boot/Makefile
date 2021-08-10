@@ -1,17 +1,31 @@
 PEBBLES_ROOT ?= $(realpath ../../..)
+CONFIG_H = $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h
 
-SIM = $(PEBBLES_ROOT)/soc/SIMTight/sim
+# Is CHERI enabled?
+CHERI_EN ?= $(shell echo -n EnableCHERI \
+              | cpp -P -imacros $(CONFIG_H) - | xargs)
+CHERI_EN_COND = $(findstring 1, $(CHERI_EN))
+
+# Use Clang or GCC
+USE_CLANG ?= $(shell echo -n UseClang \
+              | cpp -P -imacros $(CONFIG_H) - | xargs)
 
 # RISC-V subset
-RV_ARCH = rv32i
+ifeq ($(CHERI_EN), 1)
+  RV_ARCH = rv32imaxcheri
+  RV_ABI = il32pc64
+else
+  RV_ARCH = rv32ima
+  RV_ABI = ilp32
+endif
 
-# Can use Clang or GCC
-USE_CLANG ?= false
+# Location of simulator
+SIM = $(PEBBLES_ROOT)/soc/SIMTight/sim
 
-ifeq ($(USE_CLANG), true)
+ifeq ($(USE_CLANG), 1)
 CFLAGS     = --target=riscv64-unknown
-RV_CC      = clang-11
-RV_LD      = ld.lld-11
+RV_CC      = riscv64-unknown-freebsd-clang
+RV_LD      = riscv64-unknown-freebsd-ld.lld
 RV_OBJCOPY = riscv64-unknown-elf-objcopy
 else
 CFLAGS     = 
@@ -21,12 +35,12 @@ RV_OBJCOPY = riscv64-unknown-elf-objcopy
 endif
 
 # Compiler and linker flags for code running on the SoC
-CFLAGS := $(CFLAGS) -mabi=ilp32 -march=$(RV_ARCH) -Os \
+CFLAGS := $(CFLAGS) -mabi=$(RV_ABI) -march=$(RV_ARCH) -Os \
          -I $(PEBBLES_ROOT)/inc -I $(PEBBLES_ROOT)/soc/SIMTight/inc \
          -static -mcmodel=medany \
          -fvisibility=hidden -nostdlib \
          -fno-builtin-printf -ffp-contract=off \
-         -fno-builtin -ffreestanding
+         -fno-builtin -ffreestanding -ffunction-sections
 LDFLAGS := -melf32lriscv -G 0
 
 # C files to compile
@@ -34,7 +48,6 @@ CFILES = boot.c
 OFILES = $(patsubst %.c,%.o,$(CFILES))
 
 # Size and base of instruction memory
-CONFIG_H = $(PEBBLES_ROOT)/soc/SIMTight/inc/Config.h
 INSTR_BASE = $(shell echo -n MemBase \
   | cpp -P -imacros $(CONFIG_H) - | xargs)
 LOG_INSTR_BYTES = $(shell echo -n CPUInstrMemLogWords \

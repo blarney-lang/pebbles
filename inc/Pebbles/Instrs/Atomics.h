@@ -30,32 +30,74 @@ INLINE int atomicXor(volatile int *ptr, int val) {
   return __atomic_fetch_xor(ptr, val, __ATOMIC_RELAXED);
 }
 
+#if EnableCHERI
+
 // Atomic max (signed)
 INLINE int atomicMax(volatile int *ptr, int val) {
   int x;
-  asm volatile("amomax.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
+  asm volatile("camomax.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "C"(ptr) : "memory");
   return x;
 }
 
 // Atomic max (unsigned)
 INLINE unsigned atomicMax(volatile unsigned *ptr, unsigned val) {
   int x;
-  asm volatile("amomaxu.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
+  asm volatile("camomaxu.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "C"(ptr) : "memory");
   return x;
 }
 
 // Atomic max (signed)
 INLINE int atomicMin(volatile int *ptr, int val) {
   int x;
-  asm volatile("amomin.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
+  asm volatile("camomin.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "C"(ptr) : "memory");
   return x;
 }
 
 // Atomic max (unsigned)
 INLINE unsigned atomicMin(volatile unsigned *ptr, unsigned val) {
   int x;
-  asm volatile("amominu.w %0, %1, 0(%2)" : "=r"(x) : "r"(val), "r"(ptr));
+  asm volatile("camominu.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "C"(ptr) : "memory");
   return x;
 }
+
+#else
+
+// Atomic max (signed)
+INLINE int atomicMax(volatile int *ptr, int val) {
+  int x;
+  asm volatile("amomax.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "r"(ptr) : "memory");
+  return x;
+}
+
+// Atomic max (unsigned)
+INLINE unsigned atomicMax(volatile unsigned *ptr, unsigned val) {
+  int x;
+  asm volatile("amomaxu.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "r"(ptr) : "memory");
+  return x;
+}
+
+// Atomic max (signed)
+INLINE int atomicMin(volatile int *ptr, int val) {
+  int x;
+  asm volatile("amomin.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "r"(ptr) : "memory");
+  return x;
+}
+
+// Atomic max (unsigned)
+INLINE unsigned atomicMin(volatile unsigned *ptr, unsigned val) {
+  int x;
+  asm volatile("amominu.w %0, %1, 0(%2)" :
+    "=r"(x) : "r"(val), "r"(ptr) : "memory");
+  return x;
+}
+
+#endif
 
 #endif

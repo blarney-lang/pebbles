@@ -1,5 +1,8 @@
 -- RISC-V atomics extension
-module Pebbles.Instructions.RV32_A where
+module Pebbles.Instructions.RV32_A
+  ( decodeA
+  , executeA
+  ) where
 
 -- Blarney imports
 import Blarney
@@ -39,18 +42,18 @@ getDestReg = makeFieldSelector decodeA "rd"
 -- Execute stage
 -- =============
 
-executeA :: MemUnit InstrInfo -> State -> Action ()
-executeA memUnit s = do
+executeA :: Sink (MemReq InstrInfo) -> State -> Action ()
+executeA memReqs s = do
   -- Atomic memory access
   when (s.opcode `is` [AMO]) do
-    if memUnit.memReqs.canPut
+    if memReqs.canPut
       then do
         -- Is response needed?
         let needsResp = s.instr.getDestReg .!=. 0
         -- Suspend if response needed
         info <- whenR needsResp (s.suspend)
         -- Send request to memory unit
-        put (memUnit.memReqs)
+        put memReqs
           MemReq {
             memReqId = info
           , memReqAccessWidth = 0b10

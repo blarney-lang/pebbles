@@ -30,12 +30,17 @@ import Pebbles.Instructions.RV32_I
 import Pebbles.Instructions.RV32_M
 import Pebbles.Instructions.RV32_A
 import Pebbles.Instructions.Mnemonics
+import Pebbles.Instructions.RV32_xCHERI
 import Pebbles.Instructions.Units.MulUnit
 import Pebbles.Instructions.Units.DivUnit
 import Pebbles.Instructions.Custom.SIMT
 
+-- CHERI imports
+import CHERI.CapLib
+
 -- Haskell imports
 import Data.List
+import Numeric (showHex)
 
 -- Execute stage
 -- =============
@@ -56,43 +61,70 @@ data SIMTExecuteIns =
   } deriving (Generic, Interface)
 
 -- | Execute stage for a SIMT lane (synthesis boundary)
-makeSIMTExecuteStage :: SIMTExecuteIns -> State -> Module ExecuteStage
-makeSIMTExecuteStage = makeBoundary "SIMTExecuteStage" \ins s -> do
-  -- Multiplier per vector lane
-  mulUnit <- makeFullMulUnit
+makeSIMTExecuteStage ::
+     Bool
+     -- ^ Enable CHERI?
+  -> Maybe Int
+     -- ^ Use intel divider? (If so, what is its latency?)
+  -> SIMTExecuteIns -> State -> Module ExecuteStage
+makeSIMTExecuteStage enCHERI useIntelDiv =
+  makeBoundary "SIMTExecuteStage" \ins s -> do
+    -- Multiplier per vector lane
+    mulUnit <- makeFullMulUnit
 
-  -- Divider per vector lane
-  divUnit <- makeSeqDivUnit
+    -- Divider per vector lane
+    divUnit <-
+      case useIntelDiv of
+        Nothing -> makeSeqDivUnit
+        Just latency -> makeIntelDivUnit latency
 
-  -- SIMT warp control CSRs
-  csr_WarpCmd <- makeCSR_WarpCmd (ins.execLaneId) (ins.execWarpCmd)
-  csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
+    -- SIMT warp control CSRs
+    csr_WarpCmd <- makeCSR_WarpCmd (ins.execLaneId) (ins.execWarpCmd)
+    csr_WarpGetKernel <- makeCSR_WarpGetKernel (ins.execKernelAddr)
 
-  -- CSR unit
-  let hartId = zeroExtend (ins.execWarpId # ins.execLaneId)
-  csrUnit <- makeCSRUnit $
-       csrs_Sim
-    ++ [csr_HartId hartId]
-    ++ [csr_WarpCmd]
-    ++ [csr_WarpGetKernel]
+    -- CSR unit
+    let hartId = zeroExtend (ins.execWarpId # ins.execLaneId)
+    csrUnit <- makeCSRUnit $
+         csrs_Sim
+      ++ [csr_HartId hartId]
+      ++ [csr_WarpCmd]
+      ++ [csr_WarpGetKernel]
  
-  -- Merge resume requests
-  let resumeReqStream =
-        fmap memRespToResumeReq (ins.execMemUnit.memResps)
-          `mergeTwo` mergeTwo (mulUnit.mulResps) (divUnit.divResps)
+    -- Memory requests from execute stage
+    (memReqSink, capMemReqSink) <-
+      if enCHERI
+        then do
+          capMemReqSink <- makeCapMemReqSink (ins.execMemUnit.memReqs)
+          let memReqSink = mapSink toCapMemReq capMemReqSink
+          return (memReqSink, capMemReqSink)
+        else return (ins.execMemUnit.memReqs, nullSink)
 
-  -- Resume queue
-  resumeQueue <- makePipelineQueue 1
-  makeConnection resumeReqStream (resumeQueue.toSink)
+    -- Pipeline resume requests from memory
+    memResumeReqs <- makeMemRespToResumeReq
+      enCHERI
+      (ins.execMemUnit.memResps)
 
-  return
-    ExecuteStage {
-      execute = do
-        executeI (Just mulUnit) csrUnit (ins.execMemUnit) s
-        executeM mulUnit divUnit s
-        executeA (ins.execMemUnit) s
-    , resumeReqs = resumeQueue.toStream
-    }
+    -- Merge resume requests
+    let resumeReqStream =
+          memResumeReqs `mergeTwo`
+            mergeTwo (mulUnit.mulResps) (divUnit.divResps)
+
+    -- Resume queue
+    resumeQueue <- makePipelineQueue 1
+    makeConnection resumeReqStream (resumeQueue.toSink)
+
+    return
+      ExecuteStage {
+        execute = do
+          executeI (Just mulUnit) csrUnit memReqSink s
+          executeM mulUnit divUnit s
+          if enCHERI
+            then executeCHERI csrUnit capMemReqSink s
+            else do
+              executeI_NoCap csrUnit memReqSink s
+              executeA memReqSink s
+      , resumeReqs = resumeQueue.toStream
+      }
 
 -- Core
 -- ====
@@ -108,6 +140,12 @@ data SIMTCoreConfig =
     -- ^ Base of instr mem within memory map
   , simtCoreExecBoundary :: Bool
     -- ^ Synthesis boundary on execute stage?
+  , simtCoreEnableCHERI :: Bool
+    -- ^ Enable CHERI extensions?
+  , simtCoreCapRegInitFile :: Maybe String
+    -- ^ File containing initial capability register file (meta-data only)
+  , simtCoreUseIntelDivider :: Maybe Int
+    -- ^ Use fast Intel divider? (If so, what latency? If not, slow seq divider used)
   }
 
 -- | RV32IM SIMT core
@@ -138,9 +176,24 @@ makeSIMTCore config mgmtReqs memUnitsVec = mdo
         , logNumWarps = SIMTLogWarps
         , logMaxNestLevel = SIMTLogMaxNestLevel
         , enableStatCounters = SIMTEnableStatCounters == 1
-        , decodeStage = decodeI ++ decodeM ++ decodeA ++ decodeSIMT
+        , capRegInitFile = config.simtCoreCapRegInitFile
+        , checkPCCFunc =
+            if config.simtCoreEnableCHERI then Just checkPCC else Nothing
+        , decodeStage = concat
+            [ decodeI
+            , if config.simtCoreEnableCHERI
+                then decodeCHERI
+                else decodeI_NoCap
+            , decodeM
+            , if config.simtCoreEnableCHERI
+                then decodeCHERI_A
+                else decodeA
+            , decodeSIMT
+            ]
         , executeStage =
             [ makeSIMTExecuteStage
+                (config.simtCoreEnableCHERI)
+                (config.simtCoreUseIntelDivider)
                 SIMTExecuteIns {
                   execLaneId = fromInteger i
                 , execWarpId = pipelineOuts.simtCurrentWarpId.truncate
@@ -185,3 +238,34 @@ interleaveStacks memUnits =
                         @SIMTLogBytesPerStack a
         stackOffset = slice @(SIMTLogBytesPerStack-1) @2 a
         wordOffset = slice @1 @0 a
+
+-- Register file initialisation
+-- ============================
+
+-- | Write initial capability reg file (meta-data only, mif format)
+writeSIMTCapRegFileMif :: Int -> String -> IO ()
+writeSIMTCapRegFileMif numWarps filename =
+  writeFile filename $ unlines $
+    [ "DEPTH = " ++ show numRegs ++ ";"
+    , "WIDTH = " ++ show (valueOf @InternalCapMetaDataWidth) ++ ";"
+    , "ADDRESS_RADIX = DEC;"
+    , "DATA_RADIX = HEX;"
+    , "CONTENT"
+    , "BEGIN"
+    ] ++
+    [ show i ++ " : " ++ showHex nullCapMetaInteger ";"
+    | i <- [0..numRegs-1]
+    ] ++
+    ["END"]
+  where
+    numRegs = 32 * numWarps
+
+-- | Write initial capability reg file (meta-data only, hex format)
+writeSIMTCapRegFileHex :: Int -> String -> IO ()
+writeSIMTCapRegFileHex numWarps filename =
+  writeFile filename $ unlines $
+    [ showHex nullCapMetaInteger ""
+    | i <- [0..numRegs-1]
+    ]
+  where
+    numRegs = 32 * numWarps
