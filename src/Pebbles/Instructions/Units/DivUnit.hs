@@ -7,6 +7,7 @@ import Blarney.Queue
 import Blarney.Option
 import Blarney.SourceSink
 import Blarney.Core.BV
+import Blarney.VendorIP.PipelinedDivider
 
 -- Pebbles imports
 import Pebbles.Util.List
@@ -140,14 +141,14 @@ makeSeqDivUnit = do
         }
     }
 
--- Full-throughput divider (using Intel IP)
--- ========================================
+-- Full-throughput divider
+-- =======================
 
--- | Divider unit (full throughput using Intel IP)
-makeIntelDivUnit :: Int -> Module DivUnit
-makeIntelDivUnit latency
+-- | Full throughput divider unit (using Blarney IP)
+makeFullDivUnit :: Int -> Module DivUnit
+makeFullDivUnit latency
     -- Check that latency is small enough to allow result queue to fit in MLABs
-  | latency >= 32 = error "makeIntelDivUnit: latency too large"
+  | latency >= 32 = error "makeFullDivUnit: latency too large"
   | otherwise = do
 
       -- Result and request info queues
@@ -164,7 +165,8 @@ makeIntelDivUnit latency
 
       always do
         -- Output of pipelined divider megafunction
-        let (quot, rem) = intelDivMegaFun (numWire.val, denomWire.val)
+        let (quot, rem) =
+              pipelinedDivider latency (numWire.val) (denomWire.val)
         -- Wait 'latency' cycles for result to be ready
         let (ready, wantRem, divByZero) =
               iterateN latency
@@ -214,22 +216,3 @@ makeIntelDivUnit latency
                 decrBy inflightCount 1
             }
         }
-
--- | Intel pipelined divider megafunction
-intelDivMegaFun :: (Bit 33, Bit 33) -> (Bit 33, Bit 33)
-intelDivMegaFun (num, denom) = (FromBV quot, FromBV rem)
-  where
-    custom =
-      Custom {
-        customName      = "IntelDivider"
-      , customInputs    = [("numer", 33), ("denom", 33)]
-      , customOutputs   = [("quotient", 33), ("remain", 33)]
-      , customParams    = []
-      , customIsClocked = True
-      , customResetable = False
-      , customNetlist   = Nothing
-      }
-
-    [quot, rem] =
-      makePrim custom [toBV num, toBV denom]
-                      [Just "quotient", Just "remain"]
