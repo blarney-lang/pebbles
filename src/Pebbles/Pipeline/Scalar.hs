@@ -41,6 +41,8 @@ data ScalarPipelineConfig tag =
     -- ^ Instruction memory initilaisation file
   , instrMemLogNumInstrs :: Int
     -- ^ Instruction memory size
+  , enableRegForwarding :: Bool
+    -- ^ Enable register forwarding for higher IPC but lower Fmax
   , initialPC :: Integer
     -- ^ Initial program counter
   , capRegInitFile :: Maybe String
@@ -236,24 +238,35 @@ makeScalarPipeline c =
     -- Decode instruction
     let (tagMap, fieldMap) = matchMap False (c.decodeStage) (instr2.val)
 
+    -- Data hazard from stage 3
+    let hazard3 :: Bits t => Wire t -> (Instr -> RegId) -> Bit 1
+        hazard3 resWire rS = resWire.active .&&.
+          instr3.val.dst .==. instr2.val.rS
+
+    -- Data hazard from stage 4
+    let hazard4 :: Bits t => Wire t -> (Instr -> RegId) -> Bit 1
+        hazard4 resWire rS = resWire.active .&&.
+          instr4.val.dst .==. instr2.val.rS
+
     -- Register forwarding from stage 3
     let forward3 :: Bits t => Wire t -> (Instr -> RegId) -> t -> t
         forward3 resWire rS other =
-          (resWire.active .&. (instr3.val.dst .==. instr2.val.rS)) ?
-          (resWire.val, other)
+          hazard3 resWire rS ? (resWire.val, other)
 
     -- Register forwarding from stage 4
     let forward4 :: Bits t => Wire t -> (Instr -> RegId) -> t -> t
         forward4 resWire rS other =
-          (resWire.active .&.
-            (instr4.val.dst .==. instr2.val.rS)) ?
-              (resWire.val, other)
+          hazard4 resWire rS ? (resWire.val, other)
 
     -- Register forwarding
-    let a = forward3 resultWire srcA $
-              forward4 finalResultWire srcA (regFileA.out)
-    let b = forward3 resultWire srcB $
-              forward4 finalResultWire srcB (regFileB.out)
+    let a = if c.enableRegForwarding
+              then forward3 resultWire srcA $
+                     forward4 finalResultWire srcA (regFileA.out)
+              else regFileA.out
+    let b = if c.enableRegForwarding
+              then forward3 resultWire srcB $
+                     forward4 finalResultWire srcB (regFileB.out)
+              else regFileB.out
 
     -- Use "imm" field if valid, otherwise use register b
     let bOrImm = if Map.member "imm" fieldMap
@@ -262,15 +275,34 @@ makeScalarPipeline c =
                    else b
 
     -- Capability register forwarding
-    let a_cap = forward3 resultCapWire srcA $
-                  forward4 finalResultCapWire srcA (capFileA.out)
-    let b_cap = forward3 resultCapWire srcB $
-                  forward4 finalResultCapWire srcB (capFileB.out)
+    let a_cap = if c.enableRegForwarding
+                  then forward3 resultCapWire srcA $
+                         forward4 finalResultCapWire srcA (capFileA.out)
+                  else capFileA.out
+    let b_cap = if c.enableRegForwarding
+                  then forward3 resultCapWire srcB $
+                         forward4 finalResultCapWire srcB (capFileB.out)
+                  else capFileB.out
+
+    -- Is there a data hazard?
+    let isDataHazard =
+          if c.enableRegForwarding
+            then false
+            else orList
+                   [ haz
+                   | src <- [srcA, srcB]
+                   , haz <- [hazard3 resultWire src,
+                             hazard4 finalResultWire src,
+                             hazard3 resultCapWire src,
+                             hazard4 finalResultCapWire src]
+                   ]
 
     always do
-      when (go2.val) do
-        -- Trigger stage 3 when not flushing or stalling
-        when (pcNext.active.inv .&. stallWire.val.inv) do
+      when (go2.val .&&. pcNext.active.inv) do
+        -- Stall on data hazard
+        when isDataHazard do stallWire <== true
+        -- Trigger stage 3 when not stalling
+        when (stallWire.val.inv) do
           -- Latch operands
           regA <== a
           regB <== b
