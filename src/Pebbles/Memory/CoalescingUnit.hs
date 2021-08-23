@@ -197,20 +197,21 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let multiFlitOk = isFinal .||. go1.val.inv
 
     -- Inject requests from input queues when no stall/feedback in progress
-    when (memReqsStream.canPeek .&&. stallWire.val.inv .&&.
-            feedbackWire.val.inv .&&. multiFlitOk .||.
-              isTransaction.val) do
-      -- Consume next vector of requests
-      memReqsStream.consume
-      -- Inject into pipeline
-      forM_ (zip memReqs memReqs1) \(req, reg) -> do
-        reg <== req.val
-      -- Initialise pending mask
-      pending1 <== fromBitList [r.valid | r <- memReqs]
-      -- Trigger pipeline
-      go1 <== true
-      -- Handle multi-flit transactions atomically
-      isTransaction <== inv isFinal
+    when (memReqsStream.canPeek) do
+      when (stallWire.val.inv .&&.
+              feedbackWire.val.inv .&&. multiFlitOk .||.
+                isTransaction.val) do
+        -- Consume next vector of requests
+        memReqsStream.consume
+        -- Inject into pipeline
+        forM_ (zip memReqs memReqs1) \(req, reg) -> do
+          reg <== req.val
+        -- Initialise pending mask
+        pending1 <== fromBitList [r.valid | r <- memReqs]
+        -- Trigger pipeline
+        go1 <== true
+        -- Handle multi-flit transactions atomically
+        isTransaction <== inv isFinal
 
     -- Preserve go signals on stall
     when (stallWire.val) do
