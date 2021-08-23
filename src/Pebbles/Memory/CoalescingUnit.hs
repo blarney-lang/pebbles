@@ -99,8 +99,8 @@ data BankInfo t_id =
 makeCoalescingUnit :: Bits t_id =>
      (MemReq t_id -> Bit 1)
      -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
-  -> V.Vec SIMTLanes (Stream (MemReq t_id))
-     -- ^ Stream of memory requests per lane
+  -> Stream (V.Vec SIMTLanes (Option (MemReq t_id)))
+     -- ^ Stream of memory requests vectors
   -> Stream (DRAMResp DRAMReqId)
      -- ^ Responses from DRAM
   -> V.Vec SIMTLanes (Stream (MemResp (BankInfo t_id)))
@@ -111,8 +111,7 @@ makeCoalescingUnit :: Bits t_id =>
             )
      -- ^ Outputs: memory responses per lane, SRAM requests per
      -- lane/bank, and DRAM requests
-makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
-  let memReqs = V.toList memReqsVec
+makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   let sramResps = V.toList sramRespsVec
 
   -- Assumptions
@@ -185,9 +184,12 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
     dynamicAssert (inv (feedbackWire.val .&. stallWire.val))
       "Coalescing Unit: feedback and stall both high"
 
+    -- Memory requests to consume
+    let memReqs = V.toList (memReqsStream.peek)
+
     -- Is this the final flit of a multi-flit transaction?
-    let isFinal = orList [ s.canPeek .&&. s.peek.memReqIsFinal
-                         | s <- memReqs ]
+    let isFinal = orList [ r.valid .&&. r.val.memReqIsFinal
+                         | r <- memReqs ]
 
     -- A multi-flit transaction can only proceed if there is space in
     -- pipeline for two flits (transactions are currently limited
@@ -195,20 +197,20 @@ makeCoalescingUnit isSRAMAccess memReqsVec dramResps sramRespsVec = do
     let multiFlitOk = isFinal .||. go1.val.inv
 
     -- Inject requests from input queues when no stall/feedback in progress
-    when (stallWire.val.inv .&&. feedbackWire.val.inv .&&. multiFlitOk
-            .||. isTransaction.val) do
-      -- Consume requests and inject into pipeline
-      forM_ (zip memReqs memReqs1) \(s, r) -> do
-        when (s.canPeek) do
-          s.consume
-        r <== s.peek
+    when (memReqsStream.canPeek .&&. stallWire.val.inv .&&.
+            feedbackWire.val.inv .&&. multiFlitOk .||.
+              isTransaction.val) do
+      -- Consume next vector of requests
+      memReqsStream.consume
+      -- Inject into pipeline
+      forM_ (zip memReqs memReqs1) \(req, reg) -> do
+        reg <== req.val
       -- Initialise pending mask
-      pending1 <== fromBitList [s.canPeek | s <- memReqs]
+      pending1 <== fromBitList [r.valid | r <- memReqs]
       -- Trigger pipeline
-      when (orList [s.canPeek | s <- memReqs]) do
-        go1 <== true
-        -- Handle multi-flit transactions atomically
-        isTransaction <== inv isFinal
+      go1 <== true
+      -- Handle multi-flit transactions atomically
+      isTransaction <== inv isFinal
 
     -- Preserve go signals on stall
     when (stallWire.val) do
