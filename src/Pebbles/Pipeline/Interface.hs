@@ -61,8 +61,8 @@ data State =
   , opBorImm :: Bit 32
     -- ^ Source operands. These contain the values of the two source registers.
 
-  , capA :: InternalCap
-  , capB :: InternalCap
+  , capA :: Cap
+  , capB :: Cap
     -- ^ Capability operands.
 
   , opAIndex :: RegId

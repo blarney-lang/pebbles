@@ -571,8 +571,10 @@ makeSIMTPipeline c inputs =
           -- Register operands
           let regA = regFileA.out.old
           let regB = regFileB.out.old
-          let capRegA = capRegFileA.out.old
-          let capRegB = capRegFileB.out.old
+          let capRegA = old $ decodeCap $
+                unsplitCap (capRegFileA.out, regFileA.out)
+          let capRegB = old $ decodeCap $
+                unsplitCap (capRegFileB.out, regFileB.out)
 
           -- Is destination register non-zero?
           let destNonZero = instr5.val.dst .!=. 0
@@ -583,8 +585,8 @@ makeSIMTPipeline c inputs =
               instr = instr5.val
             , opA = regA
             , opB = regB
-            , capA = unsplitCap (capRegA, regA)
-            , capB = unsplitCap (capRegB, regB)
+            , capA = capRegA
+            , capB = capRegB
             , opBorImm = regFileB.out.getRegBOrImm.old
             , opAIndex = instr5.val.srcA
             , opBIndex = instr5.val.srcB

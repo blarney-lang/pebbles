@@ -8,6 +8,8 @@ module CHERI.CapLib
   , almightyCapMetaVal
   , nullCapMetaVal
   , nullCapMetaInteger
+  , Cap(..)
+  , decodeCap
   ) where
 
 -- Blarney imports
@@ -18,6 +20,9 @@ import CHERI.CapLibBase
 
 -- Haskell imports
 import qualified Data.Bits as B
+
+-- Helper functions on capabilities
+-- ================================
 
 -- | Split capability into meta-data and address
 splitCap :: InternalCap -> (InternalCapMetaData, Bit 32)
@@ -57,3 +62,23 @@ nullCapMetaInteger = nullCapInteger B..&. mask
     mw = valueOf @InternalCapMetaDataWidth
     mask = (1 `B.shiftL` (mw-1)) - 1
 
+-- Partially-decoded capabilities
+-- ==============================
+
+-- | Partially decoded capability
+data Cap =
+  Cap {
+      capInternal :: InternalCap
+    , capBase     :: Bit 32
+    , capTop      :: Bit 33
+  }
+  deriving (Generic, Interface, Bits)
+
+-- | Partially decode given capability
+decodeCap :: InternalCap -> Cap
+decodeCap c =
+  Cap {
+      capInternal = c
+    , capBase     = getBase c
+    , capTop      = getTop c
+  }
