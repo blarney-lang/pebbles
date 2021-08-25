@@ -238,11 +238,14 @@ makeSIMTPipeline c inputs =
     isSusp4 :: Reg (Bit 1) <- makeReg dontCare
     isSusp5 :: Reg (Bit 1) <- makeReg dontCare
 
-    -- Exception register
-    exc :: Reg (Bit 1) <- makeReg false
+    -- Global exception register for entire core
+    excGlobal :: Reg (Bit 1) <- makeReg false
 
     -- Program counter at point of exception
     excPC :: Reg (Bit 32) <- makeReg dontCare
+
+    -- Per-lane exception register
+    excLocals :: [Reg (Bit 1)] <- replicateM warpSize (makeReg false)
 
     -- Kernel response queue (indicates to CPU when kernel has finished)
     kernelRespQueue :: Queue SIMTResp <- makeShiftQueue 1
@@ -294,7 +297,8 @@ makeSIMTPipeline c inputs =
           | (stateMem, pccMem) <- zip stateMems pccMems ]
 
         -- Reset various state
-        exc <== false
+        excGlobal <== false
+        sequence_ [e <== false | e <- excLocals]
         setCount barrierCount 0
         sequence_ [r <== false | r <- barrierBits]
 
@@ -457,11 +461,12 @@ makeSIMTPipeline c inputs =
                let ok = inv active .||. pcc.exact .&&. inv exception
                when (go3.val) do
                  when (inv ok) do
-                   exc <== true
+                   excLocal <== true
                    let trapCode = priorityIf table (excCapCode 0)
                    display "SIMT pipeline: PCC exception: "
                            " code=" trapCode
-          | (pcc, active) <- zip pccs3 (activeMask3.val.toBitList) ]
+          | (pcc, active, excLocal) <-
+              zip3 pccs3 (activeMask3.val.toBitList) excLocals ]
 
       -- Trigger stage 4
       warpId4 <== warpId3.val
@@ -506,7 +511,7 @@ makeSIMTPipeline c inputs =
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
         if isSusp5.val .||.
-              (inputs.simtWarpCmdWire.active.inv .&&. exc.val.inv)
+              (inputs.simtWarpCmdWire.active.inv .&&. excGlobal.val.inv)
           then do
             -- Reschedule
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
@@ -514,10 +519,11 @@ makeSIMTPipeline c inputs =
           else do
             -- Instruction is warp command or exception has occurred.
             -- Warp commands assume that warp has converged
-            dynamicAssert (exc.val.inv .==>. activeMask5.val .==. ones)
+            dynamicAssert (excGlobal.val.inv .==>. activeMask5.val .==. ones)
               "SIMT pipeline: warp command issued by diverged warp"
             -- Handle command
-            if inputs.simtWarpCmdWire.val.warpCmd_isTerminate .||. exc.val
+            if inputs.simtWarpCmdWire.val.warpCmd_isTerminate .||.
+                 excGlobal.val
               then do
                 completedWarps <== completedWarps.val + 1
                 -- Track kernel success
@@ -525,14 +531,14 @@ makeSIMTPipeline c inputs =
                       inputs.simtWarpCmdWire.val.warpCmd_termCode
                 -- Determined completed warps
                 let completed = completedWarps.val +
-                      (exc.val ? (barrierCount.getCount, 0))
+                      (excGlobal.val ? (barrierCount.getCount, 0))
                 -- Have all warps have terminated?
                 if completed .==. ones
                   then do
                     -- Issue kernel response to CPU
                     dynamicAssert (kernelRespQueue.notFull)
                       "SIMT pipeline: can't issue kernel response"
-                    let code = exc.val ? (simtExit_Exception,
+                    let code = excGlobal.val ? (simtExit_Exception,
                           success ? (simtExit_Success, simtExit_Failure))
                     enq kernelRespQueue (zeroExtend code)
                     -- Re-enter initial state
@@ -546,9 +552,11 @@ makeSIMTPipeline c inputs =
                 barrierBits!(warpId5.val) <== true
                 incrBy barrierCount 1
 
-      -- Track exception PC
-      when (go5.val .&&. exc.val.inv) do
-        excPC <== state5.val.simtPC.toPC
+      -- Promote local exception to global exception
+      when (orList $ map val excLocals) do
+        excGlobal <== true
+        -- Track exception PC
+        excPC <== state5.val.simtPC.toPC.old
 
     -- Is it a SIMT convergence instruction?
     let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
@@ -557,7 +565,7 @@ makeSIMTPipeline c inputs =
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
                  regFileB capRegFileA capRegFileB
-                 stateMem incInstrCount pcc pccMem = do
+                 stateMem incInstrCount pcc pccMem excLocal = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
@@ -622,7 +630,7 @@ makeSIMTPipeline c inputs =
             , retry = retryWire <== true
             , opcode = packTagMap tagMap5
             , trap = \code -> do
-                exc <== true
+                excLocal <== true
                 display "SIMT exception occurred: " code
                         " pc=0x" (formatHex 8 (state5.val.simtPC.toPC))
             }
@@ -630,7 +638,7 @@ makeSIMTPipeline c inputs =
           always do
             -- Execute stage
             when (go5.val .&&. threadActive .&&.
-                    isSusp5.val.inv .&&. exc.val.inv) do
+                    isSusp5.val.inv .&&. excGlobal.val.inv) do
               -- Trigger execute stage
               execStage.execute
 
@@ -662,7 +670,7 @@ makeSIMTPipeline c inputs =
                 suspMask!(warpId5.val) <== true
 
             -- Writeback stage
-            when (exc.val.inv) do
+            when (excLocal.val.inv) do
               let idx = (warpId5.val.old, instr5.val.dst.old)
               when (delay false (resultWire.active)) do
                 store regFileA idx (resultWire.val.old)
@@ -677,7 +685,8 @@ makeSIMTPipeline c inputs =
               let req = execStage.resumeReqs.peek
               let idx = (req.resumeReqInfo.instrId.truncateCast,
                          req.resumeReqInfo.instrDest)
-              when (req.resumeReqInfo.instrDest .!=. 0 .&&. exc.val.inv) do
+              when (req.resumeReqInfo.instrDest .!=. 0 .&&.
+                      excGlobal.val.inv) do
                 store regFileB idx (req.resumeReqData)
                 if enableCHERI
                   then do
@@ -700,6 +709,7 @@ makeSIMTPipeline c inputs =
                <*> ZipList incInstrCountRegs
                <*> ZipList pccs5
                <*> ZipList pccMems
+               <*> ZipList excLocals
 
     -- Handle barrier release
     -- ======================
@@ -717,7 +727,7 @@ makeSIMTPipeline c inputs =
       , relBarrierMask = barrierMask.val
       , relBarrierVec = fromBitList (map val barrierBits)
       , relAction = \warpId -> do
-          when (exc.val.inv) do
+          when (excGlobal.val.inv) do
             -- Clear barrier bit
             barrierBits!warpId <== false
             decrBy barrierCount 1
