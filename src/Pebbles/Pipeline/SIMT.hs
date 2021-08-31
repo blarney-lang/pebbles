@@ -696,8 +696,9 @@ makeSIMTPipeline c inputs =
                 store regFileB idx (req.resumeReqData)
                 if enableCHERI
                   then do
-                    when (req.resumeReqCap.isSome) do
-                      store capRegFileB idx (req.resumeReqCap.val)
+                    let capVal = req.resumeReqCap.isSome ?
+                          (req.resumeReqCap.val, nullCapMetaVal)
+                    store capRegFileB idx capVal
                   else return ()
               suspMask!(req.resumeReqInfo.instrId) <== false
               execStage.resumeReqs.consume
