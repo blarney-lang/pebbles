@@ -19,6 +19,7 @@ import qualified Blarney.Vector as V
 
 -- Pebbles imports
 import Pebbles.Util.List
+import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
@@ -176,8 +177,14 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   -- Pipeline stall wire
   stallWire :: Wire (Bit 1) <- makeWire false
 
-  -- Are we currently injecting a multi-flit transaction in the pipeline?
-  isTransaction :: Reg (Bit 1) <- makeReg false
+  -- Track number of flits in 4-stage pipeline
+  inflightCount :: Counter 3 <- makeCounter 4
+
+  -- Multi-flit transaction currenlty being inserted into the pipeline?
+  partialInsert :: Reg (Bit 1) <- makeReg false
+
+  -- Multi-flit transaction currenlty being fed back?
+  partialFeedback :: Reg (Bit 1) <- makeReg false
 
   always do
     -- Invariant: feedback and stall never occur together)
@@ -191,16 +198,15 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let isFinal = orList [ r.valid .&&. r.val.memReqIsFinal
                          | r <- memReqs ]
 
-    -- A multi-flit transaction can only proceed if there is space in
-    -- pipeline for two flits (transactions are currently limited
-    -- to a max of two flits)
-    let multiFlitOk = isFinal .||. go1.val.inv
+    -- Is there space for two flits?
+    let spaceForTwo = isFinal ? (true, inflightCount.getAvailable .>=. 2)
 
     -- Inject requests from input queues when no stall/feedback in progress
     when (memReqsStream.canPeek) do
-      when (stallWire.val.inv .&&.
-              feedbackWire.val.inv .&&. multiFlitOk .||.
-                isTransaction.val) do
+      when (partialFeedback.val.inv .&&.
+              spaceForTwo .&&.
+                (stallWire.val.inv .||. go1.val.inv) .&&.
+                  feedbackWire.val.inv) do
         -- Consume next vector of requests
         memReqsStream.consume
         -- Inject into pipeline
@@ -210,13 +216,11 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
         pending1 <== fromBitList [r.valid | r <- memReqs]
         -- Trigger pipeline
         go1 <== true
-        -- Handle multi-flit transactions atomically
-        isTransaction <== inv isFinal
+        incrBy inflightCount 1
+        partialInsert <== inv isFinal
 
     -- Preserve go signals on stall
     when (stallWire.val) do
-      when (go1.val .&&. isTransaction.val.inv) do go1 <== true
-      when (go2.val) do go2 <== true
       when (go3.val) do go3 <== true
       when (go4.val) do go4 <== true
 
@@ -224,33 +228,37 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   -- ======================
 
   always do
-    when (go1.val .&&. (stallWire.val.inv .||. isTransaction.val)) do
-      -- Select first pending request as leader
-      leader2 <== pending1.val .&. (pending1.val.inv + 1)
-      -- In a multi-flit transaction, there will be space in the pipeline
-      dynamicAssert (isTransaction.val .==>. go2.val.inv)
-        "Coalescing Unit (stage 1): pipeline overflow, mutli-flit transaction"
-      -- Trigger stage 2
-      go2 <== true
-      zipWithM_ (<==) memReqs2 (map val memReqs1)
-      pending2 <== pending1.val
+    when (go1.val) do
+      if go2.val .&&. stallWire.val
+        then go1 <== true
+        else do
+          -- Select first pending request as leader
+          leader2 <== pending1.val .&. (pending1.val.inv + 1)
+          -- Trigger stage 2
+          go2 <== true
+          zipWithM_ (<==) memReqs2 (map val memReqs1)
+          pending2 <== pending1.val
 
   -- Stage 2: Select leader's request
   -- ================================
 
   always do
-    when (go2.val .&. stallWire.val.inv) do
-      -- There must exist at least one possible leader
-      dynamicAssert (leader2.val .!=. 0)
-        "Coalescing Unit (Stage 2): no leader found"
-      -- Mux to select leader's request
-      leaderReq3 <== select (zip (leader2.val.toBitList)
-                                 (map val memReqs2))
-      -- Trigger stage 3
-      go3 <== true
-      zipWithM_ (<==) memReqs3 (map val memReqs2)
-      pending3 <== pending2.val
-      leader3 <== leader2.val
+
+    when (go2.val) do
+      if go3.val .&&. stallWire.val
+        then go2 <== true
+        else do
+          -- There must exist at least one possible leader
+          dynamicAssert (leader2.val .!=. 0)
+            "Coalescing Unit (Stage 2): no leader found"
+          -- Mux to select leader's request
+          leaderReq3 <== select (zip (leader2.val.toBitList)
+                                     (map val memReqs2))
+          -- Trigger stage 3
+          go3 <== true
+          zipWithM_ (<==) memReqs3 (map val memReqs2)
+          pending3 <== pending2.val
+          leader3 <== leader2.val
 
   -- Stage 3: Evaluate coalescing strategies
   -- =======================================
@@ -391,8 +399,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     -- least one other request.  Otherwise use SameAddr strategy,
     -- which will always satisfy at least one request.
     let useSameBlock =
-          ((sameBlockMask4.val .&. leader3.val) .==. leader3.val) .&.
-            ((sameBlockMask4.val .&. leader3.val.inv) .!=. 0)
+          ((sameBlockMask4.val .&. leader4.val) .==. leader4.val) .&.
+            ((sameBlockMask4.val .&. leader4.val.inv) .!=. 0)
     -- Requests participating in strategy
     let mask = isSRAMAccess4.val ? (sramMask4.val,
                  useSameBlock ? (sameBlockMask4.val, sameAddrMask4.val))
@@ -400,8 +408,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     when (go4.val) do
       let busy = isSRAMAccess4.val ? (go5SRAM.val, go5DRAM.val)
       -- Stall if stage 5 is currently busy
-      -- Stall if multi-flit transaction being injected into stage 1
-      if busy .||. isTransaction.val
+      -- or transaction currently being inserted
+      if busy .||. partialInsert.val
         then do
           -- If so, stall pipeline
           stallWire <== true
@@ -435,11 +443,15 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           -- Determine any remaining pending requests
           let remaining = pending4.val .&. inv mask
           -- If there are any, feed them back
-          when (remaining .!=. 0) do
-            go1 <== true
-            feedbackWire <== true
-            zipWithM_ (<==) memReqs1 (map val memReqs4)
-            pending1 <== remaining
+          if remaining .==. 0
+            then do
+              decrBy inflightCount 1
+            else do
+              go1 <== true
+              feedbackWire <== true
+              partialFeedback <== leaderReq4.val.memReqIsFinal.inv
+              zipWithM_ (<==) memReqs1 (map val memReqs4)
+              pending1 <== remaining
 
   -- Stage 5 (DRAM): Issue DRAM requests
   -- ===================================
