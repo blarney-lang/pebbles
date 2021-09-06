@@ -42,16 +42,32 @@ makeWarpPreserver resps = do
   -- Wires indicating if each lane putting or not 
   putWires :: [Wire (MemReq t_id)] <- replicateM SIMTLanes (makeWire dontCare)
 
+  -- Mask on input lanes to deal with multi-flit transactions
+  mask :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeReg true)
+
   -- Catch case when a request is being enqueued
   let anyPut = orList (map active putWires)
+
+  -- Is any request a multi-flit transaction?
+  let anyTransaction =
+        orList [p.active .&&. p.val.memReqIsFinal.inv | p <- putWires]
 
   -- Fill queues
   always do
     when anyPut do
       dynamicAssert (memReqsQueue.notFull)
         "WarpPreserver: overflow"
+      -- Update queue
       enq memReqsQueue $ V.fromList $
         [Option (p.active) (p.val) | p <- putWires]
+      -- Update mask
+      if anyTransaction
+        then do
+          sequence_
+            [ maskReg <== p.active
+            | (maskReg, p) <- zip mask putWires ]
+        else do
+          sequence_ [r <== true | r <- mask]
 
   -- Ouputs
   let reqStreams = memReqsQueue.toStream
@@ -60,12 +76,12 @@ makeWarpPreserver resps = do
         [ MemUnit {
             memReqs =
               Sink {
-                canPut = memReqsQueue.notFull
+                canPut = memReqsQueue.notFull .&&. maskReg.val
               , put = \x -> putWire <== x
               }
           , memResps = resp
           }
-        | (resp, putWire) <- zip resps putWires
+        | (resp, putWire, maskReg) <- zip3 resps putWires mask
         ]
 
   return (reqStreams, memUnits)
