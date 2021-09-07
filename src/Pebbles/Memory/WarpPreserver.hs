@@ -42,32 +42,27 @@ makeWarpPreserver resps = do
   -- Wires indicating if each lane putting or not 
   putWires :: [Wire (MemReq t_id)] <- replicateM SIMTLanes (makeWire dontCare)
 
-  -- Mask on input lanes to deal with multi-flit transactions
-  mask :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeReg true)
+  -- On the previous enqueue, which lanes were active?
+  prevActive :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeReg false)
+
+  -- Is there a multi-flit transaction in progress?
+  transactionInProgress <- makeReg false
 
   -- Catch case when a request is being enqueued
   let anyPut = orList (map active putWires)
-
-  -- Is any request a multi-flit transaction?
-  let anyTransaction =
-        orList [p.active .&&. p.val.memReqIsFinal.inv | p <- putWires]
 
   -- Fill queues
   always do
     when anyPut do
       dynamicAssert (memReqsQueue.notFull)
         "WarpPreserver: overflow"
-      -- Update queue
       enq memReqsQueue $ V.fromList $
         [Option (p.active) (p.val) | p <- putWires]
-      -- Update mask
-      if anyTransaction
-        then do
-          sequence_
-            [ maskReg <== p.active
-            | (maskReg, p) <- zip mask putWires ]
-        else do
-          sequence_ [r <== true | r <- mask]
+      -- Remember participating lanes
+      sequence_ [prev <== p.active | (prev, p) <- zip prevActive putWires]
+      -- Track whether multi-flit transaction is in progress
+      transactionInProgress <==
+        orList [p.active ? (p.val.memReqIsFinal.inv, false) | p <- putWires]
 
   -- Ouputs
   let reqStreams = memReqsQueue.toStream
@@ -76,12 +71,13 @@ makeWarpPreserver resps = do
         [ MemUnit {
             memReqs =
               Sink {
-                canPut = memReqsQueue.notFull .&&. maskReg.val
+                canPut = memReqsQueue.notFull .&&.
+                  (transactionInProgress.val ? (prev.val, true))
               , put = \x -> putWire <== x
               }
           , memResps = resp
           }
-        | (resp, putWire, maskReg) <- zip3 resps putWires mask
+        | (resp, putWire, prev) <- zip3 resps putWires prevActive
         ]
 
   return (reqStreams, memUnits)
