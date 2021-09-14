@@ -82,6 +82,8 @@ data SIMTPipelineConfig tag =
     -- ^ File containing initial capability reg file meta-data
   , checkPCCFunc :: Maybe (InternalCap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
+  , enableCapRegFileTrace :: Bool
+    -- ^ Trace accesses to capability register file
   , useExtraPreExecStage :: Bool
     -- ^ Extra pipeline stage?
   , decodeStage :: [(String, tag)]
@@ -445,7 +447,28 @@ makeSIMTPipeline c inputs =
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
-      isSusp4 <== orList [map val regs ! warpId3.val | regs <- suspBits]
+      let isSusp3 = orList [map val regs ! warpId3.val | regs <- suspBits]
+      isSusp4 <== isSusp3
+
+      -- Capability register file tracing
+      case c.checkPCCFunc of
+        Nothing -> return ()
+        Just _ ->
+          if c.enableCapRegFileTrace
+            then do
+              let instr = instrMem.out
+              let (_, fieldMap) = matchMap False (c.decodeStage) instr
+              let useRegA = isSome (getField fieldMap "rs1" :: Option RegId)
+              let useRegB = isSome (getField fieldMap "rs2" :: Option RegId)
+              when (go3.val .&&. inv isSusp3) do
+                display "[CapRegFileTrace] read"
+                        " time=" (cycleCount.val)
+                        " pc=0x" (formatHex 0 $ state3.val.simtPC.toPC)
+                        " warp=" (warpId3.val)
+                        " active=0x" (formatHex 0 $ activeMask3.val)
+                        " rs1=" (if useRegA then instr.srcA else 0)
+                        " rs2=" (if useRegB then instr.srcB else 0)
+            else return ()
 
       -- Check PCC
       case c.checkPCCFunc of
@@ -572,7 +595,7 @@ makeSIMTPipeline c inputs =
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
                  regFileB capRegFileA capRegFileB
-                 stateMem incInstrCount pcc pccMem excLocal = do
+                 stateMem incInstrCount pcc pccMem excLocal laneId = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
@@ -684,6 +707,16 @@ makeSIMTPipeline c inputs =
                 then do
                   when (delay false (resultCapWire.active)) do
                     store capRegFileA idx (resultCapWire.val.old)
+                    if c.enableCapRegFileTrace
+                      then do
+                        display "[CapRegFileTrace] write"
+                                " time="  (cycleCount.val)
+                                " lane="  (show laneId)
+                                " warp="  (fst idx)
+                                " rd="    (snd idx)
+                                " cap=0x" (formatHex 0 $ resultCapWire.val.old)
+                                " addr=0x" (formatHex 0 $ resultWire.val.old)
+                      else return ()
                 else return ()
 
             -- Thread resumption
@@ -699,6 +732,16 @@ makeSIMTPipeline c inputs =
                     let capVal = req.resumeReqCap.isSome ?
                           (req.resumeReqCap.val, nullCapMetaVal)
                     store capRegFileB idx capVal
+                    if c.enableCapRegFileTrace
+                      then do
+                        display "[CapRegFileTrace] resume"
+                                " time="  (cycleCount.val)
+                                " lane="  (show laneId)
+                                " warp="  (fst idx)
+                                " rd="    (snd idx)
+                                " cap=0x" (formatHex 0 capVal)
+                                " addr=0x" (formatHex 0 $ req.resumeReqData)
+                      else return ()
                   else return ()
               suspMask!(req.resumeReqInfo.instrId) <== false
               execStage.resumeReqs.consume
@@ -717,6 +760,7 @@ makeSIMTPipeline c inputs =
                <*> ZipList pccs5
                <*> ZipList pccMems
                <*> ZipList excLocals
+               <*> ZipList [0..]
 
     -- Handle barrier release
     -- ======================
