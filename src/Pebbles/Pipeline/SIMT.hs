@@ -709,13 +709,18 @@ makeSIMTPipeline c inputs =
                     store capRegFileA idx (resultCapWire.val.old)
                     if c.enableCapRegFileTrace
                       then do
+                        let cap = unsplitCap (resultCapWire.val.old,
+                                              resultWire.val.old)
                         display "[CapRegFileTrace] write"
                                 " time="  (cycleCount.val)
                                 " lane="  (show laneId)
                                 " warp="  (fst idx)
                                 " rd="    (snd idx)
-                                " cap=0x" (formatHex 0 $ resultCapWire.val.old)
-                                " addr=0x" (formatHex 0 $ resultWire.val.old)
+                                " valid=" (isValidCap cap)
+                                " base=0x" (formatHex 0 $ getBase cap)
+                                " top=0x"  (formatHex 0 $ getTop cap)
+                                " meta=0x" (formatHex 0 $ getMeta cap)
+                                " addr=0x" (formatHex 0 $ getAddr cap)
                       else return ()
                 else return ()
 
@@ -734,13 +739,17 @@ makeSIMTPipeline c inputs =
                     store capRegFileB idx capVal
                     if c.enableCapRegFileTrace
                       then do
+                        let cap = unsplitCap (capVal, req.resumeReqData)
                         display "[CapRegFileTrace] resume"
                                 " time="  (cycleCount.val)
                                 " lane="  (show laneId)
                                 " warp="  (fst idx)
                                 " rd="    (snd idx)
-                                " cap=0x" (formatHex 0 capVal)
-                                " addr=0x" (formatHex 0 $ req.resumeReqData)
+                                " valid=" (isValidCap cap)
+                                " base=0x" (formatHex 0 $ getBase cap)
+                                " top=0x"  (formatHex 0 $ getTop cap)
+                                " meta=0x" (formatHex 0 $ getMeta cap)
+                                " addr=0x" (formatHex 0 $ getAddr cap)
                       else return ()
                   else return ()
               suspMask!(req.resumeReqInfo.instrId) <== false

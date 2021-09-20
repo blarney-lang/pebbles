@@ -371,5 +371,15 @@ toMem cap =
       [toBV $ pack cap]
       [Just "wrap64_toMem"]
 
+getMeta :: InternalCap -> Bit 32
+getMeta cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getMeta"
+    [("wrap64_getMeta_cap", 91)]
+    [("wrap64_getMeta", 32)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_getMeta"]
+
 nullCapInteger :: Integer = 0x00000000000001F690003F0
 almightyCapInteger :: Integer = 0x40000000003FFDF690003F0
