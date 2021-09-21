@@ -171,14 +171,15 @@ executeCHERI csrUnit memReqs s = do
       return ()
 
   -- Result paths
-  when (s.opcode `is` [CSetOffset, CIncOffset, AUIPCC]) do
+  when (s.opcode `is` [CSetAddr, CSetOffset, CIncOffset, AUIPCC]) do
     let oldCap = if s.opcode `is` [AUIPCC] then s.pcc.val else cA
-    let newCap = modifyOffset oldCap (s.opBorImm)
-                   (s.opcode `is` [CIncOffset, AUIPCC])
-    s.resultCap <== newCap.value
-
-  when (s.opcode `is` [CSetAddr]) do
-    let newCap = setAddr cA (s.opB)
+    let newAddr =
+          select
+            [ s.opcode `is` [CSetAddr] --> s.opB
+            , s.opcode `is` [CIncOffset, AUIPCC] --> getAddr oldCap + s.opBorImm
+            , s.opcode `is` [CSetOffset] --> baseA + s.opBorImm
+            ]
+    let newCap = setAddr oldCap newAddr
     s.resultCap <== newCap.value
 
   when (s.opcode `is` [CMove, CSealEntry, CSetFlags, CClearTag, CAndPerm]) do
