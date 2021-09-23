@@ -92,8 +92,10 @@ executeCHERI csrUnit memReqs s = do
   let cA = s.capA.capInternal
   let cB = s.capB.capInternal
   let topA = s.capA.capTop
+  let lenA = s.capA.capLength
   let baseA = s.capA.capBase
   let addrA = cA.getAddr
+  let offsetA = s.capA.capOffset
   let permsA = cA.getHardPerms
   let permsB = cB.getHardPerms
 
@@ -114,11 +116,10 @@ executeCHERI csrUnit memReqs s = do
               if cA.isSealedWithType then zeroExtend t else signExtend t
         , s.opcode `is` [CGetBase] --> baseA
         , s.opcode `is` [CGetLen] -->
-            let len = cA.getLength in
-              if at @32 len then ones else lower len
+              if at @32 lenA then ones else lower lenA
         , s.opcode `is` [CGetTag] --> cA.isValidCap.zeroExtend
         , s.opcode `is` [CGetSealed] --> cA.isSealed.zeroExtend
-        , s.opcode `is` [CGetOffset] --> cA.getOffset
+        , s.opcode `is` [CGetOffset] --> offsetA
         , s.opcode `is` [CGetFlags] --> cA.getFlags.zeroExtend
         , s.opcode `is` [CGetAddr] --> addrA
         ]

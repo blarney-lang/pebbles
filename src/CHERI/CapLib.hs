@@ -70,6 +70,8 @@ data Cap =
   Cap {
       capInternal :: InternalCap
     , capBase     :: Bit 32
+    , capOffset   :: Bit 32
+    , capLength   :: Bit 33
     , capTop      :: Bit 33
   }
   deriving (Generic, Interface, Bits)
@@ -79,6 +81,11 @@ decodeCap :: InternalCap -> Cap
 decodeCap c =
   Cap {
       capInternal = c
-    , capBase     = getBase c
-    , capTop      = getTop c
+    , capBase     = base
+    , capOffset   = getAddr c - base
+    , capLength   = len
+    , capTop      = zeroExtend base + len
   }
+  where
+    len = getLength c
+    base = getBase c
