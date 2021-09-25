@@ -80,7 +80,7 @@ data SIMTPipelineConfig tag =
     -- ^ Are stat counters enabled?
   , capRegInitFile :: Maybe String
     -- ^ File containing initial capability reg file meta-data
-  , checkPCCFunc :: Maybe (InternalCap -> [(Bit 1, TrapCode)])
+  , checkPCCFunc :: Maybe (CapPipe -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
   , enableCapRegFileTrace :: Bool
     -- ^ Trace accesses to capability register file
@@ -173,7 +173,7 @@ makeSIMTPipeline c inputs =
       replicateM warpSize makeDualRAM
 
     -- One program counter capability RAM (meta-data only) per lane
-    pccMems :: [RAM (Bit t_logWarps) InternalCapMetaData] <-
+    pccMems :: [RAM (Bit t_logWarps) CapPipeMeta] <-
       replicateM warpSize $
         if enableCHERI
           then makeDualRAM
@@ -195,8 +195,8 @@ makeSIMTPipeline c inputs =
 
     -- Capability register files (meta-data only)
     (capRegFilesA, capRegFilesB) ::
-      ([RAM (Bit t_logWarps, RegId) InternalCapMetaData],
-       [RAM (Bit t_logWarps, RegId) InternalCapMetaData]) <-
+      ([RAM (Bit t_logWarps, RegId) CapMemMeta],
+       [RAM (Bit t_logWarps, RegId) CapMemMeta]) <-
          unzip <$> replicateM warpSize
            (if enableCHERI
               then makeQuadRAMCore (c.capRegInitFile)
@@ -288,7 +288,7 @@ makeSIMTPipeline c inputs =
                if enableCHERI
                  then do
                    -- TODO: constrain initial PCCs
-                   let initPCC = almightyCapMetaVal
+                   let initPCC = almightyCapPipeMetaVal
                    store pccMem (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMems pccMems ]
@@ -406,7 +406,7 @@ makeSIMTPipeline c inputs =
 
     -- Set address of for each PCC
     let pccs3 =
-          [ let pccCap = unsplitCap (pcc, toPC 0) in
+          [ let pccCap = unsplitCapPipe (pcc, toPC 0) in
               delay dontCare $ setAddr pccCap (toPC pc)
           | (pc, pcc) <- zip pcs2 pccs2]
 
@@ -508,8 +508,8 @@ makeSIMTPipeline c inputs =
     let getReg5 regFile = regFile.out.old.extraReg
 
     -- Get stage 5 capability register value
-    let getCapReg5 regFile capRegFile = old $ decodeCap $ extraReg $
-          unsplitCap (capRegFile.out, regFile.out)
+    let getCapReg5 regFile capRegFile = old $ decodeCapMem $ extraReg $
+          (capRegFile.out # regFile.out)
 
     -- Get stage 5 register B or immediate
     let getRegBorImm5 rf = old $
@@ -600,11 +600,11 @@ makeSIMTPipeline c inputs =
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
             makeWire (state5.simtPC + 1)
-          pccNextWire :: Wire InternalCapMetaData <- makeWire dontCare
+          pccNextWire :: Wire CapPipeMeta <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
           resultWire :: Wire (Bit 32) <- makeWire dontCare
-          resultCapWire :: Wire InternalCapMetaData <- makeWire dontCare
+          resultCapWire :: Wire CapMemMeta <- makeWire dontCare
 
           -- Register operands
           let regA = getReg5 regFileA
@@ -633,7 +633,7 @@ makeSIMTPipeline c inputs =
             , pcc = ReadWrite pcc \cap -> do
                       if enableCHERI
                         then do
-                          let (meta, addr) = splitCap cap
+                          let (meta, addr) = splitCapPipe cap
                           pcNextWire <== fromPC addr
                           pccNextWire <== meta
                         else return ()
@@ -641,13 +641,13 @@ makeSIMTPipeline c inputs =
                          when destNonZero do
                            resultWire <== writeVal
                            if enableCHERI
-                             then resultCapWire <== nullCapMetaVal
+                             then resultCapWire <== nullCapMemMetaVal
                              else return ()
             , resultCap = WriteOnly \cap ->
                             when destNonZero do
-                              let (meta, addr) = splitCap cap
-                              resultWire <== addr
-                              resultCapWire <== meta
+                              let capMem = pack (toMem cap)
+                              resultWire <== lower capMem
+                              resultCapWire <== upper capMem
             , suspend = do
                 suspWire <== true
                 return
@@ -709,8 +709,9 @@ makeSIMTPipeline c inputs =
                     store capRegFileA idx (resultCapWire.val.old)
                     if c.enableCapRegFileTrace
                       then do
-                        let cap = unsplitCap (resultCapWire.val.old,
-                                              resultWire.val.old)
+                        let cap = fromMem $ unpack
+                                    (resultCapWire.val.old #
+                                       resultWire.val.old)
                         display "[CapRegFileTrace] write"
                                 " time="  (cycleCount.val)
                                 " lane="  (show laneId)
@@ -735,11 +736,12 @@ makeSIMTPipeline c inputs =
                 if enableCHERI
                   then do
                     let capVal = req.resumeReqCap.isSome ?
-                          (req.resumeReqCap.val, nullCapMetaVal)
+                          (req.resumeReqCap.val, nullCapMemMetaVal)
                     store capRegFileB idx capVal
                     if c.enableCapRegFileTrace
                       then do
-                        let cap = unsplitCap (capVal, req.resumeReqData)
+                        let cap = fromMem $ unpack
+                                    (capVal # req.resumeReqData)
                         display "[CapRegFileTrace] resume"
                                 " time="  (cycleCount.val)
                                 " lane="  (show laneId)

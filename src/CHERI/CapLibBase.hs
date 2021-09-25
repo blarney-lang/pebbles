@@ -3,11 +3,20 @@ module CHERI.CapLibBase where
 import Blarney
 import Blarney.Core.BV
 
-type InternalCapWidth = 91
-type InternalCap = Bit InternalCapWidth
+type CapPipeWidth = 91
+type CapPipe = Bit CapPipeWidth
 
-type InternalCapMetaDataWidth = 59
-type InternalCapMetaData = Bit InternalCapMetaDataWidth
+type CapPipeMetaWidth = 59
+type CapPipeMeta = Bit CapPipeMetaWidth
+
+type CapMemWidth = 65
+type CapMem = Bit CapMemWidth
+
+type CapMemMetaWidth = 33
+type CapMemMeta = Bit CapMemMetaWidth
+
+type CapAddrWidth = 32
+type CapAddr = Bit CapAddrWidth
 
 data Exact t =
   Exact {
@@ -31,7 +40,7 @@ data HardPerms =
   , global :: Bit 1
   } deriving (Generic, Interface, Bits)
 
-isValidCap :: InternalCap -> Bit 1
+isValidCap :: Bit 91 -> Bit 1
 isValidCap cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_isValidCap"
@@ -41,7 +50,7 @@ isValidCap cap =
       [toBV $ pack cap]
       [Just "wrap64_isValidCap"]
 
-setValidCap :: InternalCap -> Bit 1 -> InternalCap
+setValidCap :: Bit 91 -> Bit 1 -> Bit 91
 setValidCap cap valid = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setValidCap"
@@ -51,7 +60,7 @@ setValidCap cap valid =
       [toBV $ pack cap, toBV $ pack valid]
       [Just "wrap64_setValidCap"]
 
-getFlags :: InternalCap -> Bit 1
+getFlags :: Bit 91 -> Bit 1
 getFlags cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getFlags"
@@ -61,7 +70,7 @@ getFlags cap =
       [toBV $ pack cap]
       [Just "wrap64_getFlags"]
 
-setFlags :: InternalCap -> Bit 1 -> InternalCap
+setFlags :: Bit 91 -> Bit 1 -> Bit 91
 setFlags cap flags = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setFlags"
@@ -71,7 +80,7 @@ setFlags cap flags =
       [toBV $ pack cap, toBV $ pack flags]
       [Just "wrap64_setFlags"]
 
-getHardPerms :: InternalCap -> HardPerms
+getHardPerms :: Bit 91 -> HardPerms
 getHardPerms cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getHardPerms"
@@ -81,7 +90,7 @@ getHardPerms cap =
       [toBV $ pack cap]
       [Just "wrap64_getHardPerms"]
 
-setHardPerms :: InternalCap -> HardPerms -> InternalCap
+setHardPerms :: Bit 91 -> HardPerms -> Bit 91
 setHardPerms cap hardperms = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setHardPerms"
@@ -91,7 +100,7 @@ setHardPerms cap hardperms =
       [toBV $ pack cap, toBV $ pack hardperms]
       [Just "wrap64_setHardPerms"]
 
-getSoftPerms :: InternalCap -> Bit 16
+getSoftPerms :: Bit 91 -> Bit 16
 getSoftPerms cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getSoftPerms"
@@ -101,7 +110,7 @@ getSoftPerms cap =
       [toBV $ pack cap]
       [Just "wrap64_getSoftPerms"]
 
-setSoftPerms :: InternalCap -> Bit 16 -> InternalCap
+setSoftPerms :: Bit 91 -> Bit 16 -> Bit 91
 setSoftPerms cap softperms = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setSoftPerms"
@@ -111,7 +120,7 @@ setSoftPerms cap softperms =
       [toBV $ pack cap, toBV $ pack softperms]
       [Just "wrap64_setSoftPerms"]
 
-getPerms :: InternalCap -> Bit 31
+getPerms :: Bit 91 -> Bit 31
 getPerms cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getPerms"
@@ -121,7 +130,7 @@ getPerms cap =
       [toBV $ pack cap]
       [Just "wrap64_getPerms"]
 
-setPerms :: InternalCap -> Bit 31 -> InternalCap
+setPerms :: Bit 91 -> Bit 31 -> Bit 91
 setPerms cap perms = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setPerms"
@@ -131,7 +140,7 @@ setPerms cap perms =
       [toBV $ pack cap, toBV $ pack perms]
       [Just "wrap64_setPerms"]
 
-getKind :: InternalCap -> Bit 7
+getKind :: Bit 91 -> Bit 7
 getKind cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getKind"
@@ -141,7 +150,7 @@ getKind cap =
       [toBV $ pack cap]
       [Just "wrap64_getKind"]
 
-setKind :: InternalCap -> Bit 7 -> InternalCap
+setKind :: Bit 91 -> Bit 7 -> Bit 91
 setKind cap kind = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setKind"
@@ -151,7 +160,7 @@ setKind cap kind =
       [toBV $ pack cap, toBV $ pack kind]
       [Just "wrap64_setKind"]
 
-setType :: InternalCap -> Bit 4 -> InternalCap
+setType :: Bit 91 -> Bit 4 -> Bit 91
 setType cap t = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setType"
@@ -161,7 +170,7 @@ setType cap t =
       [toBV $ pack cap, toBV $ pack t]
       [Just "wrap64_setType"]
 
-getType :: InternalCap -> Bit 4
+getType :: Bit 91 -> Bit 4
 getType cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getType"
@@ -171,7 +180,7 @@ getType cap =
       [toBV $ pack cap]
       [Just "wrap64_getType"]
 
-isSealed :: InternalCap -> Bit 1
+isSealed :: Bit 91 -> Bit 1
 isSealed cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_isSealed"
@@ -181,7 +190,7 @@ isSealed cap =
       [toBV $ pack cap]
       [Just "wrap64_isSealed"]
 
-isSentry :: InternalCap -> Bit 1
+isSentry :: Bit 91 -> Bit 1
 isSentry cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_isSentry"
@@ -191,7 +200,7 @@ isSentry cap =
       [toBV $ pack cap]
       [Just "wrap64_isSentry"]
 
-isSealedWithType :: InternalCap -> Bit 1
+isSealedWithType :: Bit 91 -> Bit 1
 isSealedWithType cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_isSealedWithType"
@@ -201,7 +210,7 @@ isSealedWithType cap =
       [toBV $ pack cap]
       [Just "wrap64_isSealedWithType"]
 
-getAddr :: InternalCap -> Bit 32
+getAddr :: Bit 91 -> Bit 32
 getAddr cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getAddr"
@@ -211,7 +220,7 @@ getAddr cap =
       [toBV $ pack cap]
       [Just "wrap64_getAddr"]
 
-setAddr :: InternalCap -> Bit 32 -> Exact InternalCap
+setAddr :: Bit 91 -> Bit 32 -> Exact (Bit 91)
 setAddr cap addr = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setAddr"
@@ -221,7 +230,7 @@ setAddr cap addr =
       [toBV $ pack cap, toBV $ pack addr]
       [Just "wrap64_setAddr"]
 
-getOffset :: InternalCap -> Bit 32
+getOffset :: Bit 91 -> Bit 32
 getOffset cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getOffset"
@@ -231,7 +240,7 @@ getOffset cap =
       [toBV $ pack cap]
       [Just "wrap64_getOffset"]
 
-modifyOffset :: InternalCap -> Bit 32 -> Bit 1 -> Exact InternalCap
+modifyOffset :: Bit 91 -> Bit 32 -> Bit 1 -> Exact (Bit 91)
 modifyOffset cap offset doInc = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_modifyOffset"
@@ -241,7 +250,7 @@ modifyOffset cap offset doInc =
       [toBV $ pack cap, toBV $ pack offset, toBV $ pack doInc]
       [Just "wrap64_modifyOffset"]
 
-setOffset :: InternalCap -> Bit 32 -> Exact InternalCap
+setOffset :: Bit 91 -> Bit 32 -> Exact (Bit 91)
 setOffset cap offset = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setOffset"
@@ -251,7 +260,7 @@ setOffset cap offset =
       [toBV $ pack cap, toBV $ pack offset]
       [Just "wrap64_setOffset"]
 
-incOffset :: InternalCap -> Bit 32 -> Exact InternalCap
+incOffset :: Bit 91 -> Bit 32 -> Exact (Bit 91)
 incOffset cap inc = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_incOffset"
@@ -261,7 +270,7 @@ incOffset cap inc =
       [toBV $ pack cap, toBV $ pack inc]
       [Just "wrap64_incOffset"]
 
-getBase :: InternalCap -> Bit 32
+getBase :: Bit 91 -> Bit 32
 getBase cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getBase"
@@ -271,7 +280,7 @@ getBase cap =
       [toBV $ pack cap]
       [Just "wrap64_getBase"]
 
-getTop :: InternalCap -> Bit 33
+getTop :: Bit 91 -> Bit 33
 getTop cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getTop"
@@ -281,7 +290,7 @@ getTop cap =
       [toBV $ pack cap]
       [Just "wrap64_getTop"]
 
-getLength :: InternalCap -> Bit 33
+getLength :: Bit 91 -> Bit 33
 getLength cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getLength"
@@ -291,7 +300,7 @@ getLength cap =
       [toBV $ pack cap]
       [Just "wrap64_getLength"]
 
-isInBounds :: InternalCap -> Bit 1 -> Bit 1
+isInBounds :: Bit 91 -> Bit 1 -> Bit 1
 isInBounds cap isTopIncluded = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_isInBounds"
@@ -301,7 +310,7 @@ isInBounds cap isTopIncluded =
       [toBV $ pack cap, toBV $ pack isTopIncluded]
       [Just "wrap64_isInBounds"]
 
-setBounds :: InternalCap -> Bit 32 -> Exact InternalCap
+setBounds :: Bit 91 -> Bit 32 -> Exact (Bit 91)
 setBounds cap length = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_setBounds"
@@ -311,7 +320,7 @@ setBounds cap length =
       [toBV $ pack cap, toBV $ pack length]
       [Just "wrap64_setBounds"]
 
-nullWithAddr :: Bit 32 -> InternalCap
+nullWithAddr :: Bit 32 -> Bit 91
 nullWithAddr addr = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_nullWithAddr"
@@ -321,27 +330,27 @@ nullWithAddr addr =
       [toBV $ pack addr]
       [Just "wrap64_nullWithAddr"]
 
-almightyCap :: InternalCap
-almightyCap  = 
+almightyCapPipe :: Bit 91
+almightyCapPipe  = 
   unpack $ FromBV $ head $ makePrim (Custom
-    "module_wrap64_almightyCap"
+    "module_wrap64_almightyCapPipe"
     []
-    [("wrap64_almightyCap", 91)]
+    [("wrap64_almightyCapPipe", 91)]
     [] False False Nothing) 
       []
-      [Just "wrap64_almightyCap"]
+      [Just "wrap64_almightyCapPipe"]
 
-nullCap :: InternalCap
-nullCap  = 
+nullCapPipe :: Bit 91
+nullCapPipe  = 
   unpack $ FromBV $ head $ makePrim (Custom
-    "module_wrap64_nullCap"
+    "module_wrap64_nullCapPipe"
     []
-    [("wrap64_nullCap", 91)]
+    [("wrap64_nullCapPipe", 91)]
     [] False False Nothing) 
       []
-      [Just "wrap64_nullCap"]
+      [Just "wrap64_nullCapPipe"]
 
-validAsType :: InternalCap -> Bit 32 -> Bit 1
+validAsType :: Bit 91 -> Bit 32 -> Bit 1
 validAsType dummy checkType = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_validAsType"
@@ -351,7 +360,7 @@ validAsType dummy checkType =
       [toBV $ pack dummy, toBV $ pack checkType]
       [Just "wrap64_validAsType"]
 
-fromMem :: (Bit 1, Bit 64) -> InternalCap
+fromMem :: (Bit 1, Bit 64) -> Bit 91
 fromMem mem_cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_fromMem"
@@ -361,7 +370,7 @@ fromMem mem_cap =
       [toBV $ pack mem_cap]
       [Just "wrap64_fromMem"]
 
-toMem :: InternalCap -> (Bit 1, Bit 64)
+toMem :: Bit 91 -> (Bit 1, Bit 64)
 toMem cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_toMem"
@@ -371,7 +380,7 @@ toMem cap =
       [toBV $ pack cap]
       [Just "wrap64_toMem"]
 
-getMeta :: InternalCap -> Bit 32
+getMeta :: Bit 91 -> Bit 32
 getMeta cap = 
   unpack $ FromBV $ head $ makePrim (Custom
     "module_wrap64_getMeta"
@@ -381,5 +390,27 @@ getMeta cap =
       [toBV $ pack cap]
       [Just "wrap64_getMeta"]
 
-nullCapInteger :: Integer = 0x00000000000001F690003F0
-almightyCapInteger :: Integer = 0x40000000003FFDF690003F0
+almightyCapMem :: Bit 65
+almightyCapMem  = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_almightyCapMem"
+    []
+    [("wrap64_almightyCapMem", 65)]
+    [] False False Nothing) 
+      []
+      [Just "wrap64_almightyCapMem"]
+
+nullCapMem :: Bit 65
+nullCapMem  = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_nullCapMem"
+    []
+    [("wrap64_nullCapMem", 65)]
+    [] False False Nothing) 
+      []
+      [Just "wrap64_nullCapMem"]
+
+nullCapMemInteger :: Integer = 0x00007C30200000000
+almightyCapMemInteger :: Integer = 0x1FFF0000000000000
+nullCapPipeInteger :: Integer = 0x00000000000001F690003F0
+almightyCapPipeInteger :: Integer = 0x40000000003FFDF690003F0

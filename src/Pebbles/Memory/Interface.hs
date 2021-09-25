@@ -187,17 +187,16 @@ makeMemRespToResumeReq enableCHERI memResps
                 flitCount <== 0
                 tagBitReg <== true
                 -- Decode capability
-                let cap = fromMem (isValid, resp.memRespData # dataReg.val)
-                -- Split capability into address and meta-data
-                let (meta, addr) = splitCap cap
+                let tag = isValid .&&. resp.memRespId.instrTagMask
+                let meta = tag # resp.memRespData
+                let addr = dataReg.val
                 -- Create resume request
                 enq outQueue
                   ResumeReq {
                     resumeReqInfo = resp.memRespId
                   , resumeReqData =
                       if flitCount.val .==. 1 then addr else resp.memRespData
-                  , resumeReqCap = Option (flitCount.val .==. 1)
-                      (maskValidBitMeta (resp.memRespId.instrTagMask) meta)
+                  , resumeReqCap = Option (flitCount.val .==. 1) meta
                   }
                 -- Consume flit
                 memResps.consume

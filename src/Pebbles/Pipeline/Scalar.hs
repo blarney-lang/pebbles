@@ -53,7 +53,7 @@ data ScalarPipelineConfig tag =
     -- ^ Action for execute stage
   , trapCSRs :: TrapCSRs
     -- ^ Trap-related CSRs
-  , checkPCCFunc :: Maybe (InternalCap -> [(Bit 1, TrapCode)])
+  , checkPCCFunc :: Maybe (CapPipe -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
   }
 
@@ -95,12 +95,12 @@ makeScalarPipeline c =
     regFileB :: RAM RegId (Bit 32) <- makeDualRAMForward 0
 
     -- Capability register file (meta data only)
-    capFileA :: RAM RegId InternalCapMetaData <-
+    capFileA :: RAM RegId CapPipeMeta <-
       if not enableCHERI then return nullRAM else
         case c.capRegInitFile of
           Nothing -> makeDualRAMForward 0
           Just file -> makeDualRAMForwardInit 0 file
-    capFileB :: RAM RegId InternalCapMetaData <-
+    capFileB :: RAM RegId CapPipeMeta <-
       if not enableCHERI then return nullRAM else
         case c.capRegInitFile of
           Nothing -> makeDualRAMForward 0
@@ -112,8 +112,8 @@ makeScalarPipeline c =
     regBorImm :: Reg (Bit 32) <- makeReg dontCare
 
     -- Capbility operand registers (meta-data only)
-    capA :: Reg InternalCapMetaData <- makeReg dontCare
-    capB :: Reg InternalCapMetaData <- makeReg dontCare
+    capA :: Reg CapPipeMeta <- makeReg dontCare
+    capB :: Reg CapPipeMeta <- makeReg dontCare
 
     -- Wire used to override the update to the PC,
     -- in case of a branch instruction,
@@ -121,7 +121,7 @@ makeScalarPipeline c =
     pcNext :: Wire (Bit 32) <- makeWire dontCare
 
     -- Wire used to update the PCC meta data
-    pccNext :: Wire InternalCap <- makeWire dontCare
+    pccNext :: Wire CapPipe <- makeWire dontCare
 
     -- Pipeline stall
     stallWire :: Wire (Bit 1) <- makeWire 0
@@ -137,8 +137,8 @@ makeScalarPipeline c =
     finalResultWire :: Wire (Bit 32) <- makeWire dontCare
 
     -- Result of the execute stage (capability meta-data)
-    resultCapWire :: Wire InternalCapMetaData <- makeWire dontCare
-    finalResultCapWire :: Wire InternalCapMetaData <- makeWire dontCare
+    resultCapWire :: Wire CapPipeMeta <- makeWire dontCare
+    finalResultCapWire :: Wire CapPipeMeta <- makeWire dontCare
 
     -- Is there a multi-cycle instruction in progress?
     suspendInProgress :: Reg (Bit 1) <- makeReg false
@@ -152,9 +152,9 @@ makeScalarPipeline c =
     pc3 :: Reg (Bit 32) <- makeReg dontCare
 
     -- Program counter capabilities for each pipeline stage
-    pcc1 :: Reg InternalCap <- makeReg almightyCapVal
-    pcc2 :: Reg (Exact InternalCap) <- makeReg dontCare
-    pcc3 :: Reg InternalCap <- makeReg dontCare
+    pcc1 :: Reg CapPipe <- makeReg almightyCapPipeVal
+    pcc2 :: Reg (Exact CapPipe) <- makeReg dontCare
+    pcc3 :: Reg CapPipe <- makeReg dontCare
 
     -- Program counter capability check
     pcc3_exc :: Reg (Bit 1) <- makeDReg false
@@ -353,8 +353,8 @@ makeScalarPipeline c =
       , opA = regA.val
       , opB = regB.val
       , opBorImm = regBorImm.val
-      , capA = decodeCap $ unsplitCap (capA.val, regA.val)
-      , capB = decodeCap $ unsplitCap (capB.val, regB.val)
+      , capA = decodeCapPipe $ unsplitCapPipe (capA.val, regA.val)
+      , capB = decodeCapPipe $ unsplitCapPipe (capB.val, regB.val)
       , opAIndex = instr3.val.srcA
       , opBIndex = instr3.val.srcB
       , resultIndex = instr3.val.dst
@@ -366,11 +366,11 @@ makeScalarPipeline c =
                    when destNonZero do
                      resultWire <== x
                      if enableCHERI
-                       then resultCapWire <== nullCapMetaVal
+                       then resultCapWire <== nullCapPipeMetaVal
                        else return ()
       , resultCap = WriteOnly \cap ->
                       when destNonZero do
-                        let (meta, addr) = splitCap cap
+                        let (meta, addr) = splitCapPipe cap
                         resultWire <== addr
                         resultCapWire <== meta
       , suspend = do
@@ -436,7 +436,9 @@ makeScalarPipeline c =
           if enableCHERI
             then do
               when (resumeReq.resumeReqCap.isSome) do
-                finalResultCapWire <== resumeReq.resumeReqCap.val
+                let (meta, addr) = splitCapPipe $ fromMem $ unpack
+                     (resumeReq.resumeReqCap.val # resumeReq.resumeReqData)
+                finalResultCapWire <== meta
             else return ()
         else do
           when (inv trapReg) do

@@ -89,8 +89,8 @@ executeCHERI ::
 executeCHERI csrUnit memReqs s = do
 
   -- Shorthands / shared logic for capability operands
-  let cA = s.capA.capInternal
-  let cB = s.capB.capInternal
+  let cA = s.capA.capPipe
+  let cB = s.capB.capPipe
   let topA = s.capA.capTop
   let lenA = s.capA.capLength
   let baseA = s.capA.capBase
@@ -129,7 +129,7 @@ executeCHERI csrUnit memReqs s = do
 
   -- Non-compliant; always returns the almighty capability
   when (s.opcode `is` [CSpecialRW]) do
-    s.resultCap <== almightyCapVal
+    s.resultCap <== almightyCapPipeVal
 
   -- Bounds setting instructions
   -- ---------------------------
@@ -330,7 +330,7 @@ executeCHERI csrUnit memReqs s = do
 -- ==========================
 
 -- | Check program counter capability
-checkPCC :: InternalCap -> [(Bit 1, TrapCode)]
+checkPCC :: CapPipe -> [(Bit 1, TrapCode)]
 checkPCC cap =
   [ inv (isValidCap cap)
       --> cheri_exc_tagViolation

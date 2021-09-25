@@ -46,7 +46,7 @@ data ResumeReq =
     -- ^ Instruction info from the original suspend call
   , resumeReqData :: Bit 32
     -- ^ Data representing the result of the suspended operation
-  , resumeReqCap :: Option InternalCapMetaData
+  , resumeReqCap :: Option CapMemMeta
     -- ^ Capability meta-data for the result of the suspended operation
   } deriving (Generic, Interface, Bits)
 
@@ -76,14 +76,14 @@ data State =
     -- to modify the PC. If unwritten, the pipeline implicity
     -- updates the PC to point to the next instruction in memory.
 
-  , pcc :: ReadWrite InternalCap
+  , pcc :: ReadWrite CapPipe
     -- ^ Program counter capability.
 
   , result :: WriteOnly (Bit 32)
     -- ^ Instruction result interface.  Writing to this modifies
     -- the destination register.
 
-  , resultCap :: WriteOnly InternalCap
+  , resultCap :: WriteOnly CapPipe
     -- ^ Instruction result for capability reg file. The client should
     -- not write 'result' *and* 'resultCap' in the same clock cycle.
 
