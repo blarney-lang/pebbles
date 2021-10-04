@@ -141,7 +141,7 @@ makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
   liftNat (2 ^ c.logNumWarps) \(_ :: Proxy t_numWarps) ->
-  liftNat (c.executeStage.length) \(_ :: Proxy t_warpSize) ->
+  liftNat (c.executeStage.genericLength) \(_ :: Proxy t_warpSize) ->
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) ->
   liftNat (c.logMaxNestLevel) \(_ :: Proxy t_logMaxNestLevel) -> do
 
@@ -151,7 +151,7 @@ makeSIMTPipeline c inputs =
 
     -- Number of warps and warp size
     let numWarps = 2 ^ c.logNumWarps
-    let warpSize = c.executeStage.length
+    let warpSize = c.executeStage.genericLength
 
     -- Is CHERI enabled?
     let enableCHERI = c.checkPCCFunc.isJust

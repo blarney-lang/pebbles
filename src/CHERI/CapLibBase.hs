@@ -40,6 +40,16 @@ data HardPerms =
   , global :: Bit 1
   } deriving (Generic, Interface, Bits)
 
+data BoundsInfo =
+  BoundsInfo {
+    base :: Bit 32
+  , top :: Bit 33
+  , length :: Bit 33
+  , repBase :: Bit 32
+  , repTop :: Bit 33
+  , repLength :: Bit 33
+  } deriving (Generic, Interface, Bits)
+
 isValidCap :: Bit 91 -> Bit 1
 isValidCap cap = 
   unpack $ FromBV $ head $ makePrim (Custom
@@ -409,6 +419,16 @@ nullCapMem  =
     [] False False Nothing) 
       []
       [Just "wrap64_nullCapMem"]
+
+getBoundsInfo :: Bit 91 -> BoundsInfo
+getBoundsInfo cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getBoundsInfo"
+    [("wrap64_getBoundsInfo_cap", 91)]
+    [("wrap64_getBoundsInfo", 196)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_getBoundsInfo"]
 
 nullCapMemInteger :: Integer = 0x00007C30200000000
 almightyCapMemInteger :: Integer = 0x1FFF0000000000000
