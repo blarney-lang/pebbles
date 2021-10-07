@@ -80,7 +80,7 @@ data SIMTPipelineConfig tag =
     -- ^ Are stat counters enabled?
   , capRegInitFile :: Maybe String
     -- ^ File containing initial capability reg file meta-data
-  , checkPCCFunc :: Maybe (CapPipe -> [(Bit 1, TrapCode)])
+  , checkPCCFunc :: Maybe (Cap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
   , enableCapRegFileTrace :: Bool
     -- ^ Trace accesses to capability register file
@@ -173,7 +173,7 @@ makeSIMTPipeline c inputs =
       replicateM warpSize makeDualRAM
 
     -- One program counter capability RAM (meta-data only) per lane
-    pccMems :: [RAM (Bit t_logWarps) CapPipeMeta] <-
+    pccMems :: [RAM (Bit t_logWarps) CapMem] <-
       replicateM warpSize $
         if enableCHERI
           then makeDualRAM
@@ -288,7 +288,7 @@ makeSIMTPipeline c inputs =
                if enableCHERI
                  then do
                    -- TODO: constrain initial PCCs
-                   let initPCC = almightyCapPipeMetaVal
+                   let initPCC = almightyCapMemVal
                    store pccMem (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMems pccMems ]
@@ -406,8 +406,8 @@ makeSIMTPipeline c inputs =
 
     -- Set address of for each PCC
     let pccs3 =
-          [ let pccCap = unsplitCapPipe (pcc, toPC 0) in
-              delay dontCare $ setAddr pccCap (toPC pc)
+          [ let cap = setAddr (pcc.unpack.fromMem) (toPC pc) in
+              delay dontCare $ decodeCapPipe $ cap.value
           | (pc, pcc) <- zip pcs2 pccs2]
 
     always do
@@ -432,7 +432,7 @@ makeSIMTPipeline c inputs =
     -- Stage 3: Operand Fetch
     -- ======================
 
-    let pccs4 = [delay dontCare (pcc.value) | pcc <- pccs3]
+    let pccs4 = [delay dontCare pcc | pcc <- pccs3]
 
     always do
       -- Fetch operands from each register file
@@ -474,9 +474,9 @@ makeSIMTPipeline c inputs =
       case c.checkPCCFunc of
         Nothing -> return ()
         Just checkPCC -> sequence_
-          [ do let table = checkPCC (pcc.value)
+          [ do let table = checkPCC pcc
                let exception = orList [cond | (cond, _) <- table]
-               let ok = inv active .||. pcc.exact .&&. inv exception
+               let ok = inv active .||. inv exception
                when (go3.val) do
                  when (inv ok) do
                    excLocal <== true
@@ -600,7 +600,7 @@ makeSIMTPipeline c inputs =
           -- Per lane interfacing
           pcNextWire :: Wire (Bit t_logInstrs) <-
             makeWire (state5.simtPC + 1)
-          pccNextWire :: Wire CapPipeMeta <- makeWire dontCare
+          pccNextWire :: Wire CapPipe <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
           resultWire :: Wire (Bit 32) <- makeWire dontCare
@@ -622,32 +622,18 @@ makeSIMTPipeline c inputs =
               instr = instr5
             , opA = regA
             , opB = regB
-            , capA = capRegA
-            , capB = capRegB
             , opBorImm = regBorImm
             , opAIndex = instr5.srcA
             , opBIndex = instr5.srcB
             , resultIndex = instr5.dst
-            , pc = ReadWrite (state5.simtPC.toPC) \writeVal -> do
-                     pcNextWire <== writeVal.fromPC
-            , pcc = ReadWrite pcc \cap -> do
-                      if enableCHERI
-                        then do
-                          let (meta, addr) = splitCapPipe cap
-                          pcNextWire <== fromPC addr
-                          pccNextWire <== meta
-                        else return ()
+            , pc = ReadWrite (state5.simtPC.toPC) \pcNew -> do
+                     pcNextWire <== fromPC pcNew
             , result = WriteOnly \writeVal ->
                          when destNonZero do
                            resultWire <== writeVal
                            if enableCHERI
                              then resultCapWire <== nullCapMemMetaVal
                              else return ()
-            , resultCap = WriteOnly \cap ->
-                            when destNonZero do
-                              let capMem = pack (toMem cap)
-                              resultWire <== lower capMem
-                              resultCapWire <== upper capMem
             , suspend = do
                 suspWire <== true
                 return
@@ -662,6 +648,21 @@ makeSIMTPipeline c inputs =
                 excLocal <== true
                 display "SIMT exception occurred: " code
                         " pc=0x" (formatHex 8 (state5.simtPC.toPC))
+            -- CHERI support
+            , capA = capRegA
+            , capB = capRegB
+            , pcc = pcc
+            , pccNew = WriteOnly \pccNew -> do
+                if enableCHERI
+                  then do
+                    pcNextWire <== fromPC (getAddr pccNew)
+                    pccNextWire <== pccNew
+                  else return ()
+            , resultCap = WriteOnly \cap ->
+                            when destNonZero do
+                              let capMem = pack (toMem cap)
+                              resultWire <== lower capMem
+                              resultCapWire <== upper capMem
             }
 
           always do
@@ -688,7 +689,7 @@ makeSIMTPipeline c inputs =
                   , simtRetry = retryWire.val
                   }
               when (pccNextWire.active) do
-                store pccMem warpId5 (pccNextWire.val)
+                store pccMem warpId5 (pccNextWire.val.toMem.pack)
 
               -- Increment instruction count
               when (retryWire.val.inv) do

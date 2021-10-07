@@ -11,7 +11,6 @@ module CHERI.CapLib
   , decodeCapPipe
   , decodeCapMem
   , almightyCapPipeVal
-  , almightyCapPipeMetaVal
   , nullCapPipeVal
   , nullCapPipeMetaVal
   , nullCapPipeMetaInteger
@@ -42,10 +41,6 @@ unsplitCapPipe (meta, addr) = tag # addr # lower meta
 almightyCapPipeVal :: CapPipe
 almightyCapPipeVal = fromInteger almightyCapPipeInteger
 
--- | Almighty capability meta-data
-almightyCapPipeMetaVal :: CapPipeMeta
-almightyCapPipeMetaVal = fst (splitCapPipe almightyCapPipeVal)
-
 -- | Direct null capability (not via Verilog)
 nullCapPipeVal :: CapPipe
 nullCapPipeVal = fromInteger nullCapPipeInteger
@@ -58,7 +53,6 @@ nullCapPipeMetaVal = upper nullCapPipeVal
 nullCapPipeMetaInteger :: Integer
 nullCapPipeMetaInteger = nullCapPipeInteger B..&. mask
   where
-    cw = valueOf @CapPipeWidth
     mw = valueOf @CapPipeMetaWidth
     mask = (1 `B.shiftL` (mw-1)) - 1
 
@@ -103,11 +97,11 @@ data Cap =
 decodeCapPipe :: CapPipe -> Cap
 decodeCapPipe c =
   Cap {
-      capPipe   = c
-    , capBase   = base
-    , capOffset = getAddr c - base
-    , capLength = len
-    , capTop    = zeroExtend base + len
+      capPipe    = c
+    , capBase    = base
+    , capOffset  = getAddr c - base
+    , capLength  = len
+    , capTop     = zeroExtend base + len
   }
   where
     info = getBoundsInfo c

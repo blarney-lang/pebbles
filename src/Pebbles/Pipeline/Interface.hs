@@ -53,6 +53,7 @@ data ResumeReq =
 -- | Pipeline state, visisble to the execute stage
 data State =
   State {
+
     instr :: Bit 32
     -- ^ Current instruction
 
@@ -60,10 +61,6 @@ data State =
   , opB :: Bit 32
   , opBorImm :: Bit 32
     -- ^ Source operands. These contain the values of the two source registers.
-
-  , capA :: Cap
-  , capB :: Cap
-    -- ^ Capability operands.
 
   , opAIndex :: RegId
   , opBIndex :: RegId
@@ -76,16 +73,9 @@ data State =
     -- to modify the PC. If unwritten, the pipeline implicity
     -- updates the PC to point to the next instruction in memory.
 
-  , pcc :: ReadWrite CapPipe
-    -- ^ Program counter capability.
-
   , result :: WriteOnly (Bit 32)
     -- ^ Instruction result interface.  Writing to this modifies
     -- the destination register.
-
-  , resultCap :: WriteOnly CapPipe
-    -- ^ Instruction result for capability reg file. The client should
-    -- not write 'result' *and* 'resultCap' in the same clock cycle.
 
   , suspend :: Action InstrInfo
     -- ^ Call this to implement a multi-cycle instruction.
@@ -100,6 +90,25 @@ data State =
 
   , trap :: TrapCode -> Action ()
     -- ^ Call this to tigger an exception / interrupt
+
+  -------------------
+  -- CHERI support --
+  -------------------
+
+  , capA :: Cap
+  , capB :: Cap
+    -- ^ Capability operands.
+
+  , pcc :: Cap
+    -- ^ Read access to PCC.
+
+  , pccNew :: WriteOnly CapPipe
+    -- ^ Write access to PCC. Must only be written when pc is not written.
+
+  , resultCap :: WriteOnly CapPipe
+    -- ^ Instruction result for capability reg file. The client should
+    -- not write 'result' *and* 'resultCap' in the same clock cycle.
+
   } deriving (Generic, Interface)
 
 -- | Upper bound on number of instruction mnemonics used by the decoder

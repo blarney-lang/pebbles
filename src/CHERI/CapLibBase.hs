@@ -430,6 +430,16 @@ getBoundsInfo cap =
       [toBV $ pack cap]
       [Just "wrap64_getBoundsInfo"]
 
+setAddrUnsafe :: Bit 91 -> Bit 32 -> Bit 91
+setAddrUnsafe cap addr = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setAddrUnsafe"
+    [("wrap64_setAddrUnsafe_cap", 91), ("wrap64_setAddrUnsafe_addr", 32)]
+    [("wrap64_setAddrUnsafe", 91)]
+    [] False False Nothing) 
+      [toBV $ pack cap, toBV $ pack addr]
+      [Just "wrap64_setAddrUnsafe"]
+
 nullCapMemInteger :: Integer = 0x00007C30200000000
 almightyCapMemInteger :: Integer = 0x1FFF0000000000000
 nullCapPipeInteger :: Integer = 0x00000000000001F690003F0

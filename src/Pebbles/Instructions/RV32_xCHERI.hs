@@ -173,7 +173,7 @@ executeCHERI csrUnit memReqs s = do
 
   -- Result paths
   when (s.opcode `is` [CSetAddr, CSetOffset, CIncOffset, AUIPCC]) do
-    let oldCap = if s.opcode `is` [AUIPCC] then s.pcc.val else cA
+    let oldCap = if s.opcode `is` [AUIPCC] then s.pcc.capPipe else cA
     let newAddr =
           select
             [ s.opcode `is` [CSetAddr] --> s.opB
@@ -218,10 +218,11 @@ executeCHERI csrUnit memReqs s = do
       trap s cheri_exc_sealViolation
 
     -- Result path
-    let linkCap = setAddr (s.pcc.val) (s.pc.val + 4)
-    s.resultCap <== setType (linkCap.value) (-2) {- Seal as sentry -}
-    s.pc <== cA.getAddr.upper # (0 :: Bit 1)
-    s.pcc <== setType cA (-1) {- Unseal -}
+    -- Use setAddrUnsafe: PC is in bounds therefore PC+4 is representable
+    let linkCap = setAddrUnsafe (s.pcc.capPipe) (s.pc.val + 4)
+    s.resultCap <== setType linkCap (-2) {- Seal as sentry -}
+    let pcNew = cA.getAddr.upper # (0 :: Bit 1)
+    s.pccNew <== setType (setAddrUnsafe cA pcNew) (-1) {- Unseal -}
 
   -- Memory access
   -- -------------
@@ -330,17 +331,17 @@ executeCHERI csrUnit memReqs s = do
 -- ==========================
 
 -- | Check program counter capability
-checkPCC :: CapPipe -> [(Bit 1, TrapCode)]
+checkPCC :: Cap -> [(Bit 1, TrapCode)]
 checkPCC cap =
-  [ inv (isValidCap cap)
+  [ cap.capPipe.isValidCap.inv
       --> cheri_exc_tagViolation
-  , isSealed cap
+  , cap.capPipe.isSealed
       --> cheri_exc_sealViolation
   , perms.permitExecute.inv
       --> cheri_exc_permitExecuteViolation
-  , addr .<. getBase cap .||. zeroExtend (addr + 4) .>. getTop cap
+  , addr .<. cap.capBase .||. zeroExtend (addr + 4) .>. cap.capTop
       --> cheri_exc_lengthViolation
   ]
   where
-    addr = getAddr cap
-    perms = getHardPerms cap
+    addr = cap.capPipe.getAddr
+    perms = cap.capPipe.getHardPerms

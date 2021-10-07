@@ -53,7 +53,7 @@ data ScalarPipelineConfig tag =
     -- ^ Action for execute stage
   , trapCSRs :: TrapCSRs
     -- ^ Trap-related CSRs
-  , checkPCCFunc :: Maybe (CapPipe -> [(Bit 1, TrapCode)])
+  , checkPCCFunc :: Maybe (Cap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
   }
 
@@ -120,7 +120,7 @@ makeScalarPipeline c =
     -- which also triggers a pipeline flush
     pcNext :: Wire (Bit 32) <- makeWire dontCare
 
-    -- Wire used to update the PCC meta data
+    -- Wire used to update the PCC
     pccNext :: Wire CapPipe <- makeWire dontCare
 
     -- Pipeline stall
@@ -151,10 +151,10 @@ makeScalarPipeline c =
     pc2 :: Reg (Bit 32) <- makeReg dontCare
     pc3 :: Reg (Bit 32) <- makeReg dontCare
 
-    -- Program counter capabilities for each pipeline stage
+    -- Program counter capability meta-data for each pipeline stage
     pcc1 :: Reg CapPipe <- makeReg almightyCapPipeVal
-    pcc2 :: Reg (Exact CapPipe) <- makeReg dontCare
-    pcc3 :: Reg CapPipe <- makeReg dontCare
+    pcc2 :: Reg Cap <- makeReg dontCare
+    pcc3 :: Reg Cap <- makeReg dontCare
 
     -- Program counter capability check
     pcc3_exc :: Reg (Bit 1) <- makeDReg false
@@ -179,10 +179,9 @@ makeScalarPipeline c =
     -- ==========================
 
     always do
-      -- PC for fetch
       let pcFetch = pcNext.active ? (pcNext.val, pc1.val + 4)
 
-      -- PC capability for fetch
+      -- PC capability meta-data for fetch
       let pccFetch = pccNext.active ? (pccNext.val, pcc1.val)
 
       -- Index the instruction memory
@@ -215,7 +214,10 @@ makeScalarPipeline c =
           pc2 <== pc1.val
 
           if enableCHERI
-            then pcc2 <== setAddr (pcc1.val) (pc1.val)
+            then do
+              -- Ensure the PCC is representable
+              let cap = setAddr (pcc1.val) (pc1.val)
+              pcc2 <== decodeCapPipe (cap.value)
             else return ()
 
       -- Register file indicies
@@ -323,18 +325,18 @@ makeScalarPipeline c =
             Nothing -> do
               go3 <== true
             Just checkPCC -> do
-              let pcc = pcc2.val
-              let table = checkPCC (pcc.value)
+              let table = checkPCC (pcc2.val)
               let exception = orList [cond | (cond, _) <- table]
-              let ok = pcc.exact .&&. inv exception
-              go3 <== ok .&&. trapWire.val.inv
-              pcc3 <== pcc.value
-              pcc3_exc <== inv ok
-              when (inv ok) do
+              go3 <== inv exception .&&. trapWire.val.inv
+              pcc3 <== pcc2.val
+              pcc3_exc <== exception
+              when exception do
                 let trapCode = priorityIf table dontCare
                 display "Scalar pipeline: PCC exception:"
                   " code=" trapCode
-                  " pc=" (formatHex 8 (pc2.val))
+                  " pc=" (formatHex 0 $ pc2.val)
+                  " capPipe=" (formatHex 0 $ pcc2.val.capPipe)
+                finish
 
     -- Stage 3: Execute
     -- ================
@@ -353,26 +355,17 @@ makeScalarPipeline c =
       , opA = regA.val
       , opB = regB.val
       , opBorImm = regBorImm.val
-      , capA = decodeCapPipe $ unsplitCapPipe (capA.val, regA.val)
-      , capB = decodeCapPipe $ unsplitCapPipe (capB.val, regB.val)
       , opAIndex = instr3.val.srcA
       , opBIndex = instr3.val.srcB
       , resultIndex = instr3.val.dst
-      , pc = ReadWrite (pc3.val) (pcNext <==)
-      , pcc = if enableCHERI
-                then ReadWrite (pcc3.val) (pccNext <==)
-                else error "Scalar Pipeline: PCC used when CHERI disabled"
+      , pc = ReadWrite (pc3.val) \pcNew -> do
+               pcNext <== pcNew
       , result = WriteOnly \x ->
                    when destNonZero do
                      resultWire <== x
                      if enableCHERI
                        then resultCapWire <== nullCapPipeMetaVal
                        else return ()
-      , resultCap = WriteOnly \cap ->
-                      when destNonZero do
-                        let (meta, addr) = splitCapPipe cap
-                        resultWire <== addr
-                        resultCapWire <== meta
       , suspend = do
           -- In future, we could allow independent instructions
           -- to bypass multi-cycle instructions
@@ -397,6 +390,17 @@ makeScalarPipeline c =
           c.trapCSRs.csr_mcause <==
             code.trapCodeIsInterrupt # code.trapCodeCause
           trapWire <== true
+      , capA = decodeCapPipe $ unsplitCapPipe (capA.val, regA.val)
+      , capB = decodeCapPipe $ unsplitCapPipe (capB.val, regB.val)
+      , pcc = pcc3.val
+      , pccNew = WriteOnly \pccNew -> do
+                   pcNext <== getAddr pccNew
+                   pccNext <== pccNew
+      , resultCap = WriteOnly \cap ->
+                      when destNonZero do
+                        let (meta, addr) = splitCapPipe cap
+                        resultWire <== addr
+                        resultCapWire <== meta
       }
 
     always do
