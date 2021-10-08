@@ -86,6 +86,8 @@ data SIMTPipelineConfig tag =
     -- ^ Trace accesses to capability register file
   , useExtraPreExecStage :: Bool
     -- ^ Extra pipeline stage?
+  , useSharedPCC :: Bool
+    -- ^ When CHERI enabled, use shared PCC (meta-data) per kernel
   , decodeStage :: [(String, tag)]
     -- ^ Decode table
   , executeStage :: [State -> Module ExecuteStage]
@@ -175,7 +177,7 @@ makeSIMTPipeline c inputs =
     -- One program counter capability RAM (meta-data only) per lane
     pccMems :: [RAM (Bit t_logWarps) CapMem] <-
       replicateM warpSize $
-        if enableCHERI
+        if enableCHERI && not (c.useSharedPCC)
           then makeDualRAM
           else return nullRAM
 
@@ -253,6 +255,10 @@ makeSIMTPipeline c inputs =
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
+    -- One program counter capability per kernel
+    pccShared :: Reg CapPipe <- makeReg dontCare
+    pccShared3 :: Reg Cap <- makeReg dontCare
+
     -- Stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
     instrCount :: Reg (Bit 32) <- makeReg 0
@@ -283,15 +289,18 @@ makeSIMTPipeline c inputs =
               , simtNestLevel = 0
               , simtRetry = false
               }
+
+        -- Initialise PCC per lane
         sequence_
           [ do store stateMem (warpIdCounter.val) initState
                if enableCHERI
                  then do
-                   -- TODO: constrain initial PCCs
-                   let initPCC = almightyCapMemVal
+                   let initPCC = almightyCapMemVal -- TODO: constrain
                    store pccMem (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMems pccMems ]
+        -- Intialise PCC per kernel
+        pccShared <== almightyCapPipeVal -- TODO: constrain
 
         -- Reset various state
         excGlobal <== false
@@ -354,7 +363,7 @@ makeSIMTPipeline c inputs =
         load stateMem (warpStream.peek)
 
       -- Load PCC for next warp on each lane
-      if enableCHERI
+      if enableCHERI && not (c.useSharedPCC)
         then do
           forM_ pccMems \pccMem -> do
             load pccMem (warpStream.peek)
@@ -427,12 +436,16 @@ makeSIMTPipeline c inputs =
       -- Trigger stage 3
       warpId3 <== warpId2
       state3 <== state2
+      pccShared3 <==
+        let cap = setAddr (pccShared.val) (state2.simtPC.toPC) in
+          decodeCapPipe (cap.value)
       go3 <== go2
 
     -- Stage 3: Operand Fetch
     -- ======================
 
     let pccs4 = [delay dontCare pcc | pcc <- pccs3]
+    let pccShared4 = delay dontCare (pccShared3.val)
 
     always do
       -- Fetch operands from each register file
@@ -472,7 +485,18 @@ makeSIMTPipeline c inputs =
 
       -- Check PCC
       case c.checkPCCFunc of
+        -- CHERI disabled; no check required
         Nothing -> return ()
+        -- Check shared PCC per kernel
+        Just checkPCC | c.useSharedPCC -> do
+          let table = checkPCC (pccShared3.val)
+          let exception = orList [cond | (cond, _) <- table]
+          when (go3.val) do
+            when exception do
+              head excLocals <== true
+              let trapCode = priorityIf table (excCapCode 0)
+              display "SIMT pipeline: PCC exception: code=" trapCode
+        -- Check PCC per lane
         Just checkPCC -> sequence_
           [ do let table = checkPCC pcc
                let exception = orList [cond | (cond, _) <- table]
@@ -520,6 +544,7 @@ makeSIMTPipeline c inputs =
 
     -- Propagate signals to stage 5
     let pccs5 = map extraReg (map old pccs4)
+    let pccShared5 = pccShared4.old.extraReg
     let isSusp5 = isSusp4.val.old.extraReg
     let warpId5 = warpId4.val.old.extraReg
     let activeMask5 = activeMask4.val.old.extraReg
@@ -651,7 +676,7 @@ makeSIMTPipeline c inputs =
             -- CHERI support
             , capA = capRegA
             , capB = capRegB
-            , pcc = pcc
+            , pcc = if c.useSharedPCC then pccShared5 else pcc
             , pccNew = WriteOnly \pccNew -> do
                 if enableCHERI
                   then do
