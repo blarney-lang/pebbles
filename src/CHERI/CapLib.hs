@@ -87,7 +87,6 @@ data Cap =
   Cap {
       capPipe     :: CapPipe
     , capBase     :: CapAddr
-    , capOffset   :: CapAddr
     , capLength   :: Bit (CapAddrWidth+1)
     , capTop      :: Bit (CapAddrWidth+1)
   }
@@ -99,7 +98,6 @@ decodeCapPipe c =
   Cap {
       capPipe    = c
     , capBase    = base
-    , capOffset  = getAddr c - base
     , capLength  = len
     , capTop     = zeroExtend base + len
   }

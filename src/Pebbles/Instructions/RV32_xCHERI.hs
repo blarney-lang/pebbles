@@ -30,12 +30,10 @@ decodeCHERI =
   , "1111111 00011  rs1<5> 000 rd<5> 1011011" --> CGetLen
   , "1111111 00100  rs1<5> 000 rd<5> 1011011" --> CGetTag
   , "1111111 00101  rs1<5> 000 rd<5> 1011011" --> CGetSealed
-  , "1111111 00110  rs1<5> 000 rd<5> 1011011" --> CGetOffset
   , "1111111 00111  rs1<5> 000 rd<5> 1011011" --> CGetFlags
   , "1111111 01111  rs1<5> 000 rd<5> 1011011" --> CGetAddr
   , "0001101 rs2<5> rs1<5> 000 rd<5> 1011011" --> CAndPerm
   , "0001110 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetFlags
-  , "0001111 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetOffset
   , "0010000 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetAddr
   , "0010001 rs2<5> rs1<5> 000 rd<5> 1011011" --> CIncOffset
   , "imm[11:0]      rs1<5> 001 rd<5> 1011011" --> CIncOffset
@@ -95,7 +93,6 @@ executeCHERI csrUnit memReqs s = do
   let lenA = s.capA.capLength
   let baseA = s.capA.capBase
   let addrA = cA.getAddr
-  let offsetA = s.capA.capOffset
   let permsA = cA.getHardPerms
   let permsB = cB.getHardPerms
 
@@ -104,7 +101,7 @@ executeCHERI csrUnit memReqs s = do
 
   let isInspect = s.opcode `is`
         [ CGetPerm, CGetType, CGetBase, CGetLen, CGetTag
-        , CGetSealed, CGetOffset, CGetFlags, CGetAddr
+        , CGetSealed, CGetFlags, CGetAddr
         ]
 
   when isInspect do
@@ -119,7 +116,6 @@ executeCHERI csrUnit memReqs s = do
               if at @32 lenA then ones else lower lenA
         , s.opcode `is` [CGetTag] --> cA.isValidCap.zeroExtend
         , s.opcode `is` [CGetSealed] --> cA.isSealed.zeroExtend
-        , s.opcode `is` [CGetOffset] --> offsetA
         , s.opcode `is` [CGetFlags] --> cA.getFlags.zeroExtend
         , s.opcode `is` [CGetAddr] --> addrA
         ]
@@ -157,7 +153,7 @@ executeCHERI csrUnit memReqs s = do
   -- ------------------------------------------
 
   -- Exception paths
-  when (s.opcode `is` [CSetFlags, CSetOffset, CSetAddr, CIncOffset]) do
+  when (s.opcode `is` [CSetFlags, CSetAddr, CIncOffset]) do
     when (cA.isValidCap .&&. cA.isSealed) do
       trap s cheri_exc_sealViolation
 
@@ -172,13 +168,12 @@ executeCHERI csrUnit memReqs s = do
       return ()
 
   -- Result paths
-  when (s.opcode `is` [CSetAddr, CSetOffset, CIncOffset, AUIPCC]) do
+  when (s.opcode `is` [CSetAddr, CIncOffset, AUIPCC]) do
     let oldCap = if s.opcode `is` [AUIPCC] then s.pcc.capPipe else cA
     let newAddr =
           select
             [ s.opcode `is` [CSetAddr] --> s.opB
             , s.opcode `is` [CIncOffset, AUIPCC] --> getAddr oldCap + s.opBorImm
-            , s.opcode `is` [CSetOffset] --> baseA + s.opBorImm
             ]
     let newCap = setAddr oldCap newAddr
     s.resultCap <== newCap.value

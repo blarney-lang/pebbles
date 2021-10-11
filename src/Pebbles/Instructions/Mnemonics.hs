@@ -51,12 +51,10 @@ data Mnemonic =
   | CGetLen
   | CGetTag
   | CGetSealed
-  | CGetOffset
   | CGetFlags
   | CGetAddr
   | CAndPerm
   | CSetFlags
-  | CSetOffset
   | CSetAddr
   | CIncOffset
   | CClearTag
