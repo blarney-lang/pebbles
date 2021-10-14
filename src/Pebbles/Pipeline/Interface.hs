@@ -103,7 +103,8 @@ data State =
     -- ^ Read access to PCC.
 
   , pccNew :: WriteOnly CapPipe
-    -- ^ Write access to PCC. Must only be written when pc is not written.
+    -- ^ Update the capability which is combined with the PC (via a
+    -- call to setAddr) to derive the PCC.
 
   , resultCap :: WriteOnly CapPipe
     -- ^ Instruction result for capability reg file. The client should

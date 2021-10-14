@@ -217,7 +217,8 @@ executeCHERI csrUnit memReqs s = do
     let linkCap = setAddrUnsafe (s.pcc.capPipe) (s.pc.val + 4)
     s.resultCap <== setType linkCap (-2) {- Seal as sentry -}
     let pcNew = cA.getAddr.upper # (0 :: Bit 1)
-    s.pccNew <== setType (setAddrUnsafe cA pcNew) (-1) {- Unseal -}
+    s.pc <== pcNew
+    s.pccNew <== setType cA (-1) {- Unseal -}
 
   -- Memory access
   -- -------------
