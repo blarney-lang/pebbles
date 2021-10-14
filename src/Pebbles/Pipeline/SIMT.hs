@@ -74,6 +74,8 @@ data SIMTPipelineConfig tag =
     -- ^ Base address of instruction memory in memory map
   , logNumWarps :: Int
     -- ^ Number of warps
+  , logWarpSize :: Int
+    -- ^ Number of threads per warp (number of lanes)
   , logMaxNestLevel :: Int
     -- ^ Number of bits used to track divergence nesting level
   , enableStatCounters :: Bool
@@ -92,7 +94,7 @@ data SIMTPipelineConfig tag =
     -- ^ Decode table
   , executeStage :: [State -> Module ExecuteStage]
     -- ^ List of execute stages, one per lane
-    -- The size of this list is the warp size
+    -- The size of this list must match the warp size
   , simtPushTag :: tag
   , simtPopTag :: tag
     -- ^ Mnemonics for SIMT explicit convergence instructions
@@ -120,16 +122,16 @@ data SIMTPipelineOuts =
   }
 
 -- | Per-thread state
-data SIMTThreadState t_logInstrs t_logMaxNestLevel =
+data SIMTThreadState t_logMaxNestLevel =
   SIMTThreadState {
-    simtPC :: Bit t_logInstrs
+    simtPC :: Bit 32
     -- ^ Program counter
   , simtNestLevel :: Bit t_logMaxNestLevel
     -- ^ SIMT divergence nesting level
   , simtRetry :: Bit 1
     -- ^ The last thing this thread did was a retry
   }
-  deriving (Generic, Bits)
+  deriving (Generic, Bits, Interface)
 
 -- | SIMT pipeline module
 makeSIMTPipeline :: Tag tag =>
@@ -143,13 +145,16 @@ makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
   liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
   liftNat (2 ^ c.logNumWarps) \(_ :: Proxy t_numWarps) ->
-  liftNat (c.executeStage.genericLength) \(_ :: Proxy t_warpSize) ->
+  liftNat (c.logWarpSize) \(_ :: Proxy t_logWarpSize) ->
+  liftNat (2 ^ c.logWarpSize) \(_ :: Proxy t_warpSize) ->
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) ->
   liftNat (c.logMaxNestLevel) \(_ :: Proxy t_logMaxNestLevel) -> do
 
     -- Sanity check
     staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
       "makeSIMTPipeline: WarpId is wider than InstrId"
+    staticAssert (2 ^ c.logWarpSize == c.executeStage.genericLength)
+      "makeSIMTPipeline: warp size does not match number of execute units"
 
     -- Number of warps and warp size
     let numWarps = 2 ^ c.logNumWarps
@@ -171,7 +176,7 @@ makeSIMTPipeline c inputs =
 
     -- One block RAM of thread states per lane
     stateMems ::  [RAM (Bit t_logWarps)
-                       (SIMTThreadState t_logInstrs t_logMaxNestLevel) ] <-
+                       (SIMTThreadState t_logMaxNestLevel) ] <-
       replicateM warpSize makeDualRAM
 
     -- One program counter capability RAM (meta-data only) per lane
@@ -222,10 +227,8 @@ makeSIMTPipeline c inputs =
     warpId4 :: Reg (Bit t_logWarps) <- makeReg dontCare
 
     -- Thread state, for each stage
-    state3 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
-      makeReg dontCare
-    state4 :: Reg (SIMTThreadState t_logInstrs t_logMaxNestLevel) <-
-      makeReg dontCare
+    state3 :: Reg (SIMTThreadState t_logMaxNestLevel) <- makeReg dontCare
+    state4 :: Reg (SIMTThreadState t_logMaxNestLevel) <- makeReg dontCare
 
     -- Active thread mask
     activeMask3 :: Reg (Bit t_warpSize) <- makeReg dontCare
@@ -255,9 +258,9 @@ makeSIMTPipeline c inputs =
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
-    -- One program counter capability per kernel
+    -- Program counter capability registers
     pccShared :: Reg CapPipe <- makeReg dontCare
-    pccShared3 :: Reg Cap <- makeReg dontCare
+    pcc3 :: Reg Cap <- makeReg dontCare
 
     -- Stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
@@ -266,11 +269,15 @@ makeSIMTPipeline c inputs =
     -- Triggers from each lane to increment instruction count
     incInstrCountRegs :: [Reg (Bit 1)] <- replicateM warpSize (makeDReg 0)
 
+    -- Function to convert from 32-bit PC to instruction address
+    let toInstrAddr :: Bit 32 -> Bit t_logInstrs =
+          \pc -> truncateCast (slice @31 @2 pc)
+
     -- Pipeline Initialisation
     -- =======================
 
     -- Register to trigger pipeline initialisation at some PC
-    startReg :: Reg (Option (Bit t_logInstrs)) <- makeReg none
+    startReg :: Reg (Option (Bit 32)) <- makeReg none
 
     -- Warp id counter, to initialise PC of each thread
     warpIdCounter :: Reg (Bit t_logWarps) <- makeReg 0
@@ -385,43 +392,45 @@ makeSIMTPipeline c inputs =
 
     -- Active threads are those with the max nesting level
     -- On a tie, favour instructions undergoing a retry
-    let maxOf a b =
-          if (a.simtNestLevel # a.simtRetry) .>.
-             (b.simtNestLevel # b.simtRetry) then a else b
-    let state2 = pipelinedTree1 stage1Substages maxOf
-                   [mem.out | mem <- stateMems]
+    let maxOf a@(a_nest, a_retry, _)
+              b@(b_nest, b_retry, _) =
+          if (a_nest # a_retry) .>. (b_nest # b_retry) then a else b
+    let (_, _, leaderIdx) =
+          pipelinedTree1 (stage1Substages-1) maxOf
+            [ ( mem.out.simtNestLevel
+              , mem.out.simtRetry
+              , fromInteger i :: Bit t_logWarpSize )
+            | (mem, i) <- zip stateMems [0..] ]
 
-    -- Latch PCCs
-    let pcs2 = [ iterateN stage1Substages (delay dontCare) (mem.out.simtPC)
-               | mem <- stateMems]
-    let pccs2 = [ iterateN stage1Substages (delay dontCare) (mem.out)
-                | mem <- pccMems]
+    -- Wait for leader index to be computed
+    let states2_tmp =
+          [iterateN (stage1Substages-1) buffer (mem.out) | mem <- stateMems]
+    let pccs2_tmp =
+          [iterateN (stage1Substages-1) buffer (mem.out) | mem <- pccMems]
+  
+    -- State and PCC of leader
+    let state2 = buffer (states2_tmp ! leaderIdx)
+    let pcc2   = buffer (pccs2_tmp ! leaderIdx)
+
+    -- Stat and PCC of all threads
+    let stateMemOuts2 = map buffer states2_tmp
+    let pccs2 = map buffer pccs2_tmp
 
     -- Trigger stage 2
-    let stateMemOuts2 =
-          [iterateN stage1Substages buffer (mem.out) | mem <- stateMems]
     let warpId2 = iterateN stage1Substages buffer (warpId1.val)
     let go2 = iterateN stage1Substages (delay 0) (go1.val)
 
     -- Stage 2: Instruction Fetch
     -- ==========================
 
-    -- Functions to convert between 32-bit PC and instruction address
-    let fromPC :: Bit 32 -> Bit t_logInstrs =
-          \pc -> truncateCast (slice @31 @2 pc)
-    let toPC :: Bit t_logInstrs -> Bit 32 =
-          \addr -> fromInteger (c.instrMemBase) .|.
-                     zeroExtendCast addr # (0 :: Bit 2)
-
-    -- Set address of for each PCC
-    let pccs3 =
-          [ let cap = setAddr (pcc.unpack.fromMem) (toPC pc) in
-              delay dontCare $ decodeCapPipe $ cap.value
-          | (pc, pcc) <- zip pcs2 pccs2]
-
     always do
       -- Compute active thread mask
-      let activeList = [out === state2 | out <- stateMemOuts2]
+      let activeList =
+            [ state2 === s .&&.
+                if enableCHERI && not (c.useSharedPCC)
+                  then upper pcc2 .==. (upper pcc :: CapMemMeta)
+                  else true
+            | (s, pcc) <- zip stateMemOuts2 pccs2]
       let activeMask :: Bit t_warpSize = fromBitList activeList
       activeMask3 <== activeMask
 
@@ -431,21 +440,23 @@ makeSIMTPipeline c inputs =
           "SIMT pipeline error: no active threads in warp"
 
       -- Issue load to instruction memory
-      load instrMem (state2.simtPC)
+      let pc = state2.simtPC
+      load instrMem (pc.toInstrAddr)
 
       -- Trigger stage 3
       warpId3 <== warpId2
       state3 <== state2
-      pccShared3 <==
-        let cap = setAddr (pccShared.val) (state2.simtPC.toPC) in
-          decodeCapPipe (cap.value)
+      pcc3 <==
+        let pccToUse = if c.useSharedPCC then pccShared.val
+                                         else fromMem (unpack pcc2)
+            cap = setAddr pccToUse pc
+         in decodeCapPipe (cap.value)
       go3 <== go2
 
     -- Stage 3: Operand Fetch
     -- ======================
 
-    let pccs4 = [delay dontCare pcc | pcc <- pccs3]
-    let pccShared4 = delay dontCare (pccShared3.val)
+    let pcc4 = delay dontCare (pcc3.val)
 
     always do
       -- Fetch operands from each register file
@@ -476,7 +487,7 @@ makeSIMTPipeline c inputs =
               when (go3.val .&&. inv isSusp3) do
                 display "[CapRegFileTrace] read"
                         " time=" (cycleCount.val)
-                        " pc=0x" (formatHex 0 $ state3.val.simtPC.toPC)
+                        " pc=0x" (formatHex 0 $ state3.val.simtPC)
                         " warp=" (warpId3.val)
                         " active=0x" (formatHex 0 $ activeMask3.val)
                         " rs1=" (if useRegA then instr.srcA else 0)
@@ -487,28 +498,15 @@ makeSIMTPipeline c inputs =
       case c.checkPCCFunc of
         -- CHERI disabled; no check required
         Nothing -> return ()
-        -- Check shared PCC per kernel
-        Just checkPCC | c.useSharedPCC -> do
-          let table = checkPCC (pccShared3.val)
+        -- Check PCC
+        Just checkPCC -> do
+          let table = checkPCC (pcc3.val)
           let exception = orList [cond | (cond, _) <- table]
           when (go3.val) do
             when exception do
               head excLocals <== true
               let trapCode = priorityIf table (excCapCode 0)
               display "SIMT pipeline: PCC exception: code=" trapCode
-        -- Check PCC per lane
-        Just checkPCC -> sequence_
-          [ do let table = checkPCC pcc
-               let exception = orList [cond | (cond, _) <- table]
-               let ok = inv active .||. inv exception
-               when (go3.val) do
-                 when (inv ok) do
-                   excLocal <== true
-                   let trapCode = priorityIf table (excCapCode 0)
-                   display "SIMT pipeline: PCC exception: "
-                           " code=" trapCode
-          | (pcc, active, excLocal) <-
-              zip3 pccs3 (activeMask3.val.toBitList) excLocals ]
 
       -- Trigger stage 4
       warpId4 <== warpId3.val
@@ -543,8 +541,7 @@ makeSIMTPipeline c inputs =
             else rf.out.extraReg
 
     -- Propagate signals to stage 5
-    let pccs5 = map extraReg (map old pccs4)
-    let pccShared5 = pccShared4.old.extraReg
+    let pcc5 = pcc4.old.extraReg
     let isSusp5 = isSusp4.val.old.extraReg
     let warpId5 = warpId4.val.old.extraReg
     let activeMask5 = activeMask4.val.old.extraReg
@@ -611,7 +608,7 @@ makeSIMTPipeline c inputs =
       when (orList $ map val excLocals) do
         excGlobal <== true
         -- Track exception PC
-        excPC <== state5.simtPC.toPC.old
+        excPC <== state5.simtPC.old
 
     -- Is it a SIMT convergence instruction?
     let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
@@ -620,11 +617,11 @@ makeSIMTPipeline c inputs =
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
                  regFileB capRegFileA capRegFileB
-                 stateMem incInstrCount pcc pccMem excLocal laneId = do
+                 stateMem incInstrCount pccMem excLocal laneId = do
 
           -- Per lane interfacing
-          pcNextWire :: Wire (Bit t_logInstrs) <-
-            makeWire (state5.simtPC + 1)
+          pcNextWire :: Wire (Bit 32) <-
+            makeWire (state5.simtPC + 4)
           pccNextWire :: Wire CapPipe <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
@@ -651,8 +648,8 @@ makeSIMTPipeline c inputs =
             , opAIndex = instr5.srcA
             , opBIndex = instr5.srcB
             , resultIndex = instr5.dst
-            , pc = ReadWrite (state5.simtPC.toPC) \pcNew -> do
-                     pcNextWire <== fromPC pcNew
+            , pc = ReadWrite (state5.simtPC) \pcNew -> do
+                     pcNextWire <== pcNew
             , result = WriteOnly \writeVal ->
                          when destNonZero do
                            resultWire <== writeVal
@@ -672,16 +669,14 @@ makeSIMTPipeline c inputs =
             , trap = \code -> do
                 excLocal <== true
                 display "SIMT exception occurred: " code
-                        " pc=0x" (formatHex 8 (state5.simtPC.toPC))
+                        " pc=0x" (formatHex 8 (state5.simtPC))
             -- CHERI support
             , capA = capRegA
             , capB = capRegB
-            , pcc = if c.useSharedPCC then pccShared5 else pcc
+            , pcc = pcc5
             , pccNew = WriteOnly \pccNew -> do
                 if enableCHERI
-                  then do
-                    pcNextWire <== fromPC (getAddr pccNew)
-                    pccNextWire <== pccNew
+                  then pccNextWire <== pccNew
                   else return ()
             , resultCap = WriteOnly \cap ->
                             when destNonZero do
@@ -794,7 +789,6 @@ makeSIMTPipeline c inputs =
                <*> ZipList capRegFilesB
                <*> ZipList stateMems
                <*> ZipList incInstrCountRegs
-               <*> ZipList pccs5
                <*> ZipList pccMems
                <*> ZipList excLocals
                <*> ZipList [0..]
@@ -840,12 +834,12 @@ makeSIMTPipeline c inputs =
         when (req.simtReqCmd .==. simtCmd_WriteInstr) do
           dynamicAssert (busy.inv)
             "SIMT pipeline: writing instruction while pipeline busy"
-          store instrMem (req.simtReqAddr.fromPC) (req.simtReqData)
+          store instrMem (req.simtReqAddr.toInstrAddr) (req.simtReqData)
           inputs.simtMgmtReqs.consume
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
           when (busy.inv) do
-            startReg <== some (req.simtReqAddr.fromPC)
+            startReg <== some (req.simtReqAddr)
             kernelAddrReg <== req.simtReqData
             inputs.simtMgmtReqs.consume
         -- Set warps per block
