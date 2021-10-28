@@ -84,7 +84,6 @@ makeDTCM conf =
               reqWire <== req
               -- Check for unsupported ops
               let uops = [ memAtomicOp,
-                         , memLocalFenceOp
                          , memGlobalFenceOp ]
               dynamicAssert (andList [req.memReqOp .!=. op | op <- uops])
                 "Atomics & fences not yet supported by DTCM"

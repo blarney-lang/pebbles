@@ -438,8 +438,6 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               -- Check that atomics are not in use
               dynamicAssert (leaderReq4.val.memReqOp .!=. memAtomicOp)
                 "Atomics not yet supported on DRAM path"
-              dynamicAssert (leaderReq4.val.memReqOp .!=. memLocalFenceOp)
-                "Local fence not supported on DRAM path"
           -- Determine any remaining pending requests
           let remaining = pending4.val .&. inv mask
           -- If there are any, feed them back

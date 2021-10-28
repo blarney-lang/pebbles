@@ -308,8 +308,6 @@ makeSBDCache dramResps = do
               -- Checks
               dynamicAssert (req.memReqOp .!=. memAtomicOp)
                 "Atomics not yet supported by SBDCache"
-              dynamicAssert (req.memReqOp .!=. memLocalFenceOp)
-                "Local fence not supported by SBDCache"
           }
       , memResps = respQueue.toStream
       }
