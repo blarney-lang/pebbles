@@ -9,6 +9,7 @@ module Pebbles.Memory.BankedSRAMs
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+import Blarney.Option
 import Blarney.Interconnect
 import Blarney.Vector (Vec, toList, fromList)
 
@@ -19,8 +20,8 @@ import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
 
 -- Haskell imports
+import Data.List
 import Control.Applicative
-import Data.List (transpose)
 
 -- The number of SRAM banks may be less than the number of lanes,
 -- which is resolved by serialisation.  During serialisation, we use a
@@ -35,11 +36,12 @@ type GroupId = Bit (SIMTLogLanes - SIMTLogSRAMBanks)
 -- cycle), then so too will the output streams.  Responses are
 -- returned in order.  See note [Capability atomicity in banked SRAMs].
 makeBankedSRAMs :: forall t_id. (Bits t_id, Interface t_id) =>
-     Vec SIMTLanes (Stream (MemReq t_id))
-     -- ^ Stream of memory requests per lane
+     Stream (Vec SIMTLanes (Option (MemReq t_id)), Option (MemReq t_id))
+     -- ^ Stream of memory requests per lane, and leader request which
+     -- is only valid when all requests are accessing the same address
   -> Module (Vec SIMTLanes (Stream (MemResp t_id)))
      -- ^ Stream of memory responses per lane
-makeBankedSRAMs reqStreamsVec = do
+makeBankedSRAMs inputs = do
 
   -- Assumptions
   staticAssert (SIMTLogSRAMBanks <= SIMTLogLanes)
@@ -94,6 +96,13 @@ makeBankedSRAMs reqStreamsVec = do
   groupIds4 :: [Reg GroupId] <- replicateM SIMTSRAMBanks (makeReg dontCare)
   groupIds5 :: [Reg GroupId] <- replicateM SIMTSRAMBanks (makeReg dontCare)
 
+  -- Multicast mask per pipeline stage; valid only for same address strategy
+  mcastMask1 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
+  mcastMask2 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
+  mcastMask3 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
+  mcastMask4 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
+  mcastMask5 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
+
   -- Trigger for each pipeline stage
   go1 :: Reg (Bit 1) <- makeDReg false
   go2 :: Reg (Bit 1) <- makeDReg false
@@ -116,15 +125,64 @@ makeBankedSRAMs reqStreamsVec = do
       go4 <== go4.val
       go5 <== go5.val
 
+  -- Prepare requests
+  -- ================
+
+  -- Bit mask of lanes that have been consumed
+  consumedMask :: Reg (Bit SIMTLanes) <- makeReg 0
+
+  -- Bit mask of lanes that are consuming on the current cycle
+  consumeWires :: [Wire (Bit 1)] <- replicateM SIMTLanes (makeWire false)
+
+  -- Convert stream of vectors to vector of streams
+  -- If all requests accessing same address, then issue only via lane 0
+  let reqStreams = 
+        [ Source {
+            canPeek =
+              andList [
+                inputs.canPeek
+              , inv consumed
+              , if i == 0
+                  then inputs.peek.snd.valid .||. req.valid
+                  else inputs.peek.snd.valid.inv .&&. req.valid
+              ]
+          , peek = if i == 0
+                      then inputs.peek.snd.valid ?
+                             (inputs.peek.snd.val, req.val)
+                      else req.val
+          , consume = consumeWire <== true
+          }
+        | (req, consumeWire, consumed, i) <-
+            zip4 (inputs.peek.fst.toList)
+                 consumeWires
+                 (consumedMask.val.toBitList)
+                 [0..]
+        ]
+
+  -- Ensure that all requests have been injected into the pipeline
+  -- before consuming the request vector
+  always do
+    when (inputs.canPeek) do
+      -- Bit mask of available requests
+      let avail = if inputs.peek.snd.valid
+                    then 1 {- Lane 0 -}
+                    else fromBitList $ map valid $ inputs.peek.fst.toList
+      -- Bit mask of requests being consumed on current cycle
+      let consumeNow = fromBitList $ map val consumeWires
+      -- Have all requests been consumed?
+      if avail .==. (consumeNow .|. consumedMask.val)
+        then do
+          inputs.consume
+          consumedMask <== 0
+        else do
+          consumedMask <== consumedMask.val .|. consumeNow
+  
   -- Stage 0: Consume inputs and compute crossbar indices
   -- ====================================================
 
   -- Indices for croassbar switch
   indices1 :: [Reg (Bit SIMTLogSRAMBanks)] <-
     replicateM SIMTSRAMBanks (makeReg dontCare)
-
-  -- Request streams (as a list)
-  let reqStreams = toList reqStreamsVec
 
   -- Merge streams, giving one stream per bank
   let reqsPerBank = map mergeTree
@@ -155,6 +213,8 @@ makeBankedSRAMs reqStreamsVec = do
       origActive1 <== chosenMask
       active1 <== fromBitList [m .!=. 0 | m <- masks]
       zipWithM_ (<==) reqs1 (map peek reqsPerBank)
+      mcastMask1 <== Option (inputs.peek.snd.valid)
+                            (fromBitList $ map valid $ inputs.peek.fst.toList)
       when (chosenMask .!=. 0) do
         go1 <== true
 
@@ -175,6 +235,7 @@ makeBankedSRAMs reqStreamsVec = do
         -- Trigger next stage
         go2 <== true
         active2 <== active1.val
+        mcastMask2 <== mcastMask1.val
 
   -- Stage 2: Issue loads
   -- ====================
@@ -227,6 +288,7 @@ makeBankedSRAMs reqStreamsVec = do
         active3 <== active2.val
         zipWithM_ (<==) reqs3 (map val reqs2)
         origActive3 <== origActive2.val
+        mcastMask3 <== mcastMask2.val
         zipWithM_ (<==) origBankTargets3 (map val origBankTargets2)
         zipWithM_ (<==) groupIds3 (map val groupIds2)
 
@@ -303,6 +365,7 @@ makeBankedSRAMs reqStreamsVec = do
         let active = active3.val .&. fromBitList (map val respValidWires4)
         go4 <== (active .!=. 0)
         active4 <== origActive3.val
+        mcastMask4 <== mcastMask3.val
         zipWithM_ (<==) origBankTargets4 (map val origBankTargets3)
         zipWithM_ (<==) groupIds4 (map val groupIds3)
 
@@ -317,6 +380,7 @@ makeBankedSRAMs reqStreamsVec = do
       -- Trigger next stage
       go5 <== true
       active5 <== active4.val
+      mcastMask5 <== mcastMask4.val
       zipWithM_ (<==) groupIds5 (map val groupIds4)
 
   -- Stage 5: Issue responses
@@ -337,8 +401,11 @@ makeBankedSRAMs reqStreamsVec = do
       if allNotFull
         then do
           sequence_
-            [ when active do enq q resp
-            | (active, resp, q) <- zip3 active resps respQueues ]
+            [ if mcastMask5.val.valid
+                then when mcast do enq q (resps5.head.val)
+                else when active do enq q resp
+            | (active, resp, q, mcast) <-
+                zip4 active resps respQueues (mcastMask5.val.val.toBitList) ]
         else do
           stallWire <== true
 

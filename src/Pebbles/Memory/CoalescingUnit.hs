@@ -2,7 +2,6 @@
 
 module Pebbles.Memory.CoalescingUnit 
   ( makeCoalescingUnit
-  , BankInfo(..)
   ) where
 
 -- SoC parameters
@@ -55,18 +54,6 @@ data CoalescingInfo t_id =
     -- ^ Final request in transaction?
   } deriving (Generic, Bits)
 
--- | SRAM bank request info
-data BankInfo t_id =
-  BankInfo {
-    bankReqId :: t_id
-    -- ^ Request id
-  , bankLaneId :: Bit SIMTLogLanes
-    -- ^ Id of issuing lane
-  , bankMcastId :: Option (Bit SIMTMcastIdSize)
-    -- ^ Response should be multicast to multiple lanes
-  }
-  deriving (Generic, Interface, Bits)
-
 -- Implementation
 -- ==============
 
@@ -104,14 +91,18 @@ makeCoalescingUnit :: Bits t_id =>
      -- ^ Stream of memory requests vectors
   -> Stream (DRAMResp DRAMReqId)
      -- ^ Responses from DRAM
-  -> V.Vec SIMTLanes (Stream (MemResp (BankInfo t_id)))
+  -> V.Vec SIMTLanes (Stream (MemResp t_id))
      -- ^ Responses from SRAM, per lane/bank
   -> Module ( V.Vec SIMTLanes (Stream (MemResp t_id))
-            , V.Vec SIMTLanes (Stream (MemReq (BankInfo t_id)))
+            , Stream ( V.Vec SIMTLanes (Option (MemReq t_id))
+                     , Option (MemReq t_id) )
             , Stream (DRAMReq DRAMReqId)
             )
-     -- ^ Outputs: memory responses per lane, SRAM requests per
-     -- lane/bank, and DRAM requests
+     -- ^ Outputs:
+     --     (1) memory responses per lane;
+     --     (2) SRAM requests per lane/bank, plus leader request,
+     --         valid when all requests access same address;
+     --     (3) DRAM requests
 makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   let sramResps = V.toList sramRespsVec
 
@@ -148,6 +139,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   leaderReq3 :: Reg (MemReq t_id) <- makeReg dontCare
   leaderReq4 :: Reg (MemReq t_id) <- makeReg dontCare
   leaderReq5 :: Reg (MemReq t_id) <- makeReg dontCare
+  leaderReq5SRAM :: Reg (MemReq t_id) <- makeReg dontCare
 
   -- Bit vector identifying the chosen leader
   leader2 :: Reg (Bit SIMTLanes) <- makeReg 0
@@ -420,6 +412,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               go5SRAM <== true
               sramMask5 <== sramMask4.val
               leader5SRAM <== leader4.val
+              leaderReq5SRAM <== leaderReq4.val
               forM_ (zip memReqs4 memReqs5SRAM) \(r4, r5) -> do
                 r5 <== r4.val
               -- Use same address strategy if all SRAM accesses are
@@ -597,67 +590,19 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   -- Stage 5 (SRAM): Issue SRAM requests
   -- ===================================
 
-  -- Wires indicating when SRAM requests have been consumed
-  sramConsumeWires <- replicateM SIMTLanes (makeWire false)
-
-  -- Multicast array for same-address coalescing of banked SRAMs
-  -- (Banked SRAM responses are out-of-order)
-  mcastArray :: RAM (Bit SIMTMcastIdSize) (Bit SIMTLanes) <- makeDualRAM
-  mcastIdNext :: Reg (Bit SIMTMcastIdSize) <- makeReg 0
-  mcastIdsInUse :: [Reg (Bit 1)] <- replicateM (2^SIMTMcastIdSize) (makeReg 0)
-
-  -- Is the next multicast id available?
-  -- (Buffer this signal as obtaining ids is not latency critical)
-  let mcastIdAvailable =
-        delay false (inv (map val mcastIdsInUse ! mcastIdNext.val))
-
-  -- Request stream per SRAM bank
-  let sramReqs = 
-        [ Source {
-            -- For SameAddress strategy, only the leader makes a request
-            canPeek = go5SRAM.val .&&.
-                        (useSameAddrSRAM.val ?
-                           (isLeader .&&. mcastIdAvailable, valid))
-          , peek = req {
-              memReqId =
-                BankInfo {
-                  bankReqId = req.memReqId
-                  -- When using the SameAddress strategy, arrange for
-                  -- the response to come back via lane 0
-                , bankLaneId = useSameAddrSRAM.val ? (0, fromInteger i)
-                  -- For SameAddress strategy, mark a multicast response
-                , bankMcastId =
-                    Option (useSameAddrSRAM.val) (mcastIdNext.val)
-                }
-            }
-          , consume = consumeWire <== true
-          }
-        | (req, valid, consumeWire, isLeader, i) <-
-            zip5 (map val memReqs5SRAM)
-                 (sramMask5.val.toBitList)
-                 sramConsumeWires
-                 (leader5SRAM.val.toBitList)
-                 [0..]
-        ]
+  sramReqs :: Queue ( V.Vec SIMTLanes (Option (MemReq t_id))
+                    , Option (MemReq t_id) ) <-
+    makeShiftQueue 1
 
   always do
-    when (go5SRAM.val) do
-      -- Bit vector of streams being consumed
-      let sramConsumeVec :: Bit SIMTLanes = fromBitList
-            (map val sramConsumeWires)
-      -- Remove consumed requests from bit mask
-      sramMask5 <== sramMask5.val .&. inv sramConsumeVec
-      -- Have all requests been consumed?
-      let done = useSameAddrSRAM.val ?
-                   (sramConsumeVec .==. leader5SRAM.val,
-                    sramConsumeVec .==. sramMask5.val)
-      when (done) do
-        go5SRAM <== false
-        -- Record multicast response in array
-        when (useSameAddrSRAM.val) do
-          store mcastArray (mcastIdNext.val) (sramMask5.val)
-          (mcastIdsInUse ! mcastIdNext.val) <== true
-          mcastIdNext <== mcastIdNext.val + 1
+    when (go5SRAM.val .&&. sramReqs.notFull) do
+      let reqs = V.fromList
+            [ Option active req
+            | (req, active) <- zip (map val memReqs5SRAM)
+                               (sramMask5.val.toBitList) ]
+      let leader = Option (useSameAddrSRAM.val) (leaderReq5SRAM.val)
+      enq sramReqs (reqs, leader)
+      go5SRAM <== false
 
   -- Stage 6 (DRAM): Handle responses
   -- ================================
@@ -770,44 +715,12 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   sramRespQueues :: [Queue (MemResp t_id)] <-
     replicateM SIMTLanes (makeShiftQueue 1)
 
-  -- SRAM response state
-  -- State 0: process non-multicast response
-  -- State 1: process multicast response
-  sramRespState :: Reg (Bit 1) <- makeReg 0
-
-  -- Multicast SRAM response register
-  mcastResp <- makeReg dontCare
-
-  -- Helper to drop bank info from SRAM response id
-  let sramUntag resp = resp { memRespId = resp.memRespId.bankReqId }
-
   always do
-    when (sramRespState.val .==. 0) do
-      -- Look for multicast responses (which always return via lane 0)
-      -- that need to be delivered to multiple lanes
-      let respStream0 = sramResps.head
-      let resp0 = respStream0.peek
-      if respStream0.canPeek .&&. resp0.memRespId.bankMcastId.valid
-        then do
-          let allReady = andList [q.notFull | q <- sramRespQueues]
-          when allReady do
-            load mcastArray (resp0.memRespId.bankMcastId.val)
-            respStream0.consume
-            mcastResp <== resp0
-            sramRespState <== 1
-        else do
-          -- Handle non-multicast responses
-          sequence_ [ when (s.canPeek .&&. q.notFull) do
-                        enq q (s.peek.sramUntag)
-                        s.consume
-                    | (s, q) <- zip sramResps sramRespQueues ]
-
-    -- Perform multicast
-    when (sramRespState.val .==. 1) do
-      (mcastIdsInUse ! mcastResp.val.memRespId.bankMcastId.val) <== false
-      sequence_ [ when cond do enq q (mcastResp.val.sramUntag)
-                | (cond, q) <- zip (mcastArray.out.toBitList) sramRespQueues ]
-      sramRespState <== 0
+    -- Handle non-multicast responses
+    sequence_ [ when (s.canPeek .&&. q.notFull) do
+                  enq q (s.peek)
+                  s.consume
+              | (s, q) <- zip sramResps sramRespQueues ]
 
   -- Merge SRAM and DRAM responses
   finalResps <- sequence
@@ -815,4 +728,4 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
        memRespIsFinal (toStream q0, toStream q1)
     | (q0, q1) <- zip dramRespQueues sramRespQueues ]
 
-  return (V.fromList finalResps, V.fromList sramReqs, toStream dramReqQueue)
+  return (V.fromList finalResps, sramReqs.toStream, toStream dramReqQueue)
