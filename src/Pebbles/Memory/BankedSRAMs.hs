@@ -170,7 +170,8 @@ makeBankedSRAMs inputs = do
       -- Bit mask of requests being consumed on current cycle
       let consumeNow = fromBitList $ map val consumeWires
       -- Have all requests been consumed?
-      if avail .==. (consumeNow .|. consumedMask.val)
+      -- Uncomment the disjuntion for higher throughput but lower Fmax
+      if avail .==. consumedMask.val {- .|. consumeNow -}
         then do
           inputs.consume
           consumedMask <== 0
