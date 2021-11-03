@@ -92,9 +92,9 @@ executeCHERI csrUnit memReqs s = do
   let topA = s.capA.capTop
   let lenA = s.capA.capLength
   let baseA = s.capA.capBase
-  let addrA = cA.getAddr
-  let permsA = cA.getHardPerms
-  let permsB = cB.getHardPerms
+  let addrA = getAddr cA
+  let permsA = getHardPerms cA
+  let permsB = getHardPerms cB
 
   -- Capability inspection instructions
   -- ----------------------------------
@@ -107,16 +107,16 @@ executeCHERI csrUnit memReqs s = do
   when isInspect do
     s.result <==
       select
-        [ s.opcode `is` [CGetPerm] --> cA.getPerms.zeroExtend
+        [ s.opcode `is` [CGetPerm] --> zeroExtend (getPerms cA)
         , s.opcode `is` [CGetType] -->
-            let t = cA.getType in
-              if cA.isSealedWithType then zeroExtend t else signExtend t
+            let t = getType cA in
+              if isSealedWithType cA then zeroExtend t else signExtend t
         , s.opcode `is` [CGetBase] --> baseA
         , s.opcode `is` [CGetLen] -->
               if at @32 lenA then ones else lower lenA
-        , s.opcode `is` [CGetTag] --> cA.isValidCap.zeroExtend
-        , s.opcode `is` [CGetSealed] --> cA.isSealed.zeroExtend
-        , s.opcode `is` [CGetFlags] --> cA.getFlags.zeroExtend
+        , s.opcode `is` [CGetTag] --> zeroExtend (isValidCap cA)
+        , s.opcode `is` [CGetSealed] --> zeroExtend (isSealed cA)
+        , s.opcode `is` [CGetFlags] --> zeroExtend (getFlags cA)
         , s.opcode `is` [CGetAddr] --> addrA
         ]
 
@@ -135,14 +135,14 @@ executeCHERI csrUnit memReqs s = do
     let needExact = s.opcode `is` [CSetBoundsExact]
 
     -- Exception path
-    if cA.isValidCap.inv then
+    if inv (isValidCap cA) then
       trap s cheri_exc_tagViolation
-    else if cA.isSealed then
+    else if isSealed cA then
       trap s cheri_exc_sealViolation
     else if addrA .<. baseA .||.
               zeroExtend addrA + zeroExtend (s.opBorImm) .>. topA then
       trap s cheri_exc_lengthViolation
-    else if needExact .&&. newCap.exact.inv then
+    else if needExact .&&. inv newCap.exact then
       trap s cheri_exc_representabilityViolation
     else return ()
 
@@ -154,15 +154,15 @@ executeCHERI csrUnit memReqs s = do
 
   -- Exception paths
   when (s.opcode `is` [CSetFlags, CSetAddr, CIncOffset]) do
-    when (cA.isValidCap .&&. cA.isSealed) do
+    when (isValidCap cA .&&. isSealed cA) do
       trap s cheri_exc_sealViolation
 
   when (s.opcode `is` [CSealEntry, CAndPerm]) do
-    if cA.isValidCap.inv then
+    if inv (isValidCap cA) then
       trap s cheri_exc_tagViolation
-    else if cA.isSealed then
+    else if isSealed cA then
       trap s cheri_exc_sealViolation
-    else if s.opcode `is` [CSealEntry] .&&. permsA.permitExecute.inv then
+    else if s.opcode `is` [CSealEntry] .&&. inv permsA.permitExecute then
       trap s cheri_exc_permitExecuteViolation
     else
       return ()
@@ -181,16 +181,16 @@ executeCHERI csrUnit memReqs s = do
   when (s.opcode `is` [CMove, CSealEntry, CSetFlags, CClearTag, CAndPerm]) do
     let newType  = if s.opcode `is` [CSealEntry]
                      then -2
-                     else cA.getType
+                     else getType cA
     let newValid = if s.opcode `is` [CClearTag]
                      then 0
-                     else cA.isValidCap
+                     else isValidCap cA
     let newFlags = if s.opcode `is` [CSetFlags]
-                     then s.opB.lower
-                     else cA.getFlags
+                     then lower s.opB
+                     else getFlags cA
     let newPerms = if s.opcode `is` [CAndPerm]
-                     then cA.getPerms .&. s.opB.lower
-                     else cA.getPerms
+                     then getPerms cA .&. lower s.opB
+                     else getPerms cA
     s.resultCap <==
       ( flip setValidCap newValid
       $ flip setFlags newFlags
@@ -202,21 +202,21 @@ executeCHERI csrUnit memReqs s = do
   -- ----------------------
 
   when (s.opcode `is` [CSub]) do
-    s.result <== addrA - cB.getAddr
+    s.result <== addrA - getAddr cB
 
   -- Capability jump
   -- ---------------
 
   when (s.opcode `is` [CJALR]) do
     -- Exception path
-    when (cA.isSealed .&&. cA.isSentry.inv) do
+    when (isSealed cA .&&. inv (isSentry cA)) do
       trap s cheri_exc_sealViolation
 
     -- Result path
     -- Use setAddrUnsafe: PC is in bounds therefore PC+4 is representable
     let linkCap = setAddrUnsafe (s.pcc.capPipe) (s.pc.val + 4)
     s.resultCap <== setType linkCap (-2) {- Seal as sentry -}
-    let pcNew = cA.getAddr.upper # (0 :: Bit 1)
+    let pcNew = upper (getAddr cA) # (0 :: Bit 1)
     s.pc <== pcNew
     s.pccNew <== setType cA (-1) {- Unseal -}
 
@@ -224,13 +224,13 @@ executeCHERI csrUnit memReqs s = do
   -- -------------
 
   when (s.opcode `is` [LOAD, STORE, AMO]) do
-    if memReqs.canPut.inv
+    if inv memReqs.canPut
       then s.retry
       else do
         -- Address being accessed
         let memAddr = addrA + s.opBorImm
         -- Determine access width for memory request
-        let accessWidth = s.instr.getAccessWidth
+        let accessWidth = getAccessWidth s.instr
         -- Is it a capability load/store?
         let isCapAccess = accessWidth .==. 3
         -- Number of bytes being accessed (for bounds check)
@@ -245,28 +245,28 @@ executeCHERI csrUnit memReqs s = do
                 then permsA.permitLoad
                 else permsA.permitStore
         -- Convert capability to in-memory format for storing
-        let (memCapTag, memCap) = cB.toMem
+        let (memCapTag, memCap) = toMem cB
         -- Possible exceptions
         let exceptionTable =
-              [ cA.isValidCap.inv
+              [ inv (isValidCap cA)
                   --> cheri_exc_tagViolation
-              , cA.isSealed
+              , isSealed cA
                   --> cheri_exc_sealViolation
               , s.opcode `is` [LOAD]
-                 .&&. permsA.permitLoad.inv
+                 .&&. inv permsA.permitLoad
                   --> cheri_exc_permitLoadViolation
               , s.opcode `is` [STORE]
-                 .&&. permsA.permitStore.inv
+                 .&&. inv permsA.permitStore
                   --> cheri_exc_permitStoreViolation
               , s.opcode `is` [STORE]
                  .&&. isCapAccess
-                 .&&. permsA.permitStoreCap.inv
-                 .&&. cB.isValidCap
+                 .&&. inv permsA.permitStoreCap
+                 .&&. isValidCap cB
                   --> cheri_exc_permitStoreCapViolation
               , s.opcode `is` [STORE]
                  .&&. isCapAccess
-                 .&&. permsA.permitStoreLocalCap.inv
-                 .&&. cB.isValidCap
+                 .&&. inv permsA.permitStoreLocalCap
+                 .&&. isValidCap cB
                  .&&. permsB.global
                   --> cheri_exc_permitStoreLocalCapViolation
               , inv alignmentOk
@@ -308,16 +308,16 @@ executeCHERI csrUnit memReqs s = do
                         ]
                   , memReqAMOInfo =
                       AMOInfo {
-                        amoOp = s.instr.getAMO
-                      , amoAcquire = s.instr.getAcquire
-                      , amoRelease = s.instr.getRelease
+                        amoOp = getAMO s.instr
+                      , amoAcquire = getAcquire s.instr
+                      , amoRelease = getRelease s.instr
                       , amoNeedsResp = hasResp
                       }
                   , memReqAddr = memAddr
                   , memReqData =
-                      if isCapAccess then lower memCap else s.opB
+                      if isCapAccess then truncate memCap else s.opB
                   , memReqDataTagBit = isCapAccess .&&. memCapTag
-                  , memReqIsUnsigned = s.instr.getIsUnsignedLoad
+                  , memReqIsUnsigned = getIsUnsignedLoad s.instr
                   , memReqIsFinal = true
                   }
               , capMemReqUpperData = upper memCap
@@ -329,15 +329,15 @@ executeCHERI csrUnit memReqs s = do
 -- | Check program counter capability
 checkPCC :: Cap -> [(Bit 1, TrapCode)]
 checkPCC cap =
-  [ cap.capPipe.isValidCap.inv
+  [ inv (isValidCap cap.capPipe)
       --> cheri_exc_tagViolation
-  , cap.capPipe.isSealed
+  , isSealed cap.capPipe
       --> cheri_exc_sealViolation
-  , perms.permitExecute.inv
+  , inv perms.permitExecute
       --> cheri_exc_permitExecuteViolation
   , addr .<. cap.capBase .||. zeroExtend (addr + 4) .>. cap.capTop
       --> cheri_exc_lengthViolation
   ]
   where
-    addr = cap.capPipe.getAddr
-    perms = cap.capPipe.getHardPerms
+    addr = getAddr cap.capPipe
+    perms = getHardPerms cap.capPipe

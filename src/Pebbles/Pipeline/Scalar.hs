@@ -75,15 +75,15 @@ makeScalarPipeline c =
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
 
     -- Is CHERI enabled?
-    let enableCHERI = c.checkPCCFunc.isJust
+    let enableCHERI = isJust c.checkPCCFunc
 
     -- Compute field selector functions from decode table
     let selMap = matchSel (c.decodeStage)
 
     -- Functions for extracting register ids from an instruction
-    let srcA :: Instr -> RegId = getFieldSel selMap "rs1"
-    let srcB :: Instr -> RegId = getFieldSel selMap "rs2"
-    let dst  :: Instr -> RegId = getFieldSel selMap "rd"
+    let srcA :: Instr -> RegId = getBitFieldSel selMap "rs1"
+    let srcB :: Instr -> RegId = getBitFieldSel selMap "rs2"
+    let dst  :: Instr -> RegId = getBitFieldSel selMap "rd"
 
     -- Instruction memory
     instrMem :: RAM (Bit t_instrAddrWidth) Instr <-
@@ -186,7 +186,7 @@ makeScalarPipeline c =
 
       -- Index the instruction memory
       let instrAddr = truncateCast (slice @31 @2 pcFetch)
-      load instrMem instrAddr
+      instrMem.load instrAddr
 
       -- Handle stall
       if stallWire.val
@@ -208,7 +208,7 @@ makeScalarPipeline c =
     always do
       when (go1.val) do
         -- Trigger stage 2 when not flushing or stalling
-        when (pcNext.active.inv .&. stallWire.val.inv) do
+        when (inv pcNext.active .&. inv stallWire.val) do
           go2 <== true
           instr2 <== instrMem.out
           pc2 <== pc1.val
@@ -221,17 +221,17 @@ makeScalarPipeline c =
             else return ()
 
       -- Register file indicies
-      let idxA = stallWire.val ? (instr2.val.srcA, instrMem.out.srcA)
-      let idxB = stallWire.val ? (instr2.val.srcB, instrMem.out.srcB)
+      let idxA = stallWire.val ? (srcA instr2.val, srcA instrMem.out)
+      let idxB = stallWire.val ? (srcB instr2.val, srcB instrMem.out)
 
       -- Fetch operands
-      load regFileA idxA
-      load regFileB idxB
+      regFileA.load idxA
+      regFileB.load idxB
 
       if enableCHERI
         then do
-          load capFileA idxA
-          load capFileB idxB
+          capFileA.load idxA
+          capFileB.load idxB
         else return ()
 
     -- Stage 2: Latch Operands
@@ -243,12 +243,12 @@ makeScalarPipeline c =
     -- Data hazard from stage 3
     let hazard3 :: Bits t => Wire t -> (Instr -> RegId) -> Bit 1
         hazard3 resWire rS = resWire.active .&&.
-          instr3.val.dst .==. instr2.val.rS
+          dst instr3.val .==. rS instr2.val
 
     -- Data hazard from stage 4
     let hazard4 :: Bits t => Wire t -> (Instr -> RegId) -> Bit 1
         hazard4 resWire rS = resWire.active .&&.
-          instr4.val.dst .==. instr2.val.rS
+          dst instr4.val .==. rS instr2.val
 
     -- Register forwarding from stage 3
     let forward3 :: Bits t => Wire t -> (Instr -> RegId) -> t -> t
@@ -272,7 +272,7 @@ makeScalarPipeline c =
 
     -- Use "imm" field if valid, otherwise use register b
     let bOrImm = if Map.member "imm" fieldMap
-                   then let imm = getField fieldMap "imm"
+                   then let imm = getBitField fieldMap "imm"
                         in imm.valid ? (imm.val, b)
                    else b
 
@@ -300,11 +300,11 @@ makeScalarPipeline c =
                    ]
 
     always do
-      when (go2.val .&&. pcNext.active.inv) do
+      when (go2.val .&&. inv pcNext.active) do
         -- Stall on data hazard
         when isDataHazard do stallWire <== true
         -- Trigger stage 3 when not stalling
-        when (stallWire.val.inv) do
+        when (inv stallWire.val) do
           -- Latch operands
           regA <== a
           regB <== b
@@ -327,7 +327,7 @@ makeScalarPipeline c =
             Just checkPCC -> do
               let table = checkPCC (pcc2.val)
               let exception = orList [cond | (cond, _) <- table]
-              go3 <== inv exception .&&. trapWire.val.inv
+              go3 <== inv exception .&&. inv trapWire.val
               pcc3 <== pcc2.val
               pcc3_exc <== exception
               when exception do
@@ -343,10 +343,10 @@ makeScalarPipeline c =
 
     -- Buffer the decode tables
     let bufferEn = delayEn dontCare
-    let tagMap3 = Map.map (bufferEn (stallWire.val.inv)) tagMap
+    let tagMap3 = Map.map (bufferEn (inv stallWire.val)) tagMap
 
     -- Is destination register non-zero?
-    let destNonZero = instr3.val.dst .!=. 0
+    let destNonZero = dst instr3.val .!=. 0
 
     -- Isntantiate execute stage
     execStage <- executeStage c
@@ -355,9 +355,9 @@ makeScalarPipeline c =
       , opA = regA.val
       , opB = regB.val
       , opBorImm = regBorImm.val
-      , opAIndex = instr3.val.srcA
-      , opBIndex = instr3.val.srcB
-      , resultIndex = instr3.val.dst
+      , opAIndex = srcA instr3.val
+      , opBIndex = srcB instr3.val
+      , resultIndex = dst instr3.val
       , pc = ReadWrite (pc3.val) \pcNew -> do
                pcNext <== pcNew
       , result = WriteOnly \x ->
@@ -407,12 +407,12 @@ makeScalarPipeline c =
       -- Invoke execute stage
       when (go3.val) do
         execStage.execute
-        when (retryWire.val.inv) do
+        when (inv retryWire.val) do
           instr4 <== instr3.val
 
       -- Common trap-handling code
       when (trapReg .||. pcc3_exc.val) do
-        c.trapCSRs.csr_mepc <== if trapReg then pc3.val.old else pc3.val
+        c.trapCSRs.csr_mepc <== if trapReg then old pc3.val else pc3.val
         pcNext <== slice @31 @2 (c.trapCSRs.csr_mtvec.val) # 0b00
 
     -- Stage 4: Writeback
@@ -424,7 +424,7 @@ makeScalarPipeline c =
       if execStage.resumeReqs.canPeek
         then do
           execStage.resumeReqs.consume
-          when (instr4.val.dst .!=. 0) do
+          when (dst instr4.val .!=. 0) do
             resumeResultWire <== true
           suspendInProgress <== false
         else do
@@ -433,13 +433,13 @@ makeScalarPipeline c =
             stallWire <== true
 
       -- Determine final result
-      let rd = instr4.val.dst
+      let rd = dst instr4.val
       if resumeResultWire.val
         then do
           finalResultWire <== resumeReq.resumeReqData
           if enableCHERI
             then do
-              when (resumeReq.resumeReqCap.isSome) do
+              when (isSome resumeReq.resumeReqCap) do
                 let (meta, addr) = splitCapPipe $ fromMem $ unpack
                      (resumeReq.resumeReqCap.val # resumeReq.resumeReqData)
                 finalResultCapWire <== meta
@@ -447,30 +447,30 @@ makeScalarPipeline c =
         else do
           when (inv trapReg) do
             when (delay false (resultWire.active)) do
-              finalResultWire <== resultWire.val.old
+              finalResultWire <== old resultWire.val
             if enableCHERI
               then do
                 when (delay false (resultCapWire.active)) do
-                  finalResultCapWire <== resultCapWire.val.old
+                  finalResultCapWire <== old resultCapWire.val
               else return ()
 
       -- Writeback
       when (finalResultWire.active) do
-        store regFileA rd (finalResultWire.val)
-        store regFileB rd (finalResultWire.val)
+        regFileA.store rd finalResultWire.val
+        regFileB.store rd finalResultWire.val
 
       if enableCHERI
         then do
           when (finalResultCapWire.active) do
-            store capFileA rd (finalResultCapWire.val)
-            store capFileB rd (finalResultCapWire.val)
+            capFileA.store rd finalResultCapWire.val
+            capFileB.store rd finalResultCapWire.val
         else return ()
 
     -- Pipeline outputs
     return
       ScalarPipeline {
         writeInstr = \addr instr -> do
-          store instrMem (truncateCast (slice @31 @2 addr)) instr
+          instrMem.store (truncateCast (slice @31 @2 addr)) instr
       }
 
 -- Note [Delayed Trap]

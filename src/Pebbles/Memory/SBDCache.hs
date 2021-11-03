@@ -111,14 +111,15 @@ makeSBDCache dramResps = do
   always do
     -- Tag & data lookup
     when (state.val .==. 0) do
-      load metaMem (reqWire.val.memReqAddr.getLineNum)
-      loadBE dataMem (reqWire.val.memReqAddr.getLineNum)
-      load tagBitsMem (reqWire.val.memReqAddr.getLineNum)
+      let lineNum = getLineNum reqWire.val.memReqAddr
+      metaMem.load lineNum
+      dataMem.loadBE lineNum
+      tagBitsMem.load lineNum
 
     -- Extract address components from request register
-    let tag = reqReg.val.memReqAddr.getTag
-    let lineNum = reqReg.val.memReqAddr.getLineNum
-    let lineOffset = reqReg.val.memReqAddr.getLineWordOffset
+    let tag = getTag reqReg.val.memReqAddr
+    let lineNum = getLineNum reqReg.val.memReqAddr
+    let lineOffset = getLineWordOffset reqReg.val.memReqAddr
 
     -- Respond on hit, writeback on miss
     when (state.val .==. 1) do
@@ -129,7 +130,7 @@ makeSBDCache dramResps = do
       -- Is it a cache hit?
       let isHit = metaMem.out.lineValid .&&.
                     tag .==. metaMem.out.lineTag .&&.
-                      isFlush.inv
+                      inv isFlush
       -- Tag bits in loaded cache line
       let tagBits :: V.Vec DRAMBeatWords (Bit 1) = unpack (tagBitsMem.out)
       -- Separate behaviours for hit and miss
@@ -157,7 +158,7 @@ makeSBDCache dramResps = do
                         MemResp {
                           memRespId = reqReg.val.memReqId
                         , memRespData = loadMux loadWord
-                            (reqReg.val.memReqAddr.truncate)
+                            (truncate reqReg.val.memReqAddr)
                             (reqReg.val.memReqAccessWidth)
                             (reqReg.val.memReqIsUnsigned)
                         , memRespDataTagBit = loadTagBit
@@ -309,6 +310,6 @@ makeSBDCache dramResps = do
               dynamicAssert (req.memReqOp .!=. memAtomicOp)
                 "Atomics not yet supported by SBDCache"
           }
-      , memResps = respQueue.toStream
+      , memResps = toStream respQueue
       }
-    , dramReqQueue.toStream )
+    , toStream dramReqQueue )

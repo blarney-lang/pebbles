@@ -46,7 +46,8 @@ makeTagController reqs dramResps = mdo
   dramReqQueue <- makePipelineQueue 1
 
   -- Response queue for data
-  dataRespQueue <- makeSizedQueue DRAMLogMaxInFlight
+  dataRespQueue :: Queue (DRAMResp t_id) <-
+    makeSizedQueue DRAMLogMaxInFlight
 
   -- In-flight data request counter
   inFlightCount :: Counter (DRAMLogMaxInFlight+1) <-
@@ -57,8 +58,8 @@ makeTagController reqs dramResps = mdo
   let burstCountNew = burstCount.val + 1
 
   -- Helper functions to modify request/response id
-  let modifyReqId f = fmap (\req -> req { dramReqId = req.dramReqId.f })
-  let modifyRespId f = fmap (\resp -> resp { dramRespId = resp.dramRespId.f })
+  let modifyReqId f = fmap (\req -> req { dramReqId = f req.dramReqId })
+  let modifyRespId f = fmap (\resp -> resp { dramRespId = f resp.dramRespId })
 
   -- Tag cache
   (tagResps, dramReqs0) <- makeBoundary "TagCache" makeTagCache
@@ -80,15 +81,15 @@ makeTagController reqs dramResps = mdo
   let dramResps1' = modifyRespId snd dramResps1
 
   -- Connect data response queue
-  makeConnection dramResps1' (dataRespQueue.toSink)
+  makeConnection dramResps1' (toSink dataRespQueue)
 
   -- Split requests to tag cache and DRAM request queue
   always do
     let req = reqs.peek
     when (reqs.canPeek .&&. inFlightCount.getAvailable .>=.
-                              req.dramReqBurst.zeroExtend) do
+                              zeroExtend req.dramReqBurst) do
       -- DRAM address, accounting for bursts
-      let addr = req.dramReqAddr + burstCount.val.zeroExtend
+      let addr = req.dramReqAddr + zeroExtend burstCount.val
       -- Determine the address of the beat containing the desired tag bits,
       -- and their offset within that beat
       let (tagsBase, tagsOffset) = split addr
@@ -110,7 +111,7 @@ makeTagController reqs dramResps = mdo
         when (burstDone .||. req.dramReqIsStore) do
           reqs.consume
         -- Increment inflight count
-        when (burstDone .&&. req.dramReqIsStore.inv) do
+        when (burstDone .&&. inv req.dramReqIsStore) do
           inFlightCount `incrBy` zeroExtend (req.dramReqBurst)
         -- Update burst count
         if burstDone
@@ -162,8 +163,8 @@ makeNullTagController :: Bits t_id =>
      -- ^ Responses from tag controller, and requests to DRAM
 makeNullTagController reqs resps = do
   -- Helper functions to modify request/response id
-  let modifyReqId f = fmap (\req -> req { dramReqId = req.dramReqId.f })
-  let modifyRespId f = fmap (\resp -> resp { dramRespId = resp.dramRespId.f })
+  let modifyReqId f = fmap (\req -> req { dramReqId = f req.dramReqId })
+  let modifyRespId f = fmap (\resp -> resp { dramRespId = f resp.dramRespId })
  
   -- Add and remove ids
   let reqs' = modifyReqId (\id -> (dontCare, (dontCare, id))) reqs

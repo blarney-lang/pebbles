@@ -195,23 +195,23 @@ makeNBDRAMCache reqs dramResps = do
 
   always do
     -- Load tags
-    sequence [load tagMem (reqs.peek.dramReqAddr.setIndex) | tagMem <- tagMems]
+    sequence [load tagMem (setIndex reqs.peek.dramReqAddr) | tagMem <- tagMems]
 
     -- See if line is currently busy
     -- On a stall, we need to look at request from stage 2 rather than stage 1
     sequence
       [ busy <== member reservedQueue (stallWire.val ?
-          (reqReg.val.dramReqAddr.setIndex, reqs.peek.dramReqAddr.setIndex))
+          (setIndex reqReg.val.dramReqAddr, setIndex reqs.peek.dramReqAddr))
       | (busy, reservedQueue) <- zip busyRegs reservedQueues ]
 
     -- Stage 1: tag lookup
-    when (reqs.canPeek .&&. bubbleWire.val.inv .&&. stallWire.val.inv) do
+    when (reqs.canPeek .&&. inv bubbleWire.val .&&. inv stallWire.val) do
       let req = reqs.peek
       -- Check some restrictions on burst requests
       let maxBeats = fromInteger (2^NBDRAMCacheLogBeatsPerLine)
       dynamicAssert (req.dramReqBurst .<=. maxBeats)
                     "NBDRAMCache: burst count exceeds beats-per-line"
-      let beatOffset :: BeatId = req.dramReqAddr.truncate
+      let beatOffset :: BeatId = truncate req.dramReqAddr
       dynamicAssert (zeroExtend beatOffset + req.dramReqBurst .<=. maxBeats)
                     "NBDRAMCache: burst spans multiple lines"
       -- Trigger next stage
@@ -222,11 +222,11 @@ makeNBDRAMCache reqs dramResps = do
     -- Stage 2: tag update
     when (go2.val) do
       let req = reqReg.val
-      let setId = req.dramReqAddr.setIndex
+      let setId = setIndex req.dramReqAddr
       -- Look for a set-associative match
       let matches =
             [ let s = tagMem.out in
-                s.lineValid .&&. s.lineTag .==. req.dramReqAddr.getTag
+                s.lineValid .&&. s.lineTag .==. getTag req.dramReqAddr
             | tagMem <- tagMems ]
       -- Cache hit?
       let isHit = orList matches
@@ -236,9 +236,9 @@ makeNBDRAMCache reqs dramResps = do
       let stall = -- It's a miss and line is busy
                   inv isHit .&&. (map val busyRegs ! evictWay.val)
              .||. -- The queue of inflight requests is full
-                  inflightQueue.notFull.inv
+                  inv inflightQueue.notFull
              .||. -- The miss queue is full
-                  missQueue.notFull.inv
+                  inv missQueue.notFull
              .||. -- The set of reserved lines is full
                   inv (map canInsert reservedQueues ! chosenWay)
       -- Evict a different way next time
@@ -261,10 +261,10 @@ makeNBDRAMCache reqs dramResps = do
           sequence
             [ when (way .==. chosenWay) do
                 -- Don't update tag on load hit
-                when (inv (isHit .&&. req.dramReqIsStore.inv)) do
+                when (inv (isHit .&&. inv req.dramReqIsStore)) do
                   store tagMem setId
                     LineState {
-                      lineTag = req.dramReqAddr.getTag
+                      lineTag = getTag req.dramReqAddr
                     , lineValid = true
                     , lineDirty = req.dramReqIsStore
                     }
@@ -290,13 +290,13 @@ makeNBDRAMCache reqs dramResps = do
               MissInfo {
                 missSetId = setId
               , missWay = evictWay.val
-              , missLine = map out tagMems ! evictWay.val
-              , missNewTag = req.dramReqAddr.getTag
+              , missLine = map (.out) tagMems ! evictWay.val
+              , missNewTag = getTag req.dramReqAddr
               }
           -- Insert pipeline bubble when consecutive requests access same line
           when (reqs.canPeek .&&.
-                  reqs.peek.dramReqAddr.setIndex .==.
-                  req.dramReqAddr.setIndex) do
+                  setIndex reqs.peek.dramReqAddr .==.
+                  setIndex req.dramReqAddr) do
             bubbleWire <== true
 
   -- Miss handler
@@ -324,8 +324,8 @@ makeNBDRAMCache reqs dramResps = do
     when (missQueue.canDeq) do
       let miss = missQueue.first
       -- No need to writeback on invalid or clean line
-      if miss.missLine.lineValid.inv .||.
-           miss.missLine.lineDirty.inv .||.
+      if inv miss.missLine.lineValid .||.
+           inv miss.missLine.lineDirty .||.
              missState.val .==. 1
         then do
           -- Fetch
@@ -360,14 +360,14 @@ makeNBDRAMCache reqs dramResps = do
 
           -- Give way to memory response stage
           -- (Which also accesses data memory)
-          when (dramRespInProgress.val.inv) do
+          when (inv dramRespInProgress.val) do
             -- Load beat from data memory
             loadBE dataMemA
-              (miss.missWay # miss.missSetId # writebackCount.val.truncate)
+              (miss.missWay # miss.missSetId # truncate writebackCount.val)
             -- Try writeback on next cycle
             enableWriteback <== true
             -- Increment writeback count
-            when (writebackStall.val.inv) do
+            when (inv writebackStall.val) do
               writebackCount <== writebackCount.val + 1
           -- Try writeback
           when (enableWriteback.val) do
@@ -416,7 +416,7 @@ makeNBDRAMCache reqs dramResps = do
       -- Take control over data mem port A
       dramRespInProgress <== true
       -- Write beat to data memory
-      storeBE dataMemA (resp.dramRespId + dramRespBeatCount.val.zeroExtend)
+      storeBE dataMemA (resp.dramRespId + zeroExtend dramRespBeatCount.val)
         ones (dramResps.peek.dramRespData)
       -- Consume request
       dramResps.consume
@@ -425,7 +425,7 @@ makeNBDRAMCache reqs dramResps = do
       when (dramRespBeatCount.val .==. ones) do
         incrBy fetchDoneCount 1
       -- Completed fetches can never exceed number of inflight requests
-      dynamicAssert (fetchDoneCount.isFull.inv)
+      dynamicAssert (inv fetchDoneCount.isFull)
         "NBDRAMCache: broken invariant on fetchDoneCount"
 
   -- Cache response
@@ -453,14 +453,14 @@ makeNBDRAMCache reqs dramResps = do
       let req = inflight.inflightReq
       -- Stall condition
       let stall = -- Miss has not yet been resolved
-                  inflight.inflightHit.inv .&&. fetchDoneCount.getCount .==. 0
+                  inv inflight.inflightHit .&&. fetchDoneCount.getCount .==. 0
              .||. -- Response buffer is full
-                  respCount.isFull .&&. respConsumeWire.val.inv
+                  respCount.isFull .&&. inv respConsumeWire.val
       -- Process request
       when (inv stall) do
         -- Determine address for access to cache's data memory
-        let dataMemAddr = (inflight.inflightWay # req.dramReqAddr.truncate) +
-              respBeatCount.val.zeroExtend
+        let dataMemAddr = (inflight.inflightWay # truncate req.dramReqAddr) +
+              zeroExtend respBeatCount.val
         -- Lookup / update data memory
         if req.dramReqIsStore
           then do
@@ -472,7 +472,7 @@ makeNBDRAMCache reqs dramResps = do
             inflightQueue.deq
             -- Decrement fetch count on store miss
             -- (Only one store in a burst will be marked as a miss)
-            when (inflight.inflightHit.inv) do
+            when (inv inflight.inflightHit) do
               decrBy fetchDoneCount 1
           else do
             loadBE dataMemB dataMemAddr
@@ -487,10 +487,10 @@ makeNBDRAMCache reqs dramResps = do
             -- Reset count for next time
             respBeatCount <== 0
             -- Consume burst load request
-            when (req.dramReqIsStore.inv) do
+            when (inv req.dramReqIsStore) do
               inflightQueue.deq
               -- Decrement fetch count on load miss
-              when (inflight.inflightHit.inv) do
+              when (inv inflight.inflightHit) do
                 decrBy fetchDoneCount 1
             -- Release line
             sequence_
@@ -510,7 +510,7 @@ makeNBDRAMCache reqs dramResps = do
       enq respQueue
         DRAMResp {
           dramRespId = respIdReg.val
-        , dramRespBurstId = respBeatCount.val.old.zeroExtend
+        , dramRespBurstId = zeroExtend (old respBeatCount.val)
         , dramRespData = dataMemB.outBE
         , dramRespDataTagBits = 0
         }
@@ -524,5 +524,5 @@ makeNBDRAMCache reqs dramResps = do
           decrBy respCount 1
           respConsumeWire <== true
       }
-    , dramReqQueue.toStream
+    , toStream dramReqQueue
     )

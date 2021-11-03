@@ -49,7 +49,7 @@ executeA memReqs s = do
     if memReqs.canPut
       then do
         -- Is response needed?
-        let needsResp = s.instr.getDestReg .!=. 0
+        let needsResp = getDestReg s.instr .!=. 0
         -- Suspend if response needed
         info <- whenR needsResp (s.suspend)
         -- Send request to memory unit
@@ -60,9 +60,9 @@ executeA memReqs s = do
           , memReqOp = memAtomicOp
           , memReqAMOInfo =
               AMOInfo {
-                amoOp = s.instr.getAMO
-              , amoAcquire = s.instr.getAcquire
-              , amoRelease = s.instr.getRelease
+                amoOp = getAMO s.instr
+              , amoAcquire = getAcquire s.instr
+              , amoRelease = getRelease s.instr
               , amoNeedsResp = needsResp
               }
           , memReqAddr = s.opA

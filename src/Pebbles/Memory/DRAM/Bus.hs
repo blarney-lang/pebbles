@@ -54,22 +54,22 @@ makeDRAMBus (reqs0, reqs1) dramResps = do
                 dramReqIsFinal (dramReqs0, dramReqs1)
 
   -- Get the tag from the response
-  let getTag resp = resp.dramRespId.fst
+  let getTag resp = fst resp.dramRespId
 
   -- Untag the response
-  let untag resp = resp { dramRespId = resp.dramRespId.snd }
+  let untag resp = resp { dramRespId = snd resp.dramRespId }
 
   -- Split into two response streams
   let resps0 =
         Source {
-          peek = dramResps.peek.untag
-        , canPeek = dramResps.canPeek .&. dramResps.peek.getTag.inv
+          peek = untag dramResps.peek
+        , canPeek = dramResps.canPeek .&. inv (getTag dramResps.peek)
         , consume = dramResps.consume
         }
   let resps1 =
         Source {
-          peek = dramResps.peek.untag
-        , canPeek = dramResps.canPeek .&. dramResps.peek.getTag
+          peek = untag dramResps.peek
+        , canPeek = dramResps.canPeek .&. getTag dramResps.peek
         , consume = dramResps.consume
         }
 

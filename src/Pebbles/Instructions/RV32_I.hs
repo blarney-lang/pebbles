@@ -173,7 +173,7 @@ executeI shiftUnit csrUnit memReqs s = do
         ]
 
   when branch do
-    s.pc <== s.pc.val + s.instr.getBranchOffset.signExtend
+    s.pc <== s.pc.val + signExtend (getBranchOffset s.instr)
 
   when (s.opcode `is` [JAL]) do
     s.pc <== s.pc.val + s.opBorImm
@@ -215,12 +215,12 @@ executeI shiftUnit csrUnit memReqs s = do
     -- Condition for reading CSR
     let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
     -- Read CSR
-    x <- whenR doRead do csrUnitRead csrUnit (s.instr.getCSRImm)
+    x <- whenR doRead do csrUnitRead csrUnit (getCSRImm s.instr)
     s.result <== x
     -- Condition for writing CSR
     let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
     -- Determine operand
-    let operand = s.instr.getCSRI ? (s.opAIndex.zeroExtend, s.opA)
+    let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
     -- Data to write for CSRRS/CSRRC
     let maskedData = fromBitList
           [ cond ? (s.opcode `is` [CSRRS], old)
@@ -228,7 +228,7 @@ executeI shiftUnit csrUnit memReqs s = do
     -- Data to write
     let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
     -- Write CSR
-    when doWrite do csrUnitWrite csrUnit (s.instr.getCSRImm) writeData
+    when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
 
 executeI_NoCap ::
      CSRUnit
@@ -255,14 +255,14 @@ executeI_NoCap csrUnit memReqs s = do
         put memReqs
           MemReq {
             memReqId = info
-          , memReqAccessWidth = s.instr.getAccessWidth
+          , memReqAccessWidth = getAccessWidth s.instr
           , memReqOp =
               if s.opcode `is` [LOAD] then memLoadOp else memStoreOp
           , memReqAMOInfo = dontCare
           , memReqAddr = s.opA + s.opBorImm
           , memReqData = s.opB
           , memReqDataTagBit = 0
-          , memReqIsUnsigned = s.instr.getIsUnsignedLoad
+          , memReqIsUnsigned = getIsUnsignedLoad s.instr
           , memReqIsFinal = true
           }
       else s.retry

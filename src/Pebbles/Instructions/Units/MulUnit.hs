@@ -52,7 +52,7 @@ makeHalfMulUnit = do
     MulUnit {
       mulReqs =
         Sink {
-          canPut = fullReg.val.inv
+          canPut = inv fullReg.val
         , put = \req -> do
             let msbA = at @31 (req.mulReqA)
             let msbB = at @31 (req.mulReqB)
@@ -70,7 +70,7 @@ makeHalfMulUnit = do
             ResumeReq {
               resumeReqInfo = reqReg.val.mulReqInfo
             , resumeReqData = reqReg.val.mulReqLower ?
-                (resultReg.val.lower, resultReg.val.upper)
+                (lower resultReg.val, upper resultReg.val)
             , resumeReqCap = none
             }
         , canPeek = fullReg.val
@@ -123,7 +123,7 @@ makeFullMulUnit = do
 
   -- Stage 1: compute partial products
   always do
-    when (go1.val .&. stall.val.inv) do
+    when (go1.val .&. inv stall.val) do
       prod0 <== fullMul True (lowerA.val) (lowerB.val)
       prod1 <== fullMul True (lowerA.val) (upperB.val) +
                   fullMul True (upperA.val) (lowerB.val)
@@ -133,7 +133,7 @@ makeFullMulUnit = do
 
   -- Stage 2: sum partial products
   always do
-    when (go2.val .&. stall.val.inv) do
+    when (go2.val .&. inv stall.val) do
       sum <== signExtend (prod0.val)
                 + (signExtend (prod1.val) # (0 :: Bit 16))
                 + truncate (prod2.val # (0 :: Bit 32))
@@ -149,7 +149,7 @@ makeFullMulUnit = do
             ResumeReq {
               resumeReqInfo = req3.val.mulReqInfo
             , resumeReqData = req3.val.mulReqLower ?
-                (sum.val.lower, sum.val.upper)
+                (lower sum.val, upper sum.val)
             , resumeReqCap = none
             }
       else do
@@ -159,7 +159,7 @@ makeFullMulUnit = do
     MulUnit {
       mulReqs =
         Sink {
-          canPut = stall.val.inv
+          canPut = inv stall.val
         , put = \req -> do
             let msbA = at @31 (req.mulReqA)
             let msbB = at @31 (req.mulReqB)
@@ -172,5 +172,5 @@ makeFullMulUnit = do
             req1 <== req
             go1 <== true
         }
-    , mulResps = resultQueue.toStream
+    , mulResps = toStream resultQueue
     }
