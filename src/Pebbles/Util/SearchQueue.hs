@@ -34,7 +34,7 @@ makeSearchQueue size = do
         -- Overwrite first element and shift rest by one place
         zipWithM (<==) elems (insertWire.val : map val elems)
         -- Increase number of valid elements, unless deleting
-        when (deleteWire.val.inv) do
+        when (inv deleteWire.val) do
           zipWithM_ (<==) valids (true : map val valids)
       else do
         when (deleteWire.val) do
@@ -42,7 +42,7 @@ makeSearchQueue size = do
 
   return
     SearchQueue {
-      canInsert = (last valids).val.inv
+      canInsert = inv (last valids).val
     , insert = (insertWire <==)
     , delete = deleteWire <== true
     , member = \a ->

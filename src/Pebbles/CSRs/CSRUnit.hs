@@ -49,9 +49,9 @@ makeCSRUnit csrs = do
       case csr.csrWrite of
         Nothing -> return ()
         Just wr ->
-          when (csrIdWriteWire.active) do
-            when (csr.csrId.fromInteger .==. csrIdWriteWire.val) do
-              wr (csrWriteWire.val)
+          when csrIdWriteWire.active do
+            when (fromInteger csr.csrId .==. csrIdWriteWire.val) do
+              wr csrWriteWire.val
 
     -- Handle CSR reads
     forM csrs \csr ->
@@ -59,7 +59,7 @@ makeCSRUnit csrs = do
         Nothing -> return []
         Just rd -> do
           let cond = csrIdReadWire.active .&.
-                       (csr.csrId.fromInteger .==. csrIdReadWire.val)
+                       (fromInteger csr.csrId .==. csrIdReadWire.val)
           x <- whenR cond rd
           return [(cond, x)]
 

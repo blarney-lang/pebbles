@@ -77,26 +77,26 @@ makeDRAMCore makeRespQueue reqs avlIns =
        when (putStore.val) do
          doRead <== 0
          doWrite <== 1
-       when (putLoad.val.inv .&. putStore.val.inv .&. waitRequest.inv) do
+       when (inv putLoad.val .&. inv putStore.val .&. inv waitRequest) do
          doRead <== 0
          doWrite <== 0
 
      -- Process DRAM requests
      always do
-       when (reqs.canPeek .&. waitRequest.inv) do
+       when (reqs.canPeek .&. inv waitRequest) do
          let req :: DRAMReq t_id = reqs.peek
          -- Check burst size
          dynamicAssert (req.dramReqBurst .<=. maxBurst)
            "DRAM: max burst size exceeded"
          -- Consume request
-         when (inFlightCount.getAvailable .>=. req.dramReqBurst.zeroExtend) do
+         when (inFlightCount.getAvailable .>=. zeroExtend req.dramReqBurst) do
            reqs.consume
            byteEn <== req.dramReqByteEn
            address <== req.dramReqAddr
            burstReg <== req.dramReqBurst
            writeData <== req.dramReqData
            if req.dramReqIsStore then putStore <== 1 else putLoad <== 1
-           when (req.dramReqIsStore.inv) do
+           when (inv req.dramReqIsStore) do
              dynamicAssert (inFlight.notFull) "DRAM: enqueueing to full queue"
              enq inFlight 
                DRAMInFlightReq {

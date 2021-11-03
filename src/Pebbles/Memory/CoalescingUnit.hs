@@ -190,10 +190,10 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
 
     -- Inject requests from input queues when no stall/feedback in progress
     when (memReqsStream.canPeek) do
-      when (partialFeedback.val.inv .&&.
+      when (inv partialFeedback.val .&&.
               spaceForTwo .&&.
-                (stallWire.val.inv .||. go1.val.inv) .&&.
-                  feedbackWire.val.inv) do
+                (inv stallWire.val .||. inv go1.val) .&&.
+                  inv feedbackWire.val) do
         -- Consume next vector of requests
         memReqsStream.consume
         -- Inject into pipeline
@@ -220,10 +220,10 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
         then go1 <== true
         else do
           -- Select first pending request as leader
-          leader2 <== pending1.val .&. (pending1.val.inv + 1)
+          leader2 <== pending1.val .&. (inv pending1.val + 1)
           -- Trigger stage 2
           go2 <== true
-          zipWithM_ (<==) memReqs2 (map val memReqs1)
+          zipWithM_ (<==) memReqs2 (map (.val) memReqs1)
           pending2 <== pending1.val
 
   -- Stage 2: Select leader's request
@@ -239,11 +239,11 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           dynamicAssert (leader2.val .!=. 0)
             "Coalescing Unit (Stage 2): no leader found"
           -- Mux to select leader's request
-          leaderReq3 <== select (zip (leader2.val.toBitList)
-                                     (map val memReqs2))
+          leaderReq3 <== select (zip (toBitList leader2.val)
+                                     (map (.val) memReqs2))
           -- Trigger stage 3
           go3 <== true
-          zipWithM_ (<==) memReqs3 (map val memReqs2)
+          zipWithM_ (<==) memReqs3 (map (.val) memReqs2)
           pending3 <== pending2.val
           leader3 <== leader2.val
 
@@ -268,7 +268,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               (leaderReq3.val.memReqAccessWidth .==. req.val.memReqAccessWidth
                 .&&. leaderReq3.val.memReqOp .==. req.val.memReqOp
                 .&&. leaderReq3.val.memReqIsFinal .==. req.val.memReqIsFinal)
-          | (req, valid) <- zip memReqs3 (pending3.val.toBitList) ]
+          | (req, valid) <- zip memReqs3 (toBitList pending3.val) ]
     when (go3.val) do
       dynamicAssert sameOpAndAccessWidth
         "Coalescining unit: requests have different op or access width"
@@ -307,7 +307,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let sameBlockMasks :: [Bit SIMTLanes] =
           map fromBitList $ transpose
             [ sameBlockMatch r (fromInteger i)
-            | (r, i) <- zip (map val memReqs3) [0..] ]
+            | (r, i) <- zip (map (.val) memReqs3) [0..] ]
 
     -- Take into account which requests are valid
     let [byteModeMask, halfModeMask, wordModeMask] =
@@ -319,15 +319,15 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     -- Requests satisfied by SameAddress strategy
     let sameAddrMaskVal :: Bit SIMTLanes = fromBitList
           [ p .&&. r.memReqAddr .==. leaderReq3.val.memReqAddr
-          | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
+          | (p, r) <- zip (toBitList pending3.val) (map (.val) memReqs3) ]
 
     -- Requests destined for banked SRAMs
     let sramMask = 
           [ p .&. isSRAMAccess r
-          | (p, r) <- zip (pending3.val.toBitList) (map val memReqs3) ]
+          | (p, r) <- zip (toBitList pending3.val) (map (.val) memReqs3) ]
 
     -- State update
-    when (go3.val .&. stallWire.val.inv) do
+    when (go3.val .&. inv stallWire.val) do
       -- SameAddress strategy should at least allow the leader to progress
       dynamicAssert (sameAddrMaskVal .!=. 0)
         "Coalescing Unit: SameAddr strategy does not make progress!"
@@ -336,14 +336,14 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
       -- For SameBlock strategy, choose WordMode if it satisfies leader
       -- and at least one other request
       let useWordMode = (wordModeMask .&. leader3.val .!=. 0) .&.
-                          (wordModeMask .&. leader3.val.inv .!=. 0)
+                          (wordModeMask .&. inv leader3.val .!=. 0)
       if useWordMode
         then do
           sameBlockMode4 <== 2
           sameBlockMask4 <== wordModeMask
         else do
           -- Otherwise, use access width to determine mode
-          if leaderReq3.val.memReqAccessWidth.isHalfAccess
+          if isHalfAccess leaderReq3.val.memReqAccessWidth
             then do
               sameBlockMode4 <== 1
               sameBlockMask4 <== halfModeMask
@@ -351,11 +351,11 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               sameBlockMode4 <== 0
               sameBlockMask4 <== byteModeMask
       -- Is leader accessing banked SRAMs?
-      isSRAMAccess4 <== leaderReq3.val.isSRAMAccess
+      isSRAMAccess4 <== isSRAMAccess leaderReq3.val
       sramMask4 <== fromBitList sramMask
       -- Trigger stage 4
       go4 <== true
-      zipWithM_ (<==) memReqs4 (map val memReqs3)
+      zipWithM_ (<==) memReqs4 (map (.val) memReqs3)
       pending4 <== pending3.val
       leader4 <== leader3.val
       leaderReq4 <== leaderReq3.val
@@ -385,13 +385,13 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     -- which will always satisfy at least one request.
     let useSameBlock =
           ((sameBlockMask4.val .&. leader4.val) .==. leader4.val) .&.
-            ((sameBlockMask4.val .&. leader4.val.inv) .!=. 0)
+            ((sameBlockMask4.val .&. inv leader4.val) .!=. 0)
     -- Requests participating in strategy
     let mask = isSRAMAccess4.val ? (sramMask4.val,
                  useSameBlock ? (sameBlockMask4.val, sameAddrMask4.val))
     -- Try to trigger next stage
     when (go4.val) do
-      let busy = isSRAMAccess4.val ? (sramReqs.notFull.inv, go5.val)
+      let busy = isSRAMAccess4.val ? (inv sramReqs.notFull, go5.val)
       -- Stall if stage 5 is currently busy
       -- or transaction currently being inserted
       if busy .||. partialInsert.val
@@ -404,8 +404,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
             then do
               let reqs = V.fromList
                            [ Option active req
-                           | (req, active) <- zip (map val memReqs4)
-                                                  (sramMask4.val.toBitList) ]
+                           | (req, active) <- zip (map (.val) memReqs4)
+                                                  (toBitList sramMask4.val) ]
               -- Use same address strategy if all SRAM accesses are
               -- loads to the same address
               let useSameAddr =
@@ -434,8 +434,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
             else do
               go1 <== true
               feedbackWire <== true
-              partialFeedback <== leaderReq4.val.memReqIsFinal.inv
-              zipWithM_ (<==) memReqs1 (map val memReqs4)
+              partialFeedback <== inv leaderReq4.val.memReqIsFinal
+              zipWithM_ (<==) memReqs1 (map (.val) memReqs4)
               pending1 <== remaining
 
   -- Stage 5 (DRAM): Issue DRAM requests
@@ -454,9 +454,9 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           if useSameBlock
             then
               select [
-                sameBlockMode.isByteAccess --> (1, 0b0)
-              , sameBlockMode.isHalfAccess --> (1, 0b0)
-              , sameBlockMode.isWordAccess --> (2, 0b1)
+                isByteAccess sameBlockMode --> (1, 0b0)
+              , isHalfAccess sameBlockMode --> (1, 0b0)
+              , isWordAccess sameBlockMode --> (2, 0b1)
               ]
             else (1, 0b0)
     -- The DRAM address is derived from the top bits of the memory address
@@ -471,10 +471,10 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
             | [r1, r2, r3, r4] <- groupsOf 4 memReqs5]
     let sameBlockData16 :: V.Vec DRAMBeatHalfs (Bit 16) =
           V.fromList $ concat $
-            [ [r1.val.memReqData.lower, r2.val.memReqData.upper]
+            [ [lower r1.val.memReqData, upper r2.val.memReqData]
             | [r1, r2] <- groupsOf 2 memReqs5 ]
     let sameBlockData32 :: V.Vec DRAMBeatWords (Bit 32) =
-          V.fromList $ selectHalf (storeCount.val.truncate)
+          V.fromList $ selectHalf (truncate storeCount.val)
             [r.val.memReqData | r <- memReqs5]
     let sameBlockData :: DRAMBeat =
           [pack sameBlockData8,
@@ -483,14 +483,14 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     -- Tag bits for SameBlock strategy
     let sameBlockTagBits8 :: Bit DRAMBeatWords =
           fromBitList $ concat $ replicate 2 $
-            [ andList $ map memReqDataTagBit $ map val rs
+            [ andList $ map memReqDataTagBit $ map (.val) rs
             | rs <- groupsOf 4 memReqs5]
     let sameBlockTagBits16 :: Bit DRAMBeatWords =
           fromBitList
-            [ andList $ map memReqDataTagBit $ map val rs
+            [ andList $ map memReqDataTagBit $ map (.val) rs
             | rs <- groupsOf 2 memReqs5]
     let sameBlockTagBits32 :: Bit DRAMBeatWords =
-          fromBitList $ selectHalf (storeCount.val.truncate)
+          fromBitList $ selectHalf (truncate storeCount.val)
             [r.val.memReqDataTagBit | r <- memReqs5]
     let sameBlockTagBits =
           [sameBlockTagBits8,
@@ -507,18 +507,18 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let useUpper = at @(DRAMBeatLogBytes-1) (leaderReq5.val.memReqAddr)
     let sameBlockBE8 :: Bit DRAMBeatBytes =
           fromBitList $
-            [en .&. inv useUpper | en <- mask.toBitList] ++
-            [en .&. useUpper | en <- mask.toBitList]
+            [en .&. inv useUpper | en <- toBitList mask] ++
+            [en .&. useUpper | en <- toBitList mask]
     let sameBlockBE16 :: Bit DRAMBeatBytes =
-          fromBitList $ concatMap (replicate 2) (mask.toBitList)
+          fromBitList $ concatMap (replicate 2) (toBitList mask)
     let sameBlockBE32 :: Bit DRAMBeatBytes =
           fromBitList $ concatMap toBitList $
-            selectHalf (storeCount.val.truncate)
+            selectHalf (truncate storeCount.val)
               [ rep en .&.
                   genByteEnable
                     (r.val.memReqAccessWidth)
                     (r.val.memReqAddr)
-              | (en, r) <- zip (mask.toBitList) memReqs5 ]
+              | (en, r) <- zip (toBitList mask) memReqs5 ]
     let sameBlockBE = [sameBlockBE8, sameBlockBE16, sameBlockBE32] !
            sameBlockMode
     -- DRAM byte enable field for SameAddress strategy
@@ -539,7 +539,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           DRAMReq {
             dramReqId = ()
           , dramReqIsStore = isStore
-          , dramReqAddr = dramAddr.truncate .&. addrMask.zeroExtend.inv
+          , dramReqAddr = truncate dramAddr .&. inv (zeroExtend addrMask)
           , dramReqData = useSameBlock ? (sameBlockData, sameAddrData)
           , dramReqDataTagBits =
               useSameBlock ? (sameBlockTagBits, sameAddrTagBits)
@@ -562,7 +562,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               , coalInfoReqIds =
                   V.fromList [r.val.memReqId | r <- memReqs5]
               , coalInfoSameBlockMode = sameBlockMode
-              , coalInfoAddr = leaderReq5.val.memReqAddr.truncate
+              , coalInfoAddr = truncate leaderReq5.val.memReqAddr
               , coalInfoBurstLen = burstLen - 1
               , coalInfoIsFinal = leaderReq5.val.memReqIsFinal
               }
@@ -600,9 +600,9 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let deliverSameBlock =
           [ loadCount.val .==. 
               select [
-                sameBlockMode.isByteAccess --> 0
-              , sameBlockMode.isHalfAccess --> 0
-              , sameBlockMode.isWordAccess -->
+                isByteAccess sameBlockMode --> 0
+              , isHalfAccess sameBlockMode --> 0
+              , isWordAccess sameBlockMode -->
                   fromInteger (i `div` DRAMBeatWords)
               ]
           | i <- [0..SIMTLanes-1] ]
@@ -621,7 +621,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let beatWords :: V.Vec DRAMBeatWords (Bit 32) = unpack (resp.dramRespData)
     -- Response data for SameAddress strategy
     let sameAddrWordIndex :: Bit (DRAMBeatLogBytes-2) =
-          info.coalInfoAddr.upper
+          upper info.coalInfoAddr
     let sameAddrData = beatWords ! sameAddrWordIndex
     -- Response tag bits for SameAddress strategy
     let sameAddrTagBit = resp.dramRespDataTagBits ! sameAddrWordIndex
@@ -645,10 +645,10 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           fromBitList $
             concatMap (replicate 4) $
               selectHalf bytesSel $
-                resp.dramRespDataTagBits.toBitList
+                toBitList resp.dramRespDataTagBits
     let sameBlockHalfTagBits :: Bit SIMTLanes =
           fromBitList $ concat
-            [[b, b] | b <- resp.dramRespDataTagBits.toBitList]
+            [[b, b] | b <- toBitList resp.dramRespDataTagBits]
     let sameBlockTagBits :: Bit SIMTLanes =
           [ sameBlockByteTagBits
           , sameBlockHalfTagBits
@@ -705,4 +705,4 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
        memRespIsFinal (toStream q0, toStream q1)
     | (q0, q1) <- zip dramRespQueues sramRespQueues ]
 
-  return (V.fromList finalResps, sramReqs.toStream, toStream dramReqQueue)
+  return (V.fromList finalResps, toStream sramReqs, toStream dramReqQueue)

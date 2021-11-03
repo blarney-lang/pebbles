@@ -65,31 +65,31 @@ makeJTAGUART streamIn avlIns = do
 
   always do
     when (state.val .==. s_Idle) do
-      tryWrite <== tryWrite.val.inv
+      tryWrite <== inv tryWrite.val
       if tryWrite.val
         then do
-          when (streamIn.canPeek) do
+          when streamIn.canPeek do
             state <== s_ReadWSpace
         else do
-          when (outQueue.notFull) do
+          when outQueue.notFull do
             state <== s_ReadData
 
     when (state.val .==. s_ReadData) do
       dynamicAssert (outQueue.notFull) "JTAGUART: internal error 1"
       let dataIn = avlIns.avl_jtaguart_readdata
-      when (avlIns.avl_jtaguart_waitrequest.inv) do
+      when (inv avlIns.avl_jtaguart_waitrequest) do
         when (at @15 dataIn) do
           enq outQueue (slice @7 @0 dataIn)
         state <== s_Idle
 
     when (state.val .==. s_ReadWSpace) do
       let dataIn = avlIns.avl_jtaguart_readdata
-      when (avlIns.avl_jtaguart_waitrequest.inv) do
+      when (inv avlIns.avl_jtaguart_waitrequest) do
         state <== slice @31 @16 dataIn .>. 0 ? (s_WriteData, s_Idle)
 
     when (state.val .==. s_WriteData) do
       dynamicAssert (streamIn.canPeek) "JTAGUART: internal error 2"
-      when (avlIns.avl_jtaguart_waitrequest.inv) do
+      when (inv avlIns.avl_jtaguart_waitrequest) do
         streamIn.consume
         state <== s_Idle
 
@@ -107,4 +107,4 @@ makeJTAGUART streamIn avlIns = do
               (state.val .==. s_WriteData) ? (0, 4)
         }
 
-  return (outQueue.toStream, avlOuts)
+  return (toStream outQueue, avlOuts)

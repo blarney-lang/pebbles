@@ -85,26 +85,26 @@ makeSeqDivUnit = do
       let n_msb = at @31 (n.val)
       let d_msb = at @31 (d.val)
       -- Negate numerator and denominator if required
-      when (isSigned.val .&. divByZero.inv) do
+      when (isSigned.val .&. inv divByZero) do
         when n_msb do
-          n <== n.val.negate
+          n <== negate n.val
         when d_msb do
-          d <== d.val.negate
+          d <== negate d.val
       -- Initialise state machine
       q <== 0
       r <== 0
       count <== 32
       -- Negate result?
-      negResult <== isSigned.val .&. divByZero.inv .&.
+      negResult <== isSigned.val .&. inv divByZero .&.
         (getRemainder.val ? (n_msb, n_msb .^. d_msb))
     -- Binary long division algorithm (taken from Wikipedia)
     while (count.val .!=. 0) do
       action do
-        let r' = r.val.shl .|. zeroExtend (at @31 (n.val))
+        let r' = shl r.val .|. zeroExtend (at @31 (n.val))
         let sub = r' .>=. d.val
         r <== r' - (sub ? (d.val, 0))
-        q <== q.val.shl .|. (sub ? (1, 0))
-        n <== n.val.shl
+        q <== shl q.val .|. (sub ? (1, 0))
+        n <== shl n.val
         count <== count.val - 1
     -- Prepare result
     action do
@@ -112,13 +112,13 @@ makeSeqDivUnit = do
       busy <== false
       -- Choose quotient or remainder, and optionally negate
       let result = getRemainder.val ? (r.val, q.val)
-      output <== negResult.val ? (result.negate, result)
+      output <== negResult.val ? (negate result, result)
 
   return
     DivUnit {
       divReqs =
         Sink {
-          canPut = busy.val.inv .&. done.val.inv
+          canPut = inv busy.val .&. inv done.val
         , put = \req -> do
             reqInfo <== req.divReqInfo
             n <== req.divReqNum
@@ -187,15 +187,15 @@ makeFullDivUnit latency
         DivUnit {
           divReqs =
             Sink {
-              canPut = inflightCount.isFull.inv
+              canPut = inv inflightCount.isFull
             , put = \req -> do
                 incrBy inflightCount 1
                 enq infoQueue (req.divReqInfo)
                 -- Extend inputs to 33 bits
                 let numExt = req.divReqIsSigned ?
-                               (req.divReqNum.upper, false)
+                               (upper req.divReqNum, false)
                 let denomExt = req.divReqIsSigned ?
-                                 (req.divReqDenom.upper, false)
+                                 (upper req.divReqDenom, false)
                 numWire <== numExt # req.divReqNum
                 denomWire <== denomExt # req.divReqDenom
                 remWire <== req.divReqGetRemainder

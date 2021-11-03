@@ -25,12 +25,12 @@ makeCSR_CycleCount = do
   return
     [ CSR {
         csrId = 0xc00
-      , csrRead = Just do return (count.val.lower)
+      , csrRead = Just do return (lower count.val)
       , csrWrite = Nothing
       }
     , CSR {
         csrId = 0xc80
-      , csrRead = Just do return (count.val.upper)
+      , csrRead = Just do return (upper count.val)
       , csrWrite = Nothing
       }
     ]

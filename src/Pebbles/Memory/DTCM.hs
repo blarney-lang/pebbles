@@ -52,7 +52,7 @@ makeDTCM conf =
     doConsume :: Wire (Bit 1) <- makeWire false
 
     -- Can we consume another request?
-    let full = ready.val .&. doConsume.val.inv
+    let full = ready.val .&. inv doConsume.val
 
     always do
       -- Hold output of block RAM when full
@@ -79,11 +79,11 @@ makeDTCM conf =
       MemUnit {
         memReqs =
           Sink {
-            canPut = full.inv
+            canPut = inv full
           , put = \req -> do
               reqWire <== req
               -- Check for unsupported ops
-              let uops = [ memAtomicOp,
+              let uops = [ memAtomicOp
                          , memGlobalFenceOp ]
               dynamicAssert (andList [req.memReqOp .!=. op | op <- uops])
                 "Atomics & fences not yet supported by DTCM"
@@ -94,7 +94,7 @@ makeDTCM conf =
               MemResp {
                 memRespId = reqReg.val.memReqId
               , memRespData = loadMux (dataMem.outBE)
-                                (reqReg.val.memReqAddr.truncate)
+                                (truncate reqReg.val.memReqAddr)
                                 (reqReg.val.memReqAccessWidth)
                                 (reqReg.val.memReqIsUnsigned)
               }

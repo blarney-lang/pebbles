@@ -62,10 +62,10 @@ makeWarpPreserver resps = do
       sequence_ [prev <== p.active | (prev, p) <- zip prevActive putWires]
       -- Track whether multi-flit transaction is in progress
       transactionInProgress <==
-        orList [p.active ? (p.val.memReqIsFinal.inv, false) | p <- putWires]
+        orList [p.active ? (inv p.val.memReqIsFinal, false) | p <- putWires]
 
   -- Ouputs
-  let reqStreams = memReqsQueue.toStream
+  let reqStreams = toStream memReqsQueue
 
   let memUnits =
         [ MemUnit {

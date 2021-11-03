@@ -226,19 +226,19 @@ makeStreamCache reqs dramResps = do
   always do
     -- Load tags
     sequence
-      [ load tagMem (reqs.peek.streamCacheReqAddr.setIndex)
+      [ load tagMem (setIndex reqs.peek.streamCacheReqAddr)
       | tagMem <- tagMems ]
 
     -- See if line is currently busy
     -- On a stall, we need to look at request from stage 2 rather than stage 1
     sequence
       [ busy <== member reservedQueue (stallWire.val ?
-          (reqReg.val.streamCacheReqAddr.setIndex,
-           reqs.peek.streamCacheReqAddr.setIndex))
+          (setIndex reqReg.val.streamCacheReqAddr,
+           setIndex reqs.peek.streamCacheReqAddr))
       | (busy, reservedQueue) <- zip busyRegs reservedQueues ]
 
     -- Stage 1: tag lookup
-    when (reqs.canPeek .&&. bubbleWire.val.inv .&&. stallWire.val.inv) do
+    when (reqs.canPeek .&&. inv bubbleWire.val .&&. inv stallWire.val) do
       let req = reqs.peek
       -- Trigger next stage
       go2 <== true
@@ -248,11 +248,11 @@ makeStreamCache reqs dramResps = do
     -- Stage 2: tag update
     when (go2.val) do
       let req = reqReg.val
-      let setId = req.streamCacheReqAddr.setIndex
+      let setId = setIndex req.streamCacheReqAddr
       -- Look for a set-associative match
       let matches =
             [ let s = tagMem.out in
-                s.lineValid .&&. s.lineTag .==. req.streamCacheReqAddr.getTag
+                lineValid s .&&. lineTag s .==. getTag req.streamCacheReqAddr
             | tagMem <- tagMems ]
       -- Cache hit?
       let isHit = orList matches
@@ -262,9 +262,9 @@ makeStreamCache reqs dramResps = do
       let stall = -- It's a miss and line is busy
                   inv isHit .&&. (map val busyRegs ! evictWay.val)
              .||. -- The queue of inflight requests is full
-                  inflightQueue.notFull.inv
+                  inv inflightQueue.notFull
              .||. -- The miss queue is full
-                  missQueue.notFull.inv
+                  inv missQueue.notFull
              .||. -- The set of reserved lines is full
                   inv (map canInsert reservedQueues ! chosenWay)
       -- Evict a different way next time
@@ -281,10 +281,10 @@ makeStreamCache reqs dramResps = do
           sequence
             [ when (way .==. chosenWay) do
                 -- Don't update tag on load hit
-                when (inv (isHit .&&. req.streamCacheReqIsStore.inv)) do
+                when (inv (isHit .&&. inv req.streamCacheReqIsStore)) do
                   store tagMem setId
                     LineState {
-                      lineTag = req.streamCacheReqAddr.getTag
+                      lineTag = getTag req.streamCacheReqAddr
                     , lineValid = true
                     , lineDirty = req.streamCacheReqIsStore
                     }
@@ -309,12 +309,12 @@ makeStreamCache reqs dramResps = do
                 missSetId = setId
               , missWay = evictWay.val
               , missLine = map out tagMems ! evictWay.val
-              , missNewTag = req.streamCacheReqAddr.getTag
+              , missNewTag = getTag req.streamCacheReqAddr
               }
           -- Insert pipeline bubble when consecutive requests access same line
           when (reqs.canPeek .&&.
-                  reqs.peek.streamCacheReqAddr.setIndex .==.
-                  req.streamCacheReqAddr.setIndex) do
+                  setIndex reqs.peek.streamCacheReqAddr .==.
+                  setIndex req.streamCacheReqAddr) do
             bubbleWire <== true
 
   -- Miss handler
@@ -342,8 +342,8 @@ makeStreamCache reqs dramResps = do
     when (missQueue.canDeq) do
       let miss = missQueue.first
       -- No need to writeback on invalid or clean line
-      if miss.missLine.lineValid.inv .||.
-           miss.missLine.lineDirty.inv .||.
+      if inv miss.missLine.lineValid .||.
+           inv miss.missLine.lineDirty .||.
              missState.val .==. 1
         then do
           -- Fetch
@@ -378,10 +378,10 @@ makeStreamCache reqs dramResps = do
 
           -- Give way to memory response stage
           -- (Which also accesses data memory)
-          when (dramRespInProgress.val.inv .&&. writebackStall.val.inv) do
+          when (inv dramRespInProgress.val .&&. inv writebackStall.val) do
             -- Load beat from data memory
             loadBE dataMemA
-              (miss.missWay # miss.missSetId # writebackCount.val.truncate)
+              (miss.missWay # miss.missSetId # truncate writebackCount.val)
             -- Try writeback on next cycle
             enableWriteback <== true
             -- Increment writeback count
@@ -433,7 +433,7 @@ makeStreamCache reqs dramResps = do
       -- Take control over data mem port A
       dramRespInProgress <== true
       -- Write beat to data memory
-      storeBE dataMemA (resp.dramRespId + dramRespBeatCount.val.zeroExtend)
+      storeBE dataMemA (resp.dramRespId + zeroExtend dramRespBeatCount.val)
         ones (dramResps.peek.dramRespData)
       -- Consume response
       dramResps.consume
@@ -442,7 +442,7 @@ makeStreamCache reqs dramResps = do
       when (dramRespBeatCount.val .==. ones) do
         incrBy fetchDoneCount 1
       -- Completed fetches can never exceed number of inflight requests
-      dynamicAssert (fetchDoneCount.isFull.inv)
+      dynamicAssert (inv fetchDoneCount.isFull)
         "StreamCache: broken invariant on fetchDoneCount"
 
   -- Cache response
@@ -474,16 +474,16 @@ makeStreamCache reqs dramResps = do
     let req = inflight.inflightReq
     -- Determine address for access to cache's data memory
     let dataMemAddr = inflight.inflightWay #
-                        req.streamCacheReqAddr.truncate
+                        truncate req.streamCacheReqAddr
     -- State 0: data lookup
     when (respState.val .==. 0) do
       when (inflightQueue.canDeq) do
         -- Stall condition
         let stall = -- Miss has not yet been resolved
-                    inflight.inflightHit.inv .&&.
+                    inv inflight.inflightHit .&&.
                       fetchDoneCount.getCount .==. 0
                .||. -- Response buffer is full
-                    respCount.isFull .&&. respConsumeWire.val.inv
+                    respCount.isFull .&&. inv respConsumeWire.val
         -- Process request
         when (inv stall) do
           -- Lookup data memory
@@ -503,7 +503,7 @@ makeStreamCache reqs dramResps = do
               respIdReg <== req.streamCacheReqId
               respBeatOffset <== req.streamCacheReqOffset
           -- Decrement fetch count on miss
-          when (inflight.inflightHit.inv) do
+          when (inv inflight.inflightHit) do
             decrBy fetchDoneCount 1
           -- Release line
           sequence_
@@ -550,7 +550,7 @@ makeStreamCache reqs dramResps = do
       dynamicAssert (respQueue.notFull) "StreamCache: response queue overflow"
       -- Split response item items
       let dataItems :: V.Vec (2^StreamCacheLogItemsPerBeat) StreamCacheData =
-            dataMemB.outBE.unpack
+            unpack dataMemB.outBE
       -- Enqueue response
       enq respQueue
         StreamCacheResp {
@@ -568,5 +568,5 @@ makeStreamCache reqs dramResps = do
           decrBy respCount 1
           respConsumeWire <== true
       }
-    , dramReqQueue.toStream
+    , toStream dramReqQueue
     )

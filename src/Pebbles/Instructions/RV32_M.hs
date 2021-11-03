@@ -38,7 +38,7 @@ executeM mulUnit divUnit s = do
     if mulUnit.mulReqs.canPut
       then do
         info <- s.suspend
-        let mulInfo = s.instr.getMulInfo
+        let mulInfo = getMulInfo s.instr
         put (mulUnit.mulReqs)
           MulReq {
             mulReqInfo = info
@@ -54,13 +54,13 @@ executeM mulUnit divUnit s = do
     if divUnit.divReqs.canPut
       then do
         info <- s.suspend
-        let divInfo = s.instr.getDivInfo
+        let divInfo = getDivInfo s.instr
         put (divUnit.divReqs)
           DivReq {
             divReqInfo = info
           , divReqNum = s.opA
           , divReqDenom = s.opB
-          , divReqIsSigned = at @0 (divInfo.inv)
+          , divReqIsSigned = at @0 (inv divInfo)
           , divReqGetRemainder = at @1 divInfo
           }
       else s.retry

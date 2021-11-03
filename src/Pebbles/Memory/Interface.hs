@@ -284,7 +284,7 @@ makeCapMemReqSink memReqSink = do
 
   return
     Sink {
-      canPut = busy.val.inv .&&. memReqSink.canPut
+      canPut = inv busy.val .&&. memReqSink.canPut
     , put = \req -> do
         reqReg <== req
         let stdReq = req.capMemReqStd
@@ -294,7 +294,7 @@ makeCapMemReqSink memReqSink = do
         put memReqSink
           stdReq {
             -- If it's a capability access, disable final bit
-            memReqIsFinal = req.capMemReqIsCapAccess.inv
+            memReqIsFinal = inv req.capMemReqIsCapAccess
           }
     }
 

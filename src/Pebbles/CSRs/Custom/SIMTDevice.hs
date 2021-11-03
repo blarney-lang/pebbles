@@ -36,7 +36,7 @@ makeCSR_WarpCmd laneId warpCmd = do
         , csrRead = Nothing
         , csrWrite = Just \x -> do
             when (laneId .==. 0) do
-              warpCmd <== unpack (x.truncate)
+              warpCmd <== unpack (truncate x)
         }
 
   return csr_WarpCmd

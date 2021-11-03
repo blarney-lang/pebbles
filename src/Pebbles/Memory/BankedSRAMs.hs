@@ -143,19 +143,19 @@ makeBankedSRAMs inputs = do
                 inputs.canPeek
               , inv consumed
               , if i == 0
-                  then inputs.peek.snd.valid .||. req.valid
-                  else inputs.peek.snd.valid.inv .&&. req.valid
+                  then (snd inputs.peek).valid .||. req.valid
+                  else inv (snd inputs.peek).valid .&&. req.valid
               ]
           , peek = if i == 0
-                      then inputs.peek.snd.valid ?
-                             (inputs.peek.snd.val, req.val)
+                      then (snd inputs.peek).valid ?
+                             ((snd inputs.peek).val, req.val)
                       else req.val
           , consume = consumeWire <== true
           }
         | (req, consumeWire, consumed, i) <-
-            zip4 (inputs.peek.fst.toList)
+            zip4 (toList (fst inputs.peek))
                  consumeWires
-                 (consumedMask.val.toBitList)
+                 (toBitList consumedMask.val)
                  [0..]
         ]
 
@@ -164,11 +164,11 @@ makeBankedSRAMs inputs = do
   always do
     when (inputs.canPeek) do
       -- Bit mask of available requests
-      let avail = if inputs.peek.snd.valid
+      let avail = if (snd inputs.peek).valid
                     then 1 {- Lane 0 -}
-                    else fromBitList $ map valid $ inputs.peek.fst.toList
+                    else fromBitList $ map (.valid) $ toList (fst inputs.peek)
       -- Bit mask of requests being consumed on current cycle
-      let consumeNow = fromBitList $ map val consumeWires
+      let consumeNow = fromBitList $ map (.val) consumeWires
       -- Have all requests been consumed?
       -- Uncomment the disjuntion for higher throughput but lower Fmax
       if avail .==. consumedMask.val {- .|. consumeNow -}
@@ -197,10 +197,10 @@ makeBankedSRAMs inputs = do
   -- Get bit mask for requests destined for given bank
   let genBankMask :: Bit SIMTLogSRAMBanks -> Bit SIMTSRAMBanks
       genBankMask b = firstHot $ fromBitList
-        [s.canPeek .&&. b .==. s.peek.fst.bankForReq | s <- reqsPerBank]
+        [s.canPeek .&&. b .==. bankForReq (fst s.peek) | s <- reqsPerBank]
 
   always do
-    when (stallWire.val.inv) do
+    when (inv stallWire.val) do
       -- Determine which request maps to each bank
       let masks = [genBankMask b | b <- map fromInteger [0..SIMTSRAMBanks-1]]
       zipWithM_ (<==) indices1 (map binaryEncode masks)
@@ -214,8 +214,9 @@ makeBankedSRAMs inputs = do
       origActive1 <== chosenMask
       active1 <== fromBitList [m .!=. 0 | m <- masks]
       zipWithM_ (<==) reqs1 (map peek reqsPerBank)
-      mcastMask1 <== Option (inputs.peek.snd.valid)
-                            (fromBitList $ map valid $ inputs.peek.fst.toList)
+      mcastMask1 <==
+        Option (snd inputs.peek).valid
+               (fromBitList $ map (.valid) $ toList $ fst inputs.peek)
       when (chosenMask .!=. 0) do
         go1 <== true
 
@@ -223,10 +224,10 @@ makeBankedSRAMs inputs = do
   -- =======================================
 
   always do
-    when (stallWire.val.inv) do
+    when (inv stallWire.val) do
       when (go1.val) do
-        let idxs = map val indices1
-        let (reqs, gids) = unzip (map val reqs1)
+        let idxs = map (.val) indices1
+        let (reqs, gids) = unzip (map (.val) reqs1)
         -- Apply per-bank lookup
         zipWithM_ (<==) reqs2 [reqs ! idx | idx <- idxs]
         -- Remember various things for the response path
@@ -277,21 +278,21 @@ makeBankedSRAMs inputs = do
   always do
     sequence $ getZipList $
         issueLoads <$> ZipList sramBanks
-                   <*> ZipList (map val reqs2)
-                   <*> ZipList (active2.val.toBitList)
+                   <*> ZipList (map (.val) reqs2)
+                   <*> ZipList (toBitList active2.val)
                    <*> ZipList atomicOps3
 
   always do 
     -- Trigger next stage
-    when (stallWire.val.inv) do
+    when (inv stallWire.val) do
       when (go2.val) do
         go3 <== true
         active3 <== active2.val
-        zipWithM_ (<==) reqs3 (map val reqs2)
+        zipWithM_ (<==) reqs3 (map (.val) reqs2)
         origActive3 <== origActive2.val
         mcastMask3 <== mcastMask2.val
-        zipWithM_ (<==) origBankTargets3 (map val origBankTargets2)
-        zipWithM_ (<==) groupIds3 (map val groupIds2)
+        zipWithM_ (<==) origBankTargets3 (map (.val) origBankTargets2)
+        zipWithM_ (<==) groupIds3 (map (.val) groupIds2)
 
   -- Stage 3: Issue stores
   -- =====================
@@ -302,10 +303,10 @@ makeBankedSRAMs inputs = do
 
   -- Per-bank logic for this stage
   let issueStores sramBank req active amo hasResp resp = do
-        when (stallWire.val.inv .&&. go3.val .&&. active) do
+        when (inv stallWire.val .&&. go3.val .&&. active) do
           -- Shorthands
           let a = req.memReqData
-          let b = sramBank.outBE.truncate
+          let b = truncate sramBank.outBE
           -- Prepare min/max operation
           let msb a = upper a :: Bit 1
           let sa = amo.amo_isUnsigned ? (0, msb a)
@@ -330,7 +331,7 @@ makeBankedSRAMs inputs = do
             resp <==
               MemResp {
                 memRespId = req.memReqId
-              , memRespData = sramBank.outBE.truncate
+              , memRespData = truncate sramBank.outBE
               , memRespDataTagBit = at @32 (sramBank.outBE)
               , memRespIsFinal = req.memReqIsFinal
               }
@@ -353,36 +354,36 @@ makeBankedSRAMs inputs = do
   always do
     sequence $ getZipList $
         issueStores <$> ZipList sramBanks
-                    <*> ZipList (map val reqs3)
-                    <*> ZipList (active3.val.toBitList)
-                    <*> ZipList (map val atomicOps3)
+                    <*> ZipList (map (.val) reqs3)
+                    <*> ZipList (toBitList active3.val)
+                    <*> ZipList (map (.val) atomicOps3)
                     <*> ZipList respValidWires4
                     <*> ZipList resps4
 
   always do 
     -- Trigger next stage
-    when (stallWire.val.inv) do
+    when (inv stallWire.val) do
       when (go3.val) do
-        let active = active3.val .&. fromBitList (map val respValidWires4)
+        let active = active3.val .&. fromBitList (map (.val) respValidWires4)
         go4 <== (active .!=. 0)
         active4 <== origActive3.val
         mcastMask4 <== mcastMask3.val
-        zipWithM_ (<==) origBankTargets4 (map val origBankTargets3)
-        zipWithM_ (<==) groupIds4 (map val groupIds3)
+        zipWithM_ (<==) origBankTargets4 (map (.val) origBankTargets3)
+        zipWithM_ (<==) groupIds4 (map (.val) groupIds3)
 
   -- Stage 4: Crossbar switch (for responses)
   -- ========================================
 
   always do
-    when (stallWire.val.inv .&&. go4.val) do
+    when (inv stallWire.val .&&. go4.val) do
       -- Apply per-bank lookup
-      let resps = map val resps4
-      zipWithM_ (<==) resps5 [resps ! idx | idx <- map val origBankTargets4]
+      let resps = map (.val) resps4
+      zipWithM_ (<==) resps5 [resps ! idx | idx <- map (.val) origBankTargets4]
       -- Trigger next stage
       go5 <== true
       active5 <== active4.val
       mcastMask5 <== mcastMask4.val
-      zipWithM_ (<==) groupIds5 (map val groupIds4)
+      zipWithM_ (<==) groupIds5 (map (.val) groupIds4)
 
   -- Stage 5: Issue responses
   -- ========================
@@ -391,8 +392,8 @@ makeBankedSRAMs inputs = do
     let allNotFull = andList (map notFull respQueues)
     -- Expand bank responses to lane respnses
     let numGroups = 2 ^ (SIMTLogLanes - SIMTLogSRAMBanks)
-    let resps = concat $ replicate numGroups $ map val resps5
-    let gids_active = zip (map val groupIds5) (active5.val.toBitList)
+    let resps = concat $ replicate numGroups $ map (.val) resps5
+    let gids_active = zip (map (.val) groupIds5) (toBitList active5.val)
     let active = concat
           [ [ act .&&. gid .==. fromInteger i
             | (gid, act) <- group ]
@@ -403,10 +404,10 @@ makeBankedSRAMs inputs = do
         then do
           sequence_
             [ if mcastMask5.val.valid
-                then when mcast do enq q (resps5.head.val)
+                then when mcast do enq q (head resps5).val
                 else when active do enq q resp
             | (active, resp, q, mcast) <-
-                zip4 active resps respQueues (mcastMask5.val.val.toBitList) ]
+                zip4 active resps respQueues (toBitList mcastMask5.val.val) ]
         else do
           stallWire <== true
 

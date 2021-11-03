@@ -28,7 +28,7 @@ makeCSRs_UART uartIn = do
   let csr_UARTCanPut =
         CSR {
           csrId = 0x802
-        , csrRead = Just do return (uartOut.notFull.zeroExtend)
+        , csrRead = Just do return (zeroExtend uartOut.notFull)
         , csrWrite = Nothing
         }
 
@@ -37,14 +37,14 @@ makeCSRs_UART uartIn = do
         CSR {
           csrId = 0x803
         , csrRead = Nothing
-        , csrWrite = Just \x -> enq uartOut (x.truncate)
+        , csrWrite = Just \x -> enq uartOut (truncate x)
         }
 
   -- Check if we can read from the UART
   let csr_UARTCanGet =
         CSR {
           csrId = 0x804
-        , csrRead = Just do return (uartIn.canPeek.zeroExtend)
+        , csrRead = Just do return (zeroExtend uartIn.canPeek)
         , csrWrite = Nothing
         }
 
@@ -54,7 +54,7 @@ makeCSRs_UART uartIn = do
           csrId = 0x805
         , csrRead = Just do
            uartIn.consume
-           return (uartIn.peek.zeroExtend)
+           return (zeroExtend uartIn.peek)
         , csrWrite = Nothing
         }
 
@@ -65,4 +65,4 @@ makeCSRs_UART uartIn = do
         , csr_UARTGet
         ]
 
-  return (csrs, uartOut.toStream)
+  return (csrs, toStream uartOut)

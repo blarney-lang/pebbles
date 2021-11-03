@@ -48,7 +48,7 @@ makeCSRs_SIMTHost resps = do
   let csr_SIMTCanPut =
         CSR {
           csrId = 0x820
-        , csrRead = Just do return (reqs.notFull.zeroExtend)
+        , csrRead = Just do return (zeroExtend reqs.notFull)
         , csrWrite = Nothing
         }
  
@@ -98,7 +98,7 @@ makeCSRs_SIMTHost resps = do
   let csr_SIMTCanGet =
         CSR {
           csrId = 0x824
-        , csrRead = Just do return (resps.canPeek.zeroExtend)
+        , csrRead = Just do return (zeroExtend resps.canPeek)
         , csrWrite = Nothing
         }
 
@@ -110,7 +110,7 @@ makeCSRs_SIMTHost resps = do
             dynamicAssert (resps.canPeek)
               "SIMTGet CSR: SIMTCanGet not checked"
             resps.consume
-            return (resps.peek.zeroExtend)
+            return (zeroExtend resps.peek)
         , csrWrite = Nothing
         }
 
@@ -169,4 +169,4 @@ makeCSRs_SIMTHost resps = do
         , csr_SIMTAskStats
         ]
 
-  return (reqs.toStream, csrs)
+  return (toStream reqs, csrs)

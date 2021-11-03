@@ -153,23 +153,23 @@ makeSIMTPipeline c inputs =
     -- Sanity check
     staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
       "makeSIMTPipeline: WarpId is wider than InstrId"
-    staticAssert (2 ^ c.logWarpSize == c.executeStage.genericLength)
+    staticAssert (2 ^ c.logWarpSize == genericLength c.executeStage)
       "makeSIMTPipeline: warp size does not match number of execute units"
 
     -- Number of warps and warp size
     let numWarps = 2 ^ c.logNumWarps
-    let warpSize = c.executeStage.genericLength
+    let warpSize = genericLength c.executeStage
 
     -- Is CHERI enabled?
-    let enableCHERI = c.checkPCCFunc.isJust
+    let enableCHERI = isJust c.checkPCCFunc
 
     -- Compute field selector functions from decode table
     let selMap = matchSel (c.decodeStage)
 
     -- Functions for extracting register ids from an instruction
-    let srcA :: Instr -> RegId = getFieldSel selMap "rs1"
-    let srcB :: Instr -> RegId = getFieldSel selMap "rs2"
-    let dst  :: Instr -> RegId = getFieldSel selMap "rd"
+    let srcA :: Instr -> RegId = getBitFieldSel selMap "rs1"
+    let srcB :: Instr -> RegId = getBitFieldSel selMap "rs2"
+    let dst  :: Instr -> RegId = getBitFieldSel selMap "rd"
 
     -- Queue of active warps
     warpQueue :: Queue (Bit t_logWarps) <- makeSizedQueue (c.logNumWarps)
@@ -299,11 +299,11 @@ makeSIMTPipeline c inputs =
 
         -- Initialise PCC per lane
         sequence_
-          [ do store stateMem (warpIdCounter.val) initState
+          [ do stateMem.store (warpIdCounter.val) initState
                if enableCHERI
                  then do
                    let initPCC = almightyCapMemVal -- TODO: constrain
-                   store pccMem (warpIdCounter.val) initPCC
+                   pccMem.store (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMems pccMems ]
         -- Intialise PCC per kernel
@@ -343,7 +343,7 @@ makeSIMTPipeline c inputs =
 
             -- Increment instruction count
             let instrIncs :: [Bit 32] =
-                  map zeroExtend (map val incInstrCountRegs)
+                  map zeroExtend (map (.val) incInstrCountRegs)
             let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
             instrCount <== instrCount.val + instrInc
       else
@@ -367,13 +367,13 @@ makeSIMTPipeline c inputs =
     always do
       -- Load state for next warp on each lane
       forM_ stateMems \stateMem -> do
-        load stateMem (warpStream.peek)
+        stateMem.load (warpStream.peek)
 
       -- Load PCC for next warp on each lane
       if enableCHERI && not (c.useSharedPCC)
         then do
           forM_ pccMems \pccMem -> do
-            load pccMem (warpStream.peek)
+            pccMem.load (warpStream.peek)
         else return ()
 
       -- Buffer warp id for stage 1
@@ -436,12 +436,12 @@ makeSIMTPipeline c inputs =
 
       -- Assert that at least one thread in the warp must be active
       when go2 do
-        dynamicAssert (activeList.orList)
+        dynamicAssert (orList activeList)
           "SIMT pipeline error: no active threads in warp"
 
       -- Issue load to instruction memory
       let pc = state2.simtPC
-      load instrMem (pc.toInstrAddr)
+      instrMem.load (toInstrAddr pc)
 
       -- Trigger stage 3
       warpId3 <== warpId2
@@ -461,17 +461,17 @@ makeSIMTPipeline c inputs =
     always do
       -- Fetch operands from each register file
       forM_ (zip regFilesA regFilesB) \(rfA, rfB) -> do
-        load rfA (warpId3.val, instrMem.out.srcA)
-        load rfB (warpId3.val, instrMem.out.srcB)
+        rfA.load (warpId3.val, srcA instrMem.out)
+        rfB.load (warpId3.val, srcB instrMem.out)
 
       -- Fetch capability meta-data from each register file
       forM_ (zip capRegFilesA capRegFilesB) \(rfA, rfB) -> do
-        load rfA (warpId3.val, instrMem.out.srcA)
-        load rfB (warpId3.val, instrMem.out.srcB)
+        rfA.load (warpId3.val, srcA instrMem.out)
+        rfB.load (warpId3.val, srcB instrMem.out)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
-      let isSusp3 = orList [map val regs ! warpId3.val | regs <- suspBits]
+      let isSusp3 = orList [map (.val) regs ! warpId3.val | regs <- suspBits]
       isSusp4 <== isSusp3
 
       -- Capability register file tracing
@@ -482,16 +482,16 @@ makeSIMTPipeline c inputs =
             then do
               let instr = instrMem.out
               let (_, fieldMap) = matchMap False (c.decodeStage) instr
-              let useRegA = isSome (getField fieldMap "rs1" :: Option RegId)
-              let useRegB = isSome (getField fieldMap "rs2" :: Option RegId)
+              let useRegA = isSome (getBitField fieldMap "rs1" :: Option RegId)
+              let useRegB = isSome (getBitField fieldMap "rs2" :: Option RegId)
               when (go3.val .&&. inv isSusp3) do
                 display "[CapRegFileTrace] read"
                         " time=" (cycleCount.val)
                         " pc=0x" (formatHex 0 $ state3.val.simtPC)
                         " warp=" (warpId3.val)
                         " active=0x" (formatHex 0 $ activeMask3.val)
-                        " rs1=" (if useRegA then instr.srcA else 0)
-                        " rs2=" (if useRegB then instr.srcB else 0)
+                        " rs1=" (if useRegA then srcA instr else 0)
+                        " rs2=" (if useRegB then srcB instr else 0)
             else return ()
 
       -- Check PCC
@@ -524,10 +524,10 @@ makeSIMTPipeline c inputs =
 
     -- Decode instruction
     let (tagMap4, fieldMap4) =
-          matchMap False (c.decodeStage) (instr4.val.extraReg)
+          matchMap False (c.decodeStage) (extraReg instr4.val)
 
     -- Get stage 5 register value
-    let getReg5 regFile = regFile.out.old.extraReg
+    let getReg5 regFile = extraReg (old regFile.out)
 
     -- Get stage 5 capability register value
     let getCapReg5 regFile capRegFile = old $ decodeCapMem $ extraReg $
@@ -536,17 +536,17 @@ makeSIMTPipeline c inputs =
     -- Get stage 5 register B or immediate
     let getRegBorImm5 rf = old $
           if Map.member "imm" fieldMap4
-            then let imm = getField fieldMap4 "imm"
-                 in  imm.valid ? (imm.val, rf.out.extraReg)
-            else rf.out.extraReg
+            then let imm = getBitField fieldMap4 "imm"
+                 in  imm.valid ? (imm.val, extraReg rf.out)
+            else extraReg rf.out
 
     -- Propagate signals to stage 5
-    let pcc5 = pcc4.old.extraReg
-    let isSusp5 = isSusp4.val.old.extraReg
-    let warpId5 = warpId4.val.old.extraReg
-    let activeMask5 = activeMask4.val.old.extraReg
-    let instr5 = instr4.val.old.extraReg
-    let state5 = state4.val.old.extraReg
+    let pcc5 = extraReg (old pcc4)
+    let isSusp5 = extraReg (old isSusp4.val)
+    let warpId5 = extraReg (old warpId4.val)
+    let activeMask5 = extraReg (old activeMask4.val)
+    let instr5 = extraReg (old instr4.val)
+    let state5 = extraReg (old state4.val)
     let go5 = if c.useExtraPreExecStage
                 then delay false $ delay false (go4.val)
                 else delay false (go4.val)
@@ -563,7 +563,7 @@ makeSIMTPipeline c inputs =
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
         if isSusp5 .||.
-              (inputs.simtWarpCmdWire.active.inv .&&. excGlobal.val.inv)
+              (inv inputs.simtWarpCmdWire.active .&&. inv excGlobal.val)
           then do
             -- Reschedule
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
@@ -571,7 +571,7 @@ makeSIMTPipeline c inputs =
           else do
             -- Instruction is warp command or exception has occurred.
             -- Warp commands assume that warp has converged
-            dynamicAssert (excGlobal.val.inv .==>. activeMask5 .==. ones)
+            dynamicAssert (inv excGlobal.val .==>. activeMask5 .==. ones)
               "SIMT pipeline: warp command issued by diverged warp"
             -- Handle command
             if inputs.simtWarpCmdWire.val.warpCmd_isTerminate .||.
@@ -605,10 +605,10 @@ makeSIMTPipeline c inputs =
                 incrBy barrierCount 1
 
       -- Promote local exception to global exception
-      when (orList $ map val excLocals) do
+      when (orList $ map (.val) excLocals) do
         excGlobal <== true
         -- Track exception PC
-        excPC <== state5.simtPC.old
+        excPC <== old state5.simtPC
 
     -- Is it a SIMT convergence instruction?
     let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
@@ -636,7 +636,7 @@ makeSIMTPipeline c inputs =
           let regBorImm = getRegBorImm5 regFileB
 
           -- Is destination register non-zero?
-          let destNonZero = instr5.dst .!=. 0
+          let destNonZero = dst instr5 .!=. 0
 
           -- Instantiate execute stage
           execStage <- makeExecStage
@@ -645,9 +645,9 @@ makeSIMTPipeline c inputs =
             , opA = regA
             , opB = regB
             , opBorImm = regBorImm
-            , opAIndex = instr5.srcA
-            , opBIndex = instr5.srcB
-            , resultIndex = instr5.dst
+            , opAIndex = srcA instr5
+            , opBIndex = srcB instr5
+            , resultIndex = dst instr5
             , pc = ReadWrite (state5.simtPC) \pcNew -> do
                      pcNextWire <== pcNew
             , result = WriteOnly \writeVal ->
@@ -660,8 +660,8 @@ makeSIMTPipeline c inputs =
                 suspWire <== true
                 return
                   InstrInfo {
-                    instrId = warpId5.zeroExtendCast
-                  , instrDest = instr5.dst
+                    instrId = zeroExtendCast warpId5
+                  , instrDest = dst instr5
                   , instrTagMask = false
                   }
             , retry = retryWire <== true
@@ -688,19 +688,19 @@ makeSIMTPipeline c inputs =
           always do
             -- Execute stage
             when (go5 .&&. threadActive .&&.
-                    isSusp5.inv .&&. excGlobal.val.inv) do
+                    inv isSusp5 .&&. inv excGlobal.val) do
               -- Trigger execute stage
               execStage.execute
 
               -- Update thread state
-              let nestInc = isSIMTPush.zeroExtendCast
-              let nestDec = isSIMTPop.zeroExtendCast
+              let nestInc = zeroExtendCast isSIMTPush
+              let nestDec = zeroExtendCast isSIMTPop
               let nestLevel = state5.simtNestLevel
               dynamicAssert (isSIMTPop .==>. nestLevel .!=. 0)
                   "SIMT pipeliene: SIMT nest level underflow"
               dynamicAssert (isSIMTPush .==>. nestLevel .!=. ones)
                   "SIMT pipeliene: SIMT nest level overflow"
-              store stateMem warpId5
+              stateMem.store warpId5
                 SIMTThreadState {
                     -- Only update PC if not retrying
                     simtPC = retryWire.val ?
@@ -709,10 +709,10 @@ makeSIMTPipeline c inputs =
                   , simtRetry = retryWire.val
                   }
               when (pccNextWire.active) do
-                store pccMem warpId5 (pccNextWire.val.toMem.pack)
+                pccMem.store warpId5 (pack (toMem pccNextWire.val))
 
               -- Increment instruction count
-              when (retryWire.val.inv) do
+              when (inv retryWire.val) do
                 incInstrCount <== true
 
               -- Update suspension bits
@@ -720,19 +720,19 @@ makeSIMTPipeline c inputs =
                 suspMask!warpId5 <== true
 
             -- Writeback stage
-            when (excLocal.val.inv) do
-              let idx = (warpId5.old, instr5.dst.old)
+            when (inv excLocal.val) do
+              let idx = (old warpId5, old (dst instr5))
               when (delay false (resultWire.active)) do
-                store regFileA idx (resultWire.val.old)
+                regFileA.store idx (old resultWire.val)
               if enableCHERI
                 then do
                   when (delay false (resultCapWire.active)) do
-                    store capRegFileA idx (resultCapWire.val.old)
+                    capRegFileA.store idx (old resultCapWire.val)
                     if c.enableCapRegFileTrace
                       then do
                         let cap = fromMem $ unpack
-                                    (resultCapWire.val.old #
-                                       resultWire.val.old)
+                                    (old resultCapWire.val #
+                                       old resultWire.val)
                         display "[CapRegFileTrace] write"
                                 " time="  (cycleCount.val)
                                 " lane="  (show laneId)
@@ -749,16 +749,16 @@ makeSIMTPipeline c inputs =
             -- Thread resumption
             when (execStage.resumeReqs.canPeek) do
               let req = execStage.resumeReqs.peek
-              let idx = (req.resumeReqInfo.instrId.truncateCast,
+              let idx = (truncateCast req.resumeReqInfo.instrId,
                          req.resumeReqInfo.instrDest)
               when (req.resumeReqInfo.instrDest .!=. 0 .&&.
-                      excGlobal.val.inv) do
-                store regFileB idx (req.resumeReqData)
+                      inv excGlobal.val) do
+                regFileB.store idx (req.resumeReqData)
                 if enableCHERI
                   then do
-                    let capVal = req.resumeReqCap.isSome ?
+                    let capVal = isSome req.resumeReqCap ?
                           (req.resumeReqCap.val, nullCapMemMetaVal)
-                    store capRegFileB idx capVal
+                    capRegFileB.store idx capVal
                     if c.enableCapRegFileTrace
                       then do
                         let cap = fromMem $ unpack
@@ -781,7 +781,7 @@ makeSIMTPipeline c inputs =
     -- Create vector lanes
     sequence $ getZipList $
       makeLane <$> ZipList (c.executeStage)
-               <*> ZipList (activeMask5.toBitList)
+               <*> ZipList (toBitList activeMask5)
                <*> ZipList suspBits
                <*> ZipList regFilesA
                <*> ZipList regFilesB
@@ -807,9 +807,9 @@ makeSIMTPipeline c inputs =
       BarrierReleaseIns {
         relWarpsPerBlock = warpsPerBlock.val
       , relBarrierMask = barrierMask.val
-      , relBarrierVec = fromBitList (map val barrierBits)
+      , relBarrierVec = fromBitList (map (.val) barrierBits)
       , relAction = \warpId -> do
-          when (excGlobal.val.inv) do
+          when (inv excGlobal.val) do
             -- Clear barrier bit
             barrierBits!warpId <== false
             decrBy barrierCount 1
@@ -832,29 +832,29 @@ makeSIMTPipeline c inputs =
         let busy = startReg.val.valid .|. pipelineActive.val
         -- Write instruction
         when (req.simtReqCmd .==. simtCmd_WriteInstr) do
-          dynamicAssert (busy.inv)
+          dynamicAssert (inv busy)
             "SIMT pipeline: writing instruction while pipeline busy"
-          store instrMem (req.simtReqAddr.toInstrAddr) (req.simtReqData)
+          instrMem.store (toInstrAddr req.simtReqAddr) (req.simtReqData)
           inputs.simtMgmtReqs.consume
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
-          when (busy.inv) do
+          when (inv busy) do
             startReg <== some (req.simtReqAddr)
             kernelAddrReg <== req.simtReqData
             inputs.simtMgmtReqs.consume
         -- Set warps per block
         when (req.simtReqCmd .==. simtCmd_SetWarpsPerBlock) do
-          dynamicAssert (busy.inv)
+          dynamicAssert (inv busy)
             "SIMT pipeline: setting warps per block while pipeline busy"
-          let n :: Bit t_logWarps = req.simtReqData.truncateCast
+          let n :: Bit t_logWarps = truncateCast req.simtReqData
           warpsPerBlock <== n
           barrierMask <== n .==. 0 ? (ones, (1 .<<. n) - 1)
           inputs.simtMgmtReqs.consume
         -- Read stat counter
         when (req.simtReqCmd .==. simtCmd_AskStats) do
-          let getStatId req = req.simtReqAddr.truncate.unpack
-          when (pipelineActive.val.inv .&&. kernelRespQueue.notFull) do
-            let resp = (req.getStatId .==. simtStat_Cycles) ?
+          let getStatId req = unpack (truncate req.simtReqAddr)
+          when (inv pipelineActive.val .&&. kernelRespQueue.notFull) do
+            let resp = (getStatId req .==. simtStat_Cycles) ?
                          (cycleCount.val, instrCount.val)
             enq kernelRespQueue resp
             inputs.simtMgmtReqs.consume
@@ -862,8 +862,8 @@ makeSIMTPipeline c inputs =
     -- Pipeline outputs
     return
       SIMTPipelineOuts {
-        simtMgmtResps = kernelRespQueue.toStream
-      , simtCurrentWarpId = warpId5.zeroExtendCast
+        simtMgmtResps = toStream kernelRespQueue
+      , simtCurrentWarpId = zeroExtendCast warpId5
       , simtKernelAddr = kernelAddrReg.val
       }
 
