@@ -23,7 +23,6 @@ memLoadOp        :: MemReqOp = 1
 memStoreOp       :: MemReqOp = 2
 memAtomicOp      :: MemReqOp = 3
 memGlobalFenceOp :: MemReqOp = 4
-memLocalFenceOp  :: MemReqOp = 5
 
 -- | Information about an atomic memory operation
 data AMOInfo =
@@ -121,6 +120,37 @@ data MemReqInfo =
     -- ^ Is it an unsigned load?
   }
   deriving (Generic, Interface, Bits)
+
+-- Decoding atomic operations
+-- ==========================
+
+-- | Decoded atomic operation
+data DecodedAtomicOp =
+  DecodedAtomicOp {
+    amo_isSwap     :: Bit 1
+  , amo_isXor      :: Bit 1
+  , amo_isAnd      :: Bit 1
+  , amo_isAdd      :: Bit 1
+  , amo_isOr       :: Bit 1
+  , amo_isMin      :: Bit 1
+  , amo_isMinMax   :: Bit 1
+  , amo_isUnsigned :: Bit 1
+  } deriving (Generic, Bits, FShow)
+
+-- | Decode atomic operation
+decodeAtomicOp :: AtomicOp -> DecodedAtomicOp
+decodeAtomicOp amo =
+  DecodedAtomicOp {
+    amo_isSwap   = amo .==. amoSwapOp
+  , amo_isXor    = amo .==. amoXorOp
+  , amo_isAdd    = amo .==. amoAddOp
+  , amo_isAnd    = amo .==. amoAndOp
+  , amo_isOr     = amo .==. amoOrOp
+  , amo_isMin    = orList [amo .==. op | op <- [amoMinOp, amoMinUOp]]
+  , amo_isMinMax = orList
+      [amo .==. op | op <- [amoMinOp, amoMaxOp, amoMinUOp, amoMaxUOp]]
+  , amo_isUnsigned = orList [amo .==. op | op <- [amoMinUOp, amoMaxUOp]]
+  }
 
 -- Note [Memory transactions]
 -- ==========================

@@ -91,20 +91,20 @@ makeScalarPipeline c =
 
     -- Two block RAMs allows two operands to be read,
     -- and one result to be written, on every cycle
-    regFileA :: RAM RegId (Bit 32) <- makeDualRAMForward 0
-    regFileB :: RAM RegId (Bit 32) <- makeDualRAMForward 0
+    regFileA :: RAM RegId (Bit 32) <- makeDualRAMForward
+    regFileB :: RAM RegId (Bit 32) <- makeDualRAMForward
 
     -- Capability register file (meta data only)
     capFileA :: RAM RegId CapPipeMeta <-
       if not enableCHERI then return nullRAM else
         case c.capRegInitFile of
-          Nothing -> makeDualRAMForward 0
-          Just file -> makeDualRAMForwardInit 0 file
+          Nothing -> makeDualRAMForward
+          Just file -> makeDualRAMForwardInit file
     capFileB :: RAM RegId CapPipeMeta <-
       if not enableCHERI then return nullRAM else
         case c.capRegInitFile of
-          Nothing -> makeDualRAMForward 0
-          Just file -> makeDualRAMForwardInit 0 file
+          Nothing -> makeDualRAMForward
+          Just file -> makeDualRAMForwardInit file
 
     -- Instruction operand registers
     regA :: Reg (Bit 32) <- makeReg dontCare

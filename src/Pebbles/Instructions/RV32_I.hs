@@ -200,9 +200,7 @@ executeI shiftUnit csrUnit memReqs s = do
           MemReq {
             memReqId = info
           , memReqAccessWidth = dontCare
-          , memReqOp =
-              if at @0 (s.instr.getFenceFlags)
-                then memLocalFenceOp else memGlobalFenceOp
+          , memReqOp = memGlobalFenceOp
           , memReqAMOInfo = dontCare
           , memReqAddr = dontCare
           , memReqData = dontCare

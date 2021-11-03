@@ -29,18 +29,9 @@ INLINE void pebblesSIMTConverge() {
   pebblesSIMTPush();
 }
 
-// Local memory fence
-INLINE void pebblesSIMTLocalMemFence()
-{
-  // Opcode: 0001 0011 0011 00000 000 00000 0001111
-  asm volatile(
-    ".word 0x1330000f\n");
-}
-
 // Local barrier; assumes all threads in warp have converged
 INLINE void pebblesSIMTLocalBarrier()
 {
-  pebblesSIMTLocalMemFence();
   pebblesSIMTBarrierCore();
 }
 
