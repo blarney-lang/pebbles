@@ -27,7 +27,7 @@ import Data.List
 -- together, moving from warp to warp only when all requests have
 -- been consumed.
 makeWarpPreserver :: Bits t_id =>
-     [Stream (MemResp t_id)]
+   Stream (V.Vec SIMTLanes (Option (MemResp t_id)))
      -- ^ Memory response stream to each SIMT lane
   -> Module ( Stream (V.Vec SIMTLanes (Option (MemReq t_id)))
             , [MemUnit t_id]
@@ -64,8 +64,27 @@ makeWarpPreserver resps = do
       transactionInProgress <==
         orList [p.active ? (inv p.val.memReqIsFinal, false) | p <- putWires]
 
-  -- Ouputs
-  let reqStreams = toStream memReqsQueue
+  -- Wires indicating response consumption
+  consumeWires :: [Wire (Bit 1)] <- replicateM SIMTLanes (makeWire false)
+
+  -- Bit mask of responses that have been consumed
+  consumedMask :: Reg (Bit SIMTLanes) <- makeReg 0
+
+  -- Consume responses
+  always do
+    -- Bit mask of available requests
+    let avail = fromBitList $ map (.valid) $ V.toList resps.peek
+    -- Bit mask of requests being consumed on current cycle
+    let consumeNow = fromBitList $ map (.val) consumeWires
+    -- Have all requests been consumed?
+    let newMask = consumedMask.val .|. consumeNow
+    when resps.canPeek do
+      if avail .==. newMask
+        then do
+          resps.consume
+          consumedMask <== 0
+        else do
+          consumedMask <== newMask
 
   let memUnits =
         [ MemUnit {
@@ -75,9 +94,17 @@ makeWarpPreserver resps = do
                   (transactionInProgress.val ? (prev.val, true))
               , put = \x -> putWire <== x
               }
-          , memResps = resp
+          , memResps =
+              Source {
+                canPeek = resps.canPeek .&&. resp.valid .&&. inv consumed
+              , peek = resp.val
+              , consume = do
+                  consumeWire <== true
+              }
           }
-        | (resp, putWire, prev) <- zip3 resps putWires prevActive
+        | (resp, putWire, prev, consumeWire, consumed) <-
+            zip5 (V.toList resps.peek) putWires prevActive
+                 consumeWires (toBitList consumedMask.val)
         ]
 
-  return (reqStreams, memUnits)
+  return (toStream memReqsQueue, memUnits)
