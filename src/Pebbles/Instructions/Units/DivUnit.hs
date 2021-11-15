@@ -1,4 +1,12 @@
-module Pebbles.Instructions.Units.DivUnit where
+module Pebbles.Instructions.Units.DivUnit
+  ( DivReq(..)
+  , DivUnit
+  , VecDivUnit
+  , makeSeqVecDivUnit
+  , makeSeqDivUnit
+  , makeFullVecDivUnit
+  , makeFullDivUnit
+  ) where
 
 -- Blarney imports
 import Blarney
@@ -6,7 +14,8 @@ import Blarney.Stmt
 import Blarney.Queue
 import Blarney.Option
 import Blarney.SourceSink
-import Blarney.Core.BV
+import Blarney.ClientServer
+import Blarney.Vector (Vec, toList, fromList)
 import Blarney.VendorIP.PipelinedDivider
 
 -- Pebbles imports
@@ -14,12 +23,13 @@ import Pebbles.Util.List
 import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 
+-- Haskell imports
+import Data.List
+
 -- | Request to divider unit
 data DivReq =
   DivReq {
-    divReqInfo :: InstrInfo
-    -- ^ Instruction info from pipeline
-  , divReqNum :: Bit 32
+    divReqNum :: Bit 32
   , divReqDenom :: Bit 32
     -- ^ Numerator and denominator
   , divReqIsSigned :: Bit 1
@@ -28,24 +38,51 @@ data DivReq =
     -- ^ Do we want the quotient or remainder?
   } deriving (Generic, Bits)
 
--- | Divider unit interface
-data DivUnit =
-  DivUnit {
-    divReqs :: Sink DivReq
-  , divResps :: Source ResumeReq
-  }
+-- | Scalar divider unit interface
+type DivUnit t_id =
+  Server (t_id, DivReq)
+         (t_id, ResumeReq)
+
+-- | Vector divider unit interface
+type VecDivUnit n t_id =
+  Server (t_id, Vec n (Option DivReq))
+         (t_id, Vec n (Option ResumeReq))
 
 -- Sequential divider
 -- ==================
 
--- | Divider unit (sequential state machine version)
-makeSeqDivUnit :: Module DivUnit
-makeSeqDivUnit = do
-  -- Numerator, denominator, quotient, and remainder
-  n :: Reg (Bit 32) <- makeReg dontCare
-  d :: Reg (Bit 32) <- makeReg dontCare
-  q :: Reg (Bit 32) <- makeReg dontCare
-  r :: Reg (Bit 32) <- makeReg dontCare
+-- | Sequential divider state
+data SeqDivState =
+  SeqDivState {
+    n            :: Reg (Bit 32) -- ^ Numerator
+  , d            :: Reg (Bit 32) -- ^ Denominator
+  , q            :: Reg (Bit 32) -- ^ Quotient
+  , r            :: Reg (Bit 32) -- ^ Remainder
+  , isSigned     :: Reg (Bit 1)  -- ^ Signed or unsigned division?
+  , getRemainder :: Reg (Bit 1)  -- ^ Quotient or remainder?
+  , negResult    :: Reg (Bit 1)  -- ^ Flip the sign of the result?
+  , output       :: Reg (Bit 32) -- ^ Output register
+  }
+
+-- | Create sequential divider state
+makeSeqDivState :: Module SeqDivState
+makeSeqDivState =
+      SeqDivState
+  <$> makeReg dontCare
+  <*> makeReg dontCare
+  <*> makeReg dontCare
+  <*> makeReg dontCare
+  <*> makeReg dontCare
+  <*> makeReg dontCare
+  <*> makeReg dontCare
+  <*> makeReg dontCare
+
+-- | Vector divider unit (sequential state machine version)
+makeSeqVecDivUnit :: forall n t_id.
+      (KnownNat n, Bits t_id)
+   => Module (VecDivUnit n t_id)
+makeSeqVecDivUnit = do
+  let vecSize = valueOf @n
 
   -- Counter
   count :: Reg (Bit 6) <- makeReg dontCare
@@ -59,20 +96,14 @@ makeSeqDivUnit = do
   -- Trigger division state machine
   trigger :: Reg (Bit 1) <- makeDReg false
 
-  -- Signed or unsigned division?
-  isSigned :: Reg (Bit 1) <- makeReg dontCare
+  -- Id of current request
+  idReg :: Reg t_id <- makeReg dontCare
 
-  -- Quotient or remainder?
-  getRemainder :: Reg (Bit 1) <- makeReg dontCare
+  -- Per-lane state
+  laneStates :: [SeqDivState] <- replicateM vecSize makeSeqDivState
 
-  -- Flip the sign of the result?
-  negResult :: Reg (Bit 1) <- makeReg dontCare
-
-  -- Output register
-  output :: Reg (Bit 32) <- makeReg dontCare
-
-  -- Remember the request info
-  reqInfo :: Reg InstrInfo <- makeReg dontCare
+  -- Active lanes
+  active :: Reg (Bit n) <- makeReg dontCare
 
   -- Helper function to shift left by one
   let shl x = x .<<. (1 :: Bit 1)
@@ -81,138 +112,215 @@ makeSeqDivUnit = do
   runStmtOn (trigger.val) do
     -- Prepare division
     action do
-      let divByZero = d.val .==. 0
-      let n_msb = at @31 (n.val)
-      let d_msb = at @31 (d.val)
-      -- Negate numerator and denominator if required
-      when (isSigned.val .&. inv divByZero) do
-        when n_msb do
-          n <== negate n.val
-        when d_msb do
-          d <== negate d.val
-      -- Initialise state machine
-      q <== 0
-      r <== 0
       count <== 32
-      -- Negate result?
-      negResult <== isSigned.val .&. inv divByZero .&.
-        (getRemainder.val ? (n_msb, n_msb .^. d_msb))
+      sequence_
+        [ do let divByZero = s.d.val .==. 0
+             let n_msb = at @31 (s.n.val)
+             let d_msb = at @31 (s.d.val)
+             -- Negate numerator and denominator if required
+             when (s.isSigned.val .&. inv divByZero) do
+               when n_msb do s.n <== negate s.n.val
+               when d_msb do s.d <== negate s.d.val
+             -- Initialise state machine
+             s.q <== 0
+             s.r <== 0
+             -- Negate result?
+             s.negResult <== s.isSigned.val .&. inv divByZero .&.
+               (s.getRemainder.val ? (n_msb, n_msb .^. d_msb))
+        | s <- laneStates ]
     -- Binary long division algorithm (taken from Wikipedia)
     while (count.val .!=. 0) do
       action do
-        let r' = shl r.val .|. zeroExtend (at @31 (n.val))
-        let sub = r' .>=. d.val
-        r <== r' - (sub ? (d.val, 0))
-        q <== shl q.val .|. (sub ? (1, 0))
-        n <== shl n.val
         count <== count.val - 1
+        sequence_
+          [ do let r' = shl s.r.val .|. zeroExtend (at @31 (s.n.val))
+               let sub = r' .>=. s.d.val
+               s.r <== r' - (sub ? (s.d.val, 0))
+               s.q <== shl s.q.val .|. (sub ? (1, 0))
+               s.n <== shl s.n.val
+          | s <- laneStates ]
     -- Prepare result
     action do
       done <== true
       busy <== false
-      -- Choose quotient or remainder, and optionally negate
-      let result = getRemainder.val ? (r.val, q.val)
-      output <== negResult.val ? (negate result, result)
+      sequence_
+        [ do -- Choose quotient or remainder, and optionally negate
+             let result = s.getRemainder.val ? (s.r.val, s.q.val)
+             s.output <== s.negResult.val ? (negate result, result)
+        | s <- laneStates ]
 
   return
-    DivUnit {
-      divReqs =
+    Server {
+      reqs =
         Sink {
-          canPut = inv busy.val .&. inv done.val
-        , put = \req -> do
-            reqInfo <== req.divReqInfo
-            n <== req.divReqNum
-            d <== req.divReqDenom
-            isSigned <== req.divReqIsSigned
-            getRemainder <== req.divReqGetRemainder
+          canPut = inv busy.val .&&. inv done.val
+        , put = \(id, reqVec) -> do
             busy <== true
             trigger <== true
+            active <== fromBitList (map (.valid) (toList reqVec))
+            idReg <== id
+            sequence_
+              [ do s.n <== req.val.divReqNum
+                   s.d <== req.val.divReqDenom
+                   s.isSigned <== req.val.divReqIsSigned
+                   s.getRemainder <== req.val.divReqGetRemainder
+              | (req, s) <- zip (toList reqVec) laneStates ]
         }
-    , divResps =
+    , resps =
         Source {
           canPeek = done.val
         , peek =
-            ResumeReq {
-              resumeReqInfo = reqInfo.val
-            , resumeReqData = output.val
-            , resumeReqCap = none
-            }
+            ( idReg.val
+            , fromList
+                [ Option valid
+                    ResumeReq {
+                      resumeReqData = s.output.val
+                    , resumeReqCap  = none
+                    }
+                | (s, valid) <- zip laneStates (toBitList active.val) ] )
         , consume = do done <== false
         }
+    }
+
+-- | Scalar divider unit (sequential state machine version)
+makeSeqDivUnit :: Bits t_id => Module (DivUnit t_id)
+makeSeqDivUnit = do
+  vecDivUnit <- makeSeqVecDivUnit @1
+  return
+    Server {
+      reqs  = mapSink (\(id, req) -> (id, fromList [Option true req]))
+                      vecDivUnit.reqs
+    , resps = mapSource (\(id, resp) -> (id, (head (toList resp)).val))
+                        vecDivUnit.resps
     }
 
 -- Full-throughput divider
 -- =======================
 
--- | Full throughput divider unit (using Blarney IP)
-makeFullDivUnit :: Int -> Module DivUnit
-makeFullDivUnit latency
-    -- Check that latency is small enough to allow result queue to fit in MLABs
-  | latency >= 32 = error "makeFullDivUnit: latency too large"
-  | otherwise = do
+-- | Information about a full-throughout divider request
+data FullDivInfo n t_id =
+  FullDivInfo {
+    active    :: Bit n  -- ^ Per-lane: is lane active?
+  , wantRem   :: Bit n  -- ^ Per-lane: want remainder (or quotient)?
+  , divByZero :: Bit n  -- ^ Per-lane: Dividing by zero?
+  , reqId     :: t_id   -- ^ Request id
+  }
+  deriving (Generic, Bits)
 
-      -- Result and request info queues
-      resultQueue :: Queue (Bit 32) <- makeSizedQueue 5
-      infoQueue :: Queue InstrInfo <- makeSizedQueue 5
+-- | Full throughput vector divider unit (using Blarney IP)
+makeFullVecDivUnit :: forall n t_id.
+     (KnownNat n, Bits t_id)
+  => Int
+  -> Module (VecDivUnit n t_id)
+makeFullVecDivUnit latency
+    -- Check that latency is small enough to allow result queue to fit in MLABs
+  | latency >= 32 = error "makeFullVecDivUnit: latency too large"
+  | otherwise = do
+      let vecSize = valueOf @n
+
+      -- Result and request active/id queues
+      resultQueue :: Queue (t_id, Vec n (Option (Bit 32))) <- makeSizedQueue 5
+      infoQueue :: Queue (FullDivInfo n t_id) <- makeSizedQueue 5
 
       -- Track size of the infoQueue
       inflightCount :: Counter 6 <- makeCounter 32
 
-      -- Wires (numerator, denominator, want remainder)
-      numWire :: Wire (Bit 33) <- makeWire dontCare
-      denomWire :: Wire (Bit 33) <- makeWire dontCare
-      remWire :: Wire (Bit 1) <- makeWire dontCare
+      -- Wire indicating request insertion
+      reqInsertWire :: Wire (Bit 1) <- makeWire false
+
+      -- Per-lane wires (numerator, denominator, want remainder)
+      numWires   :: [Wire (Bit 33)] <- replicateM vecSize $ makeWire dontCare
+      denomWires :: [Wire (Bit 33)] <- replicateM vecSize $ makeWire dontCare
 
       always do
         -- Output of pipelined divider megafunction
-        let (quot, rem) =
-              pipelinedDivider latency (numWire.val) (denomWire.val)
+        let (quots, rems) = unzip $
+              zipWith (pipelinedDivider latency)
+                      (map (.val) numWires)
+                      (map (.val) denomWires)
         -- Wait 'latency' cycles for result to be ready
-        let (ready, wantRem, divByZero) =
-              iterateN latency
-                (delay (false, false, false))
-                (remWire.active, remWire.val, denomWire.val .==. 0)
+        let ready = iterateN latency (delay false) reqInsertWire.val
         -- Fill result queue
         when ready do
-          let result =
-                if wantRem
-                  then rem
-                  else divByZero ? (ones, quot)
           -- Result queue must have space
-          dynamicAssert (resultQueue.notFull) "DivUnit: result queue overflow"
+          dynamicAssert (resultQueue.notFull)
+            "FullVecDivUnit: result queue overflow"
+          -- Info queue must be non-empty
+          dynamicAssert (infoQueue.canDeq)
+            "FullVecDivUnit: info queue underflow"
+          -- Consume request info
+          infoQueue.deq
+          let info = infoQueue.first
           -- Enqueue result
-          enq resultQueue (truncate result)
+          resultQueue.enq $
+            ( info.reqId
+            , fromList 
+                [ Option valid $
+                    truncate $
+                      if wantRem
+                        then rem
+                        else divByZero ? (ones, quot)
+                | (quot, rem, valid, wantRem, divByZero) <-
+                    zip5 quots rems
+                         (toBitList info.active)
+                         (toBitList info.wantRem)
+                         (toBitList info.divByZero)
+                ] )
 
       return
-        DivUnit {
-          divReqs =
+        Server {
+          reqs =
             Sink {
               canPut = inv inflightCount.isFull
-            , put = \req -> do
+            , put = \(id, reqVec) -> do
                 incrBy inflightCount 1
-                enq infoQueue (req.divReqInfo)
-                -- Extend inputs to 33 bits
-                let numExt = req.divReqIsSigned ?
-                               (upper req.divReqNum, false)
-                let denomExt = req.divReqIsSigned ?
-                                 (upper req.divReqDenom, false)
-                numWire <== numExt # req.divReqNum
-                denomWire <== denomExt # req.divReqDenom
-                remWire <== req.divReqGetRemainder
-
+                infoQueue.enq
+                  FullDivInfo {
+                    active = fromBitList (map (.valid) (toList reqVec))
+                  , wantRem =
+                      fromBitList (map (.val.divReqGetRemainder) (toList reqVec))
+                  , divByZero =
+                      fromBitList [x .==. 0 | x <- map (.val) denomWires]
+                  , reqId = id
+                  }
+                -- Assign wires, per lane
+                sequence_
+                  [ do -- Extend inputs to 33 bits
+                       let numExt = req.val.divReqIsSigned ?
+                                      (upper req.val.divReqNum, false)
+                       let denomExt = req.val.divReqIsSigned ?
+                                      (upper req.val.divReqDenom, false)
+                       numWire <== numExt # req.val.divReqNum
+                       denomWire <== denomExt # req.val.divReqDenom
+                  | (req, numWire, denomWire) <-
+                      zip3 (toList reqVec) numWires denomWires ]
+                -- Insert request
+                reqInsertWire <== true
             }
-        , divResps =
+        , resps =
             Source {
               canPeek = resultQueue.canDeq .&&. infoQueue.canDeq
             , peek =
-                ResumeReq {
-                  resumeReqInfo = infoQueue.first
-                , resumeReqData = resultQueue.first
-                , resumeReqCap = none
-                }
+                ( resultQueue.first.fst
+                , fromList [ fmap (\d -> ResumeReq {
+                                           resumeReqCap = none
+                                         , resumeReqData = d
+                                         } ) res
+                           | res <- toList resultQueue.first.snd ] )
             , consume = do
                 resultQueue.deq
-                infoQueue.deq
                 decrBy inflightCount 1
             }
         }
+
+-- | Full throughput scalar divider unit (using Blarney IP)
+makeFullDivUnit :: Bits t_id => Int -> Module (DivUnit t_id)
+makeFullDivUnit latency = do
+  vecDivUnit <- makeFullVecDivUnit @1 latency
+  return
+    Server {
+      reqs  = mapSink (\(id, req) -> (id, fromList [Option true req]))
+                      vecDivUnit.reqs
+    , resps = mapSource (\(id, resp) -> (id, (head (toList resp)).val))
+                        vecDivUnit.resps
+    }

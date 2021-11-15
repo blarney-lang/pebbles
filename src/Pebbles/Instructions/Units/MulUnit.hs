@@ -251,3 +251,15 @@ makeFullVecMulUnit = do
         }
     , resps = toStream resultQueue
     }
+
+-- | Full throughput scalar multiplier unit
+makeFullMulUnit :: Bits t_id => Module (MulUnit t_id)
+makeFullMulUnit = do
+  vecMulUnit <- makeFullVecMulUnit @1
+  return
+    Server {
+      reqs  = mapSink (\(id, req) -> (id, fromList [Option true req]))
+                      vecMulUnit.reqs
+    , resps = mapSource (\(id, resp) -> (id, (head (toList resp)).val))
+                        vecMulUnit.resps
+    }
