@@ -205,6 +205,7 @@ executeI shiftUnit csrUnit memReqs s = do
           , memReqAddr = dontCare
           , memReqData = dontCare
           , memReqDataTagBit = 0
+          , memReqDataTagBitMask = 0
           , memReqIsUnsigned = dontCare
           , memReqIsFinal = true
           }
@@ -262,6 +263,7 @@ executeI_NoCap csrUnit memReqs s = do
           , memReqAddr = s.opA + s.opBorImm
           , memReqData = s.opB
           , memReqDataTagBit = 0
+          , memReqDataTagBitMask = 0
           , memReqIsUnsigned = getIsUnsignedLoad s.instr
           , memReqIsFinal = true
           }

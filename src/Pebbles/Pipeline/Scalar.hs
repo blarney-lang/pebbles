@@ -377,7 +377,6 @@ makeScalarPipeline c =
               -- pipeline currently blocks for suspended instrs
               instrId = dontCare
             , instrDest = dontCare
-            , instrTagMask = false
             }
 
       , retry = do

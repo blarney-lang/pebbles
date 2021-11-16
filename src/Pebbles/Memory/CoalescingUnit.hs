@@ -44,6 +44,8 @@ data CoalescingInfo t_id =
     -- ^ Coalescing mask (lanes participating in coalesced access)
   , coalInfoReqIds :: V.Vec SIMTLanes t_id
     -- ^ Request id for each lane
+  , coalInfoTagBitMask :: Bit SIMTLanes
+    -- ^ Tag bit mask for each lane
   , coalInfoSameBlockMode :: Bit 2
     -- ^ Mode for SameBlock strategy
   , coalInfoAddr :: Bit DRAMBeatLogBytes
@@ -561,6 +563,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               , coalInfoMask = mask
               , coalInfoReqIds =
                   V.fromList [r.val.memReqId | r <- memReqs5]
+              , coalInfoTagBitMask =
+                  fromBitList [r.val.memReqDataTagBitMask | r <- memReqs5]
               , coalInfoSameBlockMode = sameBlockMode
               , coalInfoAddr = truncate leaderReq5.val.memReqAddr
               , coalInfoBurstLen = burstLen - 1
@@ -669,19 +673,21 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           loadCount <== loadCount.val + 1
 
       -- Response info for each SIMT lane
-      let respInfo = zip5 dramRespQueues activeAny
-                          (V.toList (info.coalInfoReqIds))
+      let respInfo = zip6 dramRespQueues activeAny
+                          (V.toList info.coalInfoReqIds)
                           (V.toList sameBlockData)
                           (toBitList sameBlockTagBits)
+                          (toBitList info.coalInfoTagBitMask)
 
       -- For each SIMT lane
-      forM_ respInfo \(respQueue, active, id, d, t) -> do
+      forM_ respInfo \(respQueue, active, id, d, t, tMask) -> do
         when active do
           enq respQueue
             MemResp {
               memRespId = id
             , memRespData = useSameBlock ? (d, sameAddrData)
-            , memRespDataTagBit = useSameBlock ? (t, sameAddrTagBit)
+            , memRespDataTagBit = tMask .&&.
+                (useSameBlock ? (t, sameAddrTagBit))
             , memRespIsFinal = info.coalInfoIsFinal
             }
 

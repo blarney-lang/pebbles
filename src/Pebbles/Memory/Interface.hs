@@ -79,6 +79,8 @@ data MemReq id =
     -- ^ Data to store
   , memReqDataTagBit :: Bit 1
     -- ^ Data tag bit
+  , memReqDataTagBitMask :: Bit 1
+    -- ^ Mask to apply to tag bit on response
   , memReqIsUnsigned :: Bit 1
     -- ^ Is it an unsigned load?
   , memReqIsFinal :: Bit 1
@@ -217,7 +219,7 @@ makeMemRespToResumeReq enableCHERI memResps
                 flitCount <== 0
                 tagBitReg <== true
                 -- Decode capability
-                let tag = isValid .&&. resp.memRespId.instrTagMask
+                let tag = isValid
                 let meta = tag # resp.memRespData
                 let addr = dataReg.val
                 -- Create resume request
