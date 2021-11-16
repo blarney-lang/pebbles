@@ -63,11 +63,9 @@ isHalfAccess = (.==. 0b01)
 isWordAccess = (.==. 0b10)
 
 -- | Memory requests from the processor
-data MemReq id =
+data MemReq =
   MemReq {
-    memReqId :: id
-    -- ^ Identifier, to support out-of-order responses
-  , memReqAccessWidth :: AccessWidth
+    memReqAccessWidth :: AccessWidth
     -- ^ Access width of operation
   , memReqOp :: MemReqOp
     -- ^ Memory operation
@@ -89,11 +87,9 @@ data MemReq id =
   } deriving (Generic, Interface, Bits)
 
 -- | Memory responses to the processor
-data MemResp id =
+data MemResp =
   MemResp {
-    memRespId :: id
-    -- ^ Idenitifier, to match up request and response
-  , memRespData :: Bit 32
+    memRespData :: Bit 32
     -- ^ Response data
   , memRespDataTagBit :: Bit 1
     -- ^ Data tag bit
@@ -103,11 +99,11 @@ data MemResp id =
   } deriving (Generic, Interface, Bits)
 
 -- | Interface to the memory unit
-data MemUnit id =
+data MemUnit =
   MemUnit {
-    memReqs :: Sink (MemReq id)
+    memReqs :: Sink MemReq
     -- ^ Request sink
-  , memResps :: Source (MemResp id)
+  , memResps :: Source MemResp
     -- ^ Response source
   } deriving (Generic, Interface)
 
@@ -168,6 +164,7 @@ decodeAtomicOp amo =
 -- Resume request helpers
 -- ======================
 
+{-
 -- | Convert memory response flit(s) to pipeline resume request
 makeMemRespToResumeReq ::
      Bool
@@ -241,15 +238,16 @@ makeMemRespToResumeReq enableCHERI memResps
               memResps.consume
 
       return (toStream outQueue)
+-}
 
 -- Memory requests from a CHERI-enabled processor
 -- ==============================================
 
 -- | A memory request able to represent a standard (32-bit) memory
 -- request or a capability (64 bit) memory request.
-data CapMemReq t_id =
+data CapMemReq =
   CapMemReq {
-    capMemReqStd :: MemReq t_id
+    capMemReqStd :: MemReq
     -- ^ Standard memory request
   , capMemReqIsCapAccess :: Bit 1
     -- ^ Are we accessing a capability?
@@ -257,11 +255,12 @@ data CapMemReq t_id =
     -- ^ Extra data field for capability store
   } deriving (Generic, Interface, Bits)
 
+{-
 -- | Convert 'CapMemReq's to 'MemReq's by serialisation
 makeCapMemReqSink :: Bits t_id =>
-     Sink (MemReq t_id)
+     Sink MemReq
      -- ^ Sink for standard memory requets
-  -> Module (Sink (CapMemReq t_id))
+  -> Module (Sink CapMemReq)
      -- ^ Sink for capability memory requests
 makeCapMemReqSink memReqSink = do
   -- Are we currently serialising a request?
@@ -308,3 +307,4 @@ toCapMemReq req =
   , capMemReqIsCapAccess = false
   , capMemReqUpperData = dontCare
   }
+-}
