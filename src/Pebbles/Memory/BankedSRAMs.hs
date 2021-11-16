@@ -349,7 +349,8 @@ makeBankedSRAMs inputs = do
               MemResp {
                 memRespId = req.memReqId
               , memRespData = truncate sramBank.outBE
-              , memRespDataTagBit = at @32 (sramBank.outBE)
+              , memRespDataTagBit = at @32 (sramBank.outBE) .&&.
+                  req.memReqDataTagBitMask
               , memRespIsFinal = req.memReqIsFinal
               }
             hasResp <== true

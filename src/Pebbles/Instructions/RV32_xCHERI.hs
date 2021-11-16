@@ -294,9 +294,7 @@ executeCHERI csrUnit memReqs s = do
                 capMemReqIsCapAccess = isCapAccess
               , capMemReqStd =
                   MemReq {
-                    memReqId =
-                      -- Mask to be applied to tag bit of loaded capability
-                      info { instrTagMask = permsA.permitLoadCap }
+                    memReqId = info
                   , memReqAccessWidth =
                       -- Capability accesses are serialised
                       if isCapAccess then 2 else accessWidth
@@ -317,6 +315,8 @@ executeCHERI csrUnit memReqs s = do
                   , memReqData =
                       if isCapAccess then truncate memCap else s.opB
                   , memReqDataTagBit = isCapAccess .&&. memCapTag
+                    -- Mask to be applied to tag bit of loaded capability
+                  , memReqDataTagBitMask = permsA.permitLoadCap
                   , memReqIsUnsigned = getIsUnsignedLoad s.instr
                   , memReqIsFinal = true
                   }

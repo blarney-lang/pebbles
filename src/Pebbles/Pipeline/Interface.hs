@@ -35,8 +35,6 @@ data InstrInfo =
     -- ^ Instruction id
   , instrDest :: RegId
     -- ^ Destination register of suspended instruction
-  , instrTagMask :: Bit 1
-    -- ^ Mask to be applied to tag bit of capability result
   } deriving (Generic, Interface, Bits)
 
 -- | Resume request to pipeline for multi-cycle instructions

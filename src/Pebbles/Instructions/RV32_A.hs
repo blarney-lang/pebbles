@@ -68,6 +68,7 @@ executeA memReqs s = do
           , memReqAddr = s.opA
           , memReqData = s.opB
           , memReqDataTagBit = 0
+          , memReqDataTagBitMask = 0
           , memReqIsUnsigned = true
           , memReqIsFinal = true
           }

@@ -44,6 +44,8 @@ data CoalescingInfo t_id =
     -- ^ Coalescing mask (lanes participating in coalesced access)
   , coalInfoReqIds :: V.Vec SIMTLanes t_id
     -- ^ Request id for each lane
+  , coalInfoTagBitMask :: Bit SIMTLanes
+    -- ^ Tag bit mask for each lane
   , coalInfoSameBlockMode :: Bit 2
     -- ^ Mode for SameBlock strategy
   , coalInfoAddr :: Bit DRAMBeatLogBytes
@@ -557,6 +559,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
               , coalInfoMask = mask
               , coalInfoReqIds =
                   V.fromList [r.val.memReqId | r <- memReqs5]
+              , coalInfoTagBitMask =
+                  fromBitList [r.val.memReqDataTagBitMask | r <- memReqs5]
               , coalInfoSameBlockMode = sameBlockMode
               , coalInfoAddr = truncate leaderReq5.val.memReqAddr
               , coalInfoBurstLen = burstLen - 1
@@ -691,16 +695,18 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
                    MemResp {
                      memRespId = id
                    , memRespData = useSameBlock ? (d, sameAddrData)
-                   , memRespDataTagBit = useSameBlock ? (t, sameAddrTagBit)
+                   , memRespDataTagBit = tMask .&&.
+                       (useSameBlock ? (t, sameAddrTagBit))
                    , memRespIsFinal = info.coalInfoIsFinal
                    }
-             | (newValid, oldValid, accum, id, d, t) <-
-                 zip6 activeAny
+             | (newValid, oldValid, accum, id, d, t, tMask) <-
+                 zip7 activeAny
                       (toBitList dramRespsAccumValid.val)
                       dramRespsAccum
-                      (V.toList (info.coalInfoReqIds))
+                      (V.toList info.coalInfoReqIds)
                       (V.toList sameBlockData)
-                      (toBitList sameBlockTagBits) ]
+                      (toBitList sameBlockTagBits)
+                      (toBitList info.coalInfoTagBitMask) ]
            dramRespsAccumValid <== dramRespsAccumValid.val .|.
                                      fromBitList activeAny
 
