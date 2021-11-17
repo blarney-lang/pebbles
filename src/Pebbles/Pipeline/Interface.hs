@@ -23,6 +23,7 @@ type Instr = Bit 32
 -- | Register identifiers
 type RegId = Bit 5
 
+{-
 -- | Instruction id, for instruction suspension/resumption
 -- Currently limited to a max of 64 outstanding suspensions
 type InstrIdWidth = 6
@@ -43,6 +44,16 @@ data ResumeReq =
     resumeReqInfo :: InstrInfo
     -- ^ Instruction info from the original suspend call
   , resumeReqData :: Bit 32
+    -- ^ Data representing the result of the suspended operation
+  , resumeReqCap :: Option CapMemMeta
+    -- ^ Capability meta-data for the result of the suspended operation
+  } deriving (Generic, Interface, Bits)
+-}
+
+-- | Resume request to pipeline for multi-cycle instructions
+data ResumeReq =
+  ResumeReq {
+    resumeReqData :: Bit 32
     -- ^ Data representing the result of the suspended operation
   , resumeReqCap :: Option CapMemMeta
     -- ^ Capability meta-data for the result of the suspended operation
@@ -75,7 +86,7 @@ data State =
     -- ^ Instruction result interface.  Writing to this modifies
     -- the destination register.
 
-  , suspend :: Action InstrInfo
+  , suspend :: Action ()
     -- ^ Call this to implement a multi-cycle instruction.
     -- Results are returned via resume stage.
 
