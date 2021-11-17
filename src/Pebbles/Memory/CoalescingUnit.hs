@@ -448,6 +448,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
               partialFeedback <== inv leaderReq4.val.memReqIsFinal
               zipWithM_ (<==) memReqs1 (map (.val) memReqs4)
               pending1 <== remaining
+              reqId1 <== reqId4.val
 
   -- Stage 5 (DRAM): Issue DRAM requests
   -- ===================================
