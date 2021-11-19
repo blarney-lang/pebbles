@@ -65,6 +65,20 @@ makeCapMemReqSerialiser memReqSink = do
         memReqSink.put (id, fromList stdReqs)
     }
 
+-- | Specialisation of 'makeCapMemReqSerialiser' to a single request
+makeCapMemReqSerialiserOne :: forall t_id. Bits t_id =>
+     Sink (t_id, MemReq)
+     -- ^ Sink for standard memory requests
+  -> Module (Sink (t_id, CapMemReq))
+     -- ^ Sink for capability memory requests
+makeCapMemReqSerialiserOne memReqSink = do
+  let sink0 = mapSink (\(id, reqs) -> (id, (.val) $ head $ toList reqs))
+                      memReqSink
+  sink1 <- makeCapMemReqSerialiser @1 sink0
+  let sink2 = mapSink (\(id, req) -> (id, fromList [Option true req]))
+                      sink1
+  return sink2
+
 -- Deserialisation
 -- ===============
 
@@ -165,3 +179,19 @@ makeMemRespDeserialiser enableCHERI memResps
               memResps.consume
 
       return (toStream outQueue)
+
+-- | Specialisation of 'makeMemRespDeserialiser' to a single request
+makeMemRespDeserialiserOne :: forall t_id. Bits t_id =>
+     Bool
+     -- ^ Is CHERI enabled?
+  -> Stream (t_id, MemResp)
+     -- ^ Stream of memory response flits
+  -> Module (Stream (t_id, ResumeReq))
+     -- ^ Stream of resume requests
+makeMemRespDeserialiserOne enableCHERI memResps = do
+  let resps0 = mapSource (\(id, req) -> (id, fromList [Option true req]))
+                         memResps
+  resps1 <- makeMemRespDeserialiser @1 enableCHERI resps0
+  let resps2 = mapSource (\(id, reqs) -> (id, (.val) $ head $ toList reqs))
+                         resps1
+  return resps2

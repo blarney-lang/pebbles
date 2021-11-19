@@ -98,15 +98,6 @@ data MemResp =
     -- See note [Memory transactions]
   } deriving (Generic, Interface, Bits)
 
--- | Interface to the memory unit
-data MemUnit =
-  MemUnit {
-    memReqs :: Sink MemReq
-    -- ^ Request sink
-  , memResps :: Source MemResp
-    -- ^ Response source
-  } deriving (Generic, Interface)
-
 -- | Information from a memory request needed to process response
 data MemReqInfo =
   MemReqInfo {

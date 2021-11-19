@@ -42,7 +42,7 @@ getDestReg = makeFieldSelector decodeA "rd"
 -- Execute stage
 -- =============
 
-executeA :: Sink (MemReq InstrInfo) -> State -> Action ()
+executeA :: Sink MemReq -> State -> Action ()
 executeA memReqs s = do
   -- Atomic memory access
   when (s.opcode `is` [AMO]) do
@@ -51,12 +51,11 @@ executeA memReqs s = do
         -- Is response needed?
         let needsResp = getDestReg s.instr .!=. 0
         -- Suspend if response needed
-        info <- whenR needsResp (s.suspend)
+        when needsResp do s.suspend
         -- Send request to memory unit
-        put memReqs
+        memReqs.put
           MemReq {
-            memReqId = info
-          , memReqAccessWidth = 0b10
+            memReqAccessWidth = 0b10
           , memReqOp = memAtomicOp
           , memReqAMOInfo =
               AMOInfo {

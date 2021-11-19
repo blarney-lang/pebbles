@@ -32,17 +32,16 @@ getDivInfo = makeFieldSelector decodeM "div"
 -- Execute stage
 -- =============
 
-executeM :: MulUnit -> DivUnit -> State -> Action ()
+executeM :: Sink MulReq -> Sink DivReq -> State -> Action ()
 executeM mulUnit divUnit s = do
   when (s.opcode `is` [MUL]) do
-    if mulUnit.mulReqs.canPut
+    if mulUnit.canPut
       then do
-        info <- s.suspend
+        s.suspend
         let mulInfo = getMulInfo s.instr
-        put (mulUnit.mulReqs)
+        mulUnit.put
           MulReq {
-            mulReqInfo = info
-          , mulReqA = s.opA
+            mulReqA = s.opA
           , mulReqB = s.opB
           , mulReqLower = mulInfo .==. 0b00
           , mulReqUnsignedA = mulInfo .==. 0b11
@@ -51,14 +50,13 @@ executeM mulUnit divUnit s = do
       else s.retry
 
   when (s.opcode `is` [DIV]) do
-    if divUnit.divReqs.canPut
+    if divUnit.canPut
       then do
-        info <- s.suspend
+        s.suspend
         let divInfo = getDivInfo s.instr
-        put (divUnit.divReqs)
+        divUnit.put
           DivReq {
-            divReqInfo = info
-          , divReqNum = s.opA
+            divReqNum = s.opA
           , divReqDenom = s.opB
           , divReqIsSigned = at @0 (inv divInfo)
           , divReqGetRemainder = at @1 divInfo

@@ -34,6 +34,9 @@ import Pebbles.Pipeline.Interface
 -- CHERI imports
 import CHERI.CapLib
 
+-- | Info about multi-cycle instructions issued by pipeline
+type ScalarPipelineInstrInfo = ()
+
 -- | Scalar pipeline configuration
 data ScalarPipelineConfig tag =
   ScalarPipelineConfig {
@@ -57,20 +60,31 @@ data ScalarPipelineConfig tag =
     -- ^ When CHERI is enabled, function to check PCC
   }
 
--- | Scalar pipeline management
-data ScalarPipeline =
+-- | Scalar pipeline inputs
+data ScalarPipelineIns =
+  ScalarPipelineIns {
+    resumeReqs :: Stream (ScalarPipelineInstrInfo, ResumeReq)
+    -- ^ Resume requests for multi-cycle instructions
+  }
+
+-- | Scalar pipeline outputs
+data ScalarPipelineOuts =
   ScalarPipeline {
     writeInstr :: Bit 32 -> Bit 32 -> Action ()
     -- ^ Write to instruction memory
+  , instrInfo :: ScalarPipelineInstrInfo
+    -- ^ Info for instruction currently in execute stage
   }
 
 -- | Scalar pipeline
 makeScalarPipeline :: Tag tag =>
      ScalarPipelineConfig tag
-     -- ^ Inputs: pipeline configuration
-  -> Module ScalarPipeline
-     -- ^ Outputs: pipeline management interface
-makeScalarPipeline c = 
+     -- ^ Pipeline configuration
+  -> ScalarPipelineIns
+     -- ^ Pipeline inputs
+  -> Module ScalarPipelineOuts
+     -- ^ Pipeline outputs
+makeScalarPipeline c pipeIns = 
   -- Determine instruction mem address width at type level
   liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_instrAddrWidth) -> do
 
@@ -371,14 +385,6 @@ makeScalarPipeline c =
           -- to bypass multi-cycle instructions
           suspendInProgress <== true
           stallWire <== true
-          return
-            InstrInfo {
-              -- Some of these fields are not used because the
-              -- pipeline currently blocks for suspended instrs
-              instrId = dontCare
-            , instrDest = dontCare
-            , instrTagMask = false
-            }
 
       , retry = do
           go3 <== true
@@ -419,11 +425,11 @@ makeScalarPipeline c =
     -- ==================
 
     always do
-      let resumeReq = execStage.resumeReqs.peek
+      let resumeReq = pipeIns.resumeReqs.peek.snd
       -- Resume stage for multi-cycle instructions
-      if execStage.resumeReqs.canPeek
+      if pipeIns.resumeReqs.canPeek
         then do
-          execStage.resumeReqs.consume
+          pipeIns.resumeReqs.consume
           when (dst instr4.val .!=. 0) do
             resumeResultWire <== true
           suspendInProgress <== false
@@ -471,6 +477,7 @@ makeScalarPipeline c =
       ScalarPipeline {
         writeInstr = \addr instr -> do
           instrMem.store (truncateCast (slice @31 @2 addr)) instr
+      , instrInfo = ()
       }
 
 -- Note [Delayed Trap]

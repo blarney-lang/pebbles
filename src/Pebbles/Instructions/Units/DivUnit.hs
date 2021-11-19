@@ -36,7 +36,7 @@ data DivReq =
     -- ^ Signed or unsigned division?
   , divReqGetRemainder :: Bit 1
     -- ^ Do we want the quotient or remainder?
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | Scalar divider unit interface
 type DivUnit t_id =

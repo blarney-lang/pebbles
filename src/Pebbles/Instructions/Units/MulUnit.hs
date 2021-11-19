@@ -29,7 +29,7 @@ data MulReq =
     -- Are the operands signed or unsigned?
   , mulReqUnsignedA :: Bit 1
   , mulReqUnsignedB :: Bit 1
-  } deriving (Generic, Bits)
+  } deriving (Generic, Interface, Bits)
 
 -- | Scalar multiplier unit interface
 type MulUnit t_id =

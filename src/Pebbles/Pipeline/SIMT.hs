@@ -4,6 +4,8 @@ module Pebbles.Pipeline.SIMT
     -- Pipeline inputs and outputs
   , SIMTPipelineIns(..)
   , SIMTPipelineOuts(..)
+    -- Instruction info for multi-cycle instructions
+  , SIMTPipelineInstrInfo
     -- Pipeline module
   , makeSIMTPipeline
   ) where
@@ -36,6 +38,9 @@ module Pebbles.Pipeline.SIMT
 -- higher priority than new instructions in the warp scheduler; (2)
 -- only pay cost of active thread selection on a branch/jump.
 
+-- SoC configuration
+#include <Config.h>
+
 -- Blarney imports
 import Blarney
 import Blarney.Queue
@@ -44,6 +49,7 @@ import Blarney.Stream
 import Blarney.BitScan
 import Blarney.QuadPortRAM
 import Blarney.Interconnect
+import Blarney.Vector (Vec, fromList, toList)
 
 -- General imports
 import Data.List
@@ -63,6 +69,16 @@ import Pebbles.CSRs.Custom.SIMTDevice
 -- CHERI imports
 import CHERI.CapLib
 
+-- | Info about multi-cycle instructions issued by pipeline
+data SIMTPipelineInstrInfo =
+  SIMTPipelineInstrInfo {
+    destReg :: RegId
+    -- ^ Destination register
+  , warpId :: Bit SIMTLogWarps
+    -- ^ Warp that issued the instruction
+  }
+  deriving (Generic, Interface, Bits)
+
 -- | SIMT pipeline configuration
 data SIMTPipelineConfig tag =
   SIMTPipelineConfig {
@@ -72,12 +88,6 @@ data SIMTPipelineConfig tag =
     -- ^ Instuction memory size (in number of instructions)
   , instrMemBase :: Integer
     -- ^ Base address of instruction memory in memory map
-  , logNumWarps :: Int
-    -- ^ Number of warps
-  , logWarpSize :: Int
-    -- ^ Number of threads per warp (number of lanes)
-  , logMaxNestLevel :: Int
-    -- ^ Number of bits used to track divergence nesting level
   , enableStatCounters :: Bool
     -- ^ Are stat counters enabled?
   , capRegInitFile :: Maybe String
@@ -108,6 +118,9 @@ data SIMTPipelineIns =
     , simtWarpCmdWire :: Wire WarpCmd
       -- ^ When this wire is active, the warp currently in the execute
       -- stage (assumed to be converged) is issuing a warp command
+    , simtResumeReqs :: Stream (SIMTPipelineInstrInfo,
+                                  Vec SIMTLanes (Option ResumeReq))
+      -- ^ Resume requests for multi-cycle instructions
   }
 
 -- | SIMT pipeline outputs
@@ -119,14 +132,16 @@ data SIMTPipelineOuts =
       -- ^ Warp id of instruction currently in execute stage
     , simtKernelAddr :: Bit 32
       -- ^ Address of kernel closure as set by CPU
+    , simtInstrInfo :: SIMTPipelineInstrInfo
+      -- ^ Info for instruction currently in execute stage
   }
 
 -- | Per-thread state
-data SIMTThreadState t_logMaxNestLevel =
+data SIMTThreadState =
   SIMTThreadState {
     simtPC :: Bit 32
     -- ^ Program counter
-  , simtNestLevel :: Bit t_logMaxNestLevel
+  , simtNestLevel :: Bit SIMTLogMaxNestLevel
     -- ^ SIMT divergence nesting level
   , simtRetry :: Bit 1
     -- ^ The last thing this thread did was a retry
@@ -143,22 +158,11 @@ makeSIMTPipeline :: Tag tag =>
      -- ^ SIMT pipeline outputs
 makeSIMTPipeline c inputs =
   -- Lift some parameters to the type level
-  liftNat (c.logNumWarps) \(_ :: Proxy t_logWarps) ->
-  liftNat (2 ^ c.logNumWarps) \(_ :: Proxy t_numWarps) ->
-  liftNat (c.logWarpSize) \(_ :: Proxy t_logWarpSize) ->
-  liftNat (2 ^ c.logWarpSize) \(_ :: Proxy t_warpSize) ->
-  liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) ->
-  liftNat (c.logMaxNestLevel) \(_ :: Proxy t_logMaxNestLevel) -> do
+  liftNat (c.instrMemLogNumInstrs) \(_ :: Proxy t_logInstrs) -> do
 
     -- Sanity check
-    staticAssert (c.logNumWarps <= valueOf @InstrIdWidth)
-      "makeSIMTPipeline: WarpId is wider than InstrId"
-    staticAssert (2 ^ c.logWarpSize == genericLength c.executeStage)
+    staticAssert (SIMTLanes == genericLength c.executeStage)
       "makeSIMTPipeline: warp size does not match number of execute units"
-
-    -- Number of warps and warp size
-    let numWarps = 2 ^ c.logNumWarps
-    let warpSize = genericLength c.executeStage
 
     -- Is CHERI enabled?
     let enableCHERI = isJust c.checkPCCFunc
@@ -172,16 +176,15 @@ makeSIMTPipeline c inputs =
     let dst  :: Instr -> RegId = getBitFieldSel selMap "rd"
 
     -- Queue of active warps
-    warpQueue :: Queue (Bit t_logWarps) <- makeSizedQueue (c.logNumWarps)
+    warpQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
 
     -- One block RAM of thread states per lane
-    stateMems ::  [RAM (Bit t_logWarps)
-                       (SIMTThreadState t_logMaxNestLevel) ] <-
-      replicateM warpSize makeDualRAM
+    stateMems ::  [RAM (Bit SIMTLogWarps) SIMTThreadState ] <-
+      replicateM SIMTLanes makeDualRAM
 
     -- One program counter capability RAM (meta-data only) per lane
-    pccMems :: [RAM (Bit t_logWarps) CapMem] <-
-      replicateM warpSize $
+    pccMems :: [RAM (Bit SIMTLogWarps) CapMem] <-
+      replicateM SIMTLanes $
         if enableCHERI && not (c.useSharedPCC)
           then makeDualRAM
           else return nullRAM
@@ -192,29 +195,29 @@ makeSIMTPipeline c inputs =
 
     -- Suspension bit for each thread
     suspBits :: [[Reg (Bit 1)]] <-
-      replicateM warpSize (replicateM numWarps (makeReg false))
+      replicateM SIMTLanes (replicateM SIMTWarps (makeReg false))
 
     -- Register files
     (regFilesA, regFilesB) ::
-      ([RAM (Bit t_logWarps, RegId) (Bit 32)],
-       [RAM (Bit t_logWarps, RegId) (Bit 32)]) <-
-         unzip <$> replicateM warpSize makeQuadRAM
+      ([RAM (Bit SIMTLogWarps, RegId) (Bit 32)],
+       [RAM (Bit SIMTLogWarps, RegId) (Bit 32)]) <-
+         unzip <$> replicateM SIMTLanes makeQuadRAM
 
     -- Capability register files (meta-data only)
     (capRegFilesA, capRegFilesB) ::
-      ([RAM (Bit t_logWarps, RegId) CapMemMeta],
-       [RAM (Bit t_logWarps, RegId) CapMemMeta]) <-
-         unzip <$> replicateM warpSize
+      ([RAM (Bit SIMTLogWarps, RegId) CapMemMeta],
+       [RAM (Bit SIMTLogWarps, RegId) CapMemMeta]) <-
+         unzip <$> replicateM SIMTLanes
            (if enableCHERI
               then makeQuadRAMCore (c.capRegInitFile)
               else return (nullRAM, nullRAM))
 
     -- Barrier bit for each warp
-    barrierBits :: [Reg (Bit 1)] <- replicateM numWarps (makeReg 0)
+    barrierBits :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg 0)
 
     -- Count of number of warps in a barrier
     -- (Not read when all warps in barrier, so overflow not a problem)
-    barrierCount :: Counter t_logWarps <- makeCounter dontCare
+    barrierCount :: Counter SIMTLogWarps <- makeCounter dontCare
 
     -- Trigger for each stage
     go1 :: Reg (Bit 1) <- makeDReg false
@@ -222,17 +225,17 @@ makeSIMTPipeline c inputs =
     go4 :: Reg (Bit 1) <- makeDReg false
 
     -- Warp id register, for each stage
-    warpId1 :: Reg (Bit t_logWarps) <- makeReg dontCare
-    warpId3 :: Reg (Bit t_logWarps) <- makeReg dontCare
-    warpId4 :: Reg (Bit t_logWarps) <- makeReg dontCare
+    warpId1 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    warpId3 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    warpId4 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
 
     -- Thread state, for each stage
-    state3 :: Reg (SIMTThreadState t_logMaxNestLevel) <- makeReg dontCare
-    state4 :: Reg (SIMTThreadState t_logMaxNestLevel) <- makeReg dontCare
+    state3 :: Reg SIMTThreadState <- makeReg dontCare
+    state4 :: Reg SIMTThreadState <- makeReg dontCare
 
     -- Active thread mask
-    activeMask3 :: Reg (Bit t_warpSize) <- makeReg dontCare
-    activeMask4 :: Reg (Bit t_warpSize) <- makeReg dontCare
+    activeMask3 :: Reg (Bit SIMTLanes) <- makeReg dontCare
+    activeMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
     -- Instruction register for each stage
     instr4 :: Reg (Bit 32) <- makeReg dontCare
@@ -247,13 +250,13 @@ makeSIMTPipeline c inputs =
     excPC :: Reg (Bit 32) <- makeReg dontCare
 
     -- Per-lane exception register
-    excLocals :: [Reg (Bit 1)] <- replicateM warpSize (makeReg false)
+    excLocals :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeReg false)
 
     -- Kernel response queue (indicates to CPU when kernel has finished)
     kernelRespQueue :: Queue SIMTResp <- makeShiftQueue 1
 
     -- Track how many warps have terminated
-    completedWarps :: Reg (Bit t_logWarps) <- makeReg 0
+    completedWarps :: Reg (Bit SIMTLogWarps) <- makeReg 0
 
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
@@ -267,7 +270,7 @@ makeSIMTPipeline c inputs =
     instrCount :: Reg (Bit 32) <- makeReg 0
 
     -- Triggers from each lane to increment instruction count
-    incInstrCountRegs :: [Reg (Bit 1)] <- replicateM warpSize (makeDReg 0)
+    incInstrCountRegs :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg 0)
 
     -- Function to convert from 32-bit PC to instruction address
     let toInstrAddr :: Bit 32 -> Bit t_logInstrs =
@@ -280,7 +283,7 @@ makeSIMTPipeline c inputs =
     startReg :: Reg (Option (Bit 32)) <- makeReg none
 
     -- Warp id counter, to initialise PC of each thread
-    warpIdCounter :: Reg (Bit t_logWarps) <- makeReg 0
+    warpIdCounter :: Reg (Bit SIMTLogWarps) <- makeReg 0
 
     -- Is the pipeline active?
     pipelineActive :: Reg (Bit 1) <- makeReg false
@@ -353,10 +356,10 @@ makeSIMTPipeline c inputs =
     -- ========================
 
     -- Queue of warps that have left a barrier (half throughput)
-    releaseQueue :: Queue (Bit t_logWarps) <-
+    releaseQueue :: Queue (Bit SIMTLogWarps) <-
       makeSizedQueueConfig
         SizedQueueConfig {
-          sizedQueueLogSize = c.logNumWarps
+          sizedQueueLogSize = SIMTLogWarps
         , sizedQueueBuffer = makeShiftQueue 1
         }
 
@@ -399,7 +402,7 @@ makeSIMTPipeline c inputs =
           pipelinedTree1 (stage1Substages-1) maxOf
             [ ( mem.out.simtNestLevel
               , mem.out.simtRetry
-              , fromInteger i :: Bit t_logWarpSize )
+              , fromInteger i :: Bit SIMTLogLanes )
             | (mem, i) <- zip stateMems [0..] ]
 
     -- Wait for leader index to be computed
@@ -431,7 +434,7 @@ makeSIMTPipeline c inputs =
                   then upper pcc2 .==. (upper pcc :: CapMemMeta)
                   else true
             | (s, pcc) <- zip stateMemOuts2 pccs2]
-      let activeMask :: Bit t_warpSize = fromBitList activeList
+      let activeMask :: Bit SIMTLanes = fromBitList activeList
       activeMask3 <== activeMask
 
       -- Assert that at least one thread in the warp must be active
@@ -656,14 +659,7 @@ makeSIMTPipeline c inputs =
                            if enableCHERI
                              then resultCapWire <== nullCapMemMetaVal
                              else return ()
-            , suspend = do
-                suspWire <== true
-                return
-                  InstrInfo {
-                    instrId = zeroExtendCast warpId5
-                  , instrDest = dst instr5
-                  , instrTagMask = false
-                  }
+            , suspend = suspWire <== true
             , retry = retryWire <== true
             , opcode = packTagMap tagMap5
             , trap = \code -> do
@@ -746,38 +742,6 @@ makeSIMTPipeline c inputs =
                       else return ()
                 else return ()
 
-            -- Thread resumption
-            when (execStage.resumeReqs.canPeek) do
-              let req = execStage.resumeReqs.peek
-              let idx = (truncateCast req.resumeReqInfo.instrId,
-                         req.resumeReqInfo.instrDest)
-              when (req.resumeReqInfo.instrDest .!=. 0 .&&.
-                      inv excGlobal.val) do
-                regFileB.store idx (req.resumeReqData)
-                if enableCHERI
-                  then do
-                    let capVal = isSome req.resumeReqCap ?
-                          (req.resumeReqCap.val, nullCapMemMetaVal)
-                    capRegFileB.store idx capVal
-                    if c.enableCapRegFileTrace
-                      then do
-                        let cap = fromMem $ unpack
-                                    (capVal # req.resumeReqData)
-                        display "[CapRegFileTrace] resume"
-                                " time="  (cycleCount.val)
-                                " lane="  (show laneId)
-                                " warp="  (fst idx)
-                                " rd="    (snd idx)
-                                " valid=" (isValidCap cap)
-                                " base=0x" (formatHex 0 $ getBase cap)
-                                " top=0x"  (formatHex 0 $ getTop cap)
-                                " meta=0x" (formatHex 0 $ getMeta cap)
-                                " addr=0x" (formatHex 0 $ getAddr cap)
-                      else return ()
-                  else return ()
-              suspMask!(req.resumeReqInfo.instrId) <== false
-              execStage.resumeReqs.consume
-
     -- Create vector lanes
     sequence $ getZipList $
       makeLane <$> ZipList (c.executeStage)
@@ -793,15 +757,53 @@ makeSIMTPipeline c inputs =
                <*> ZipList excLocals
                <*> ZipList [0..]
 
+    -- Thread resumption
+    -- =================
+
+    always do
+      when inputs.simtResumeReqs.canPeek do
+        let (info, vec) = inputs.simtResumeReqs.peek
+        let idx = (info.warpId, info.destReg)
+        inputs.simtResumeReqs.consume
+        sequence_
+          [ do when valid do
+                 suspMask!(info.warpId) <== false
+                 when (info.destReg .!=. 0 .&&. inv excGlobal.val) do
+                   regFileB.store idx (req.resumeReqData)
+                   if enableCHERI
+                     then do
+                       let capVal = isSome req.resumeReqCap ?
+                             (req.resumeReqCap.val, nullCapMemMetaVal)
+                       capRegFileB.store idx capVal
+                       if c.enableCapRegFileTrace
+                         then do
+                           let cap = fromMem $ unpack
+                                       (capVal # req.resumeReqData)
+                           display "[CapRegFileTrace] resume"
+                                   " time="  (cycleCount.val)
+                                   " lane="  (show laneId)
+                                   " warp="  (fst idx)
+                                   " rd="    (snd idx)
+                                   " valid=" (isValidCap cap)
+                                   " base=0x" (formatHex 0 $ getBase cap)
+                                   " top=0x"  (formatHex 0 $ getTop cap)
+                                   " meta=0x" (formatHex 0 $ getMeta cap)
+                                   " addr=0x" (formatHex 0 $ getAddr cap)
+                         else return ()
+                     else return ()
+          | (laneId, Option valid req, suspMask, regFileB, capRegFileB) <-
+              zip5 [0..] (toList vec) suspBits
+                   regFilesB capRegFilesB ]
+
     -- Handle barrier release
     -- ======================
 
     -- Warps per block (a block is a group of threads that synchronise
     -- on a barrier). A value of zero indicates all warps.
-    warpsPerBlock :: Reg (Bit t_logWarps) <- makeReg 0
+    warpsPerBlock :: Reg (Bit SIMTLogWarps) <- makeReg 0
 
     -- Mask that identifies a block of threads
-    barrierMask :: Reg (Bit t_numWarps) <- makeReg ones
+    barrierMask :: Reg (Bit SIMTWarps) <- makeReg ones
 
     makeBarrierReleaseUnit
       BarrierReleaseIns {
@@ -846,7 +848,7 @@ makeSIMTPipeline c inputs =
         when (req.simtReqCmd .==. simtCmd_SetWarpsPerBlock) do
           dynamicAssert (inv busy)
             "SIMT pipeline: setting warps per block while pipeline busy"
-          let n :: Bit t_logWarps = truncateCast req.simtReqData
+          let n :: Bit SIMTLogWarps = truncateCast req.simtReqData
           warpsPerBlock <== n
           barrierMask <== n .==. 0 ? (ones, (1 .<<. n) - 1)
           inputs.simtMgmtReqs.consume
@@ -865,6 +867,11 @@ makeSIMTPipeline c inputs =
         simtMgmtResps = toStream kernelRespQueue
       , simtCurrentWarpId = zeroExtendCast warpId5
       , simtKernelAddr = kernelAddrReg.val
+      , simtInstrInfo =
+          SIMTPipelineInstrInfo {
+            destReg = dst instr5
+          , warpId = warpId5
+          }
       }
 
 -- Barrier release unit
@@ -874,35 +881,33 @@ makeSIMTPipeline c inputs =
 -- barrier, and then releases them.
 
 -- | Inputs to barrier release unit
-data BarrierReleaseIns t_logWarps t_numWarps =
+data BarrierReleaseIns =
   BarrierReleaseIns {
-    relWarpsPerBlock :: Bit t_logWarps
+    relWarpsPerBlock :: Bit SIMTLogWarps
     -- ^ Number of warps per block of synchronising threads
-  , relBarrierMask :: Bit t_numWarps
+  , relBarrierMask :: Bit SIMTWarps
     -- ^ Mask that identifies a block of threads
-  , relBarrierVec :: Bit t_numWarps
+  , relBarrierVec :: Bit SIMTWarps
     -- ^ Bit vector denoting warps currently in barrier
-  , relAction :: Bit t_logWarps -> Action ()
+  , relAction :: Bit SIMTLogWarps -> Action ()
     -- ^ Action to perform on a release
   }
 
 -- | Barrier release unit
-makeBarrierReleaseUnit ::
-  (KnownNat t_logWarps, KnownNat t_numWarps) =>
-    BarrierReleaseIns t_logWarps t_numWarps -> Module ()
+makeBarrierReleaseUnit :: BarrierReleaseIns -> Module ()
 makeBarrierReleaseUnit ins = do
   -- Mask that identifies a block of threads
-  barrierMask :: Reg (Bit t_numWarps) <- makeReg ones
+  barrierMask :: Reg (Bit SIMTWarps) <- makeReg ones
 
   -- Shift register for barrier release logic
-  barrierShiftReg :: Reg (Bit t_numWarps) <- makeReg dontCare
+  barrierShiftReg :: Reg (Bit SIMTWarps) <- makeReg dontCare
 
   -- For release state machine
   releaseState :: Reg (Bit 2) <- makeReg 0
 
   -- Warp counters for release logic
-  releaseWarpId :: Reg (Bit t_logWarps) <- makeReg dontCare
-  releaseWarpCount :: Reg (Bit t_logWarps) <- makeReg dontCare
+  releaseWarpId :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+  releaseWarpCount :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
 
   -- Is the current block of threads ready for release?
   releaseSuccess :: Reg (Bit 1) <- makeReg false

@@ -93,11 +93,11 @@ getIsUnsignedLoad = makeFieldSelector decodeI_NoCap "ul"
 -- =============
 
 executeI ::
-     Maybe MulUnit
+     Maybe (Sink MulReq)
      -- ^ Optionally use multiplier to implement shifts
   -> CSRUnit
      -- ^ Access to CSRs
-  -> Sink (MemReq InstrInfo)
+  -> Sink MemReq
      -- ^ Access to memory
   -> State
      -- ^ Pipeline state
@@ -147,15 +147,14 @@ executeI shiftUnit csrUnit memReqs s = do
     -- Use multiplier
     Just mulUnit -> do
       when (s.opcode `is` [SLL, SRL, SRA]) do
-        if mulUnit.mulReqs.canPut
+        if mulUnit.canPut
           then do
-            info <- s.suspend
+            s.suspend
             let shiftAmount = slice @4 @0 (s.opBorImm)
             let noShift = shiftAmount .==. 0
-            put (mulUnit.mulReqs)
+            mulUnit.put
               MulReq {
-                mulReqInfo = info
-              , mulReqA = s.opA
+                mulReqA = s.opA
               , mulReqB = 1 .<<. (if s.opcode `is` [SLL]
                   then shiftAmount else negate shiftAmount)
               , mulReqLower = s.opcode `is` [SLL] .||. noShift
@@ -194,12 +193,11 @@ executeI shiftUnit csrUnit memReqs s = do
   when (s.opcode `is` [FENCE]) do
     if memReqs.canPut
       then do
-        info <- s.suspend
+        s.suspend
         -- Send request to memory unit
         put memReqs
           MemReq {
-            memReqId = info
-          , memReqAccessWidth = dontCare
+            memReqAccessWidth = dontCare
           , memReqOp = memGlobalFenceOp
           , memReqAMOInfo = dontCare
           , memReqAddr = dontCare
@@ -234,7 +232,7 @@ executeI shiftUnit csrUnit memReqs s = do
 executeI_NoCap ::
      CSRUnit
      -- ^ Access to CSRs
-  -> Sink (MemReq InstrInfo)
+  -> Sink MemReq
      -- ^ Access to memory
   -> State
      -- ^ Pipeline state
@@ -251,12 +249,11 @@ executeI_NoCap csrUnit memReqs s = do
         -- Currently the memory subsystem doesn't issue store responses
         -- so we make sure to only suspend on a load
         let hasResp = s.opcode `is` [LOAD]
-        info <- whenR hasResp (s.suspend)
+        when hasResp do s.suspend
         -- Send request to memory unit
         put memReqs
           MemReq {
-            memReqId = info
-          , memReqAccessWidth = getAccessWidth s.instr
+            memReqAccessWidth = getAccessWidth s.instr
           , memReqOp =
               if s.opcode `is` [LOAD] then memLoadOp else memStoreOp
           , memReqAMOInfo = dontCare

@@ -79,7 +79,7 @@ getRelease = makeFieldSelector decodeCHERI_A "rl"
 executeCHERI ::
      CSRUnit
      -- ^ Access to CSRs
-  -> Sink (CapMemReq InstrInfo)
+  -> Sink CapMemReq
      -- ^ Access to memory
   -> State
      -- ^ Pipeline state
@@ -287,15 +287,14 @@ executeCHERI csrUnit memReqs s = do
             -- so we make sure to only suspend on a load
             let hasResp = s.opcode `is` [LOAD]
                      .||. s.opcode `is` [AMO] .&&. s.resultIndex .!=. 0
-            info <- whenR hasResp (s.suspend)
+            when hasResp do s.suspend
             -- Send request to memory unit
             put memReqs
               CapMemReq {
                 capMemReqIsCapAccess = isCapAccess
               , capMemReqStd =
                   MemReq {
-                    memReqId = info
-                  , memReqAccessWidth =
+                    memReqAccessWidth =
                       -- Capability accesses are serialised
                       if isCapAccess then 2 else accessWidth
                   , memReqOp =

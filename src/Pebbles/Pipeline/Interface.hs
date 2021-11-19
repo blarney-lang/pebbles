@@ -132,6 +132,4 @@ data ExecuteStage =
   ExecuteStage {
     execute :: Action ()
     -- ^ Trigger execute stage
-  , resumeReqs :: Stream ResumeReq
-    -- ^ Resume requests for instructions that suspend
   } deriving (Generic, Interface)
