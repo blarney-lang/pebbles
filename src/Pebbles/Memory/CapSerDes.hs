@@ -167,7 +167,7 @@ makeMemRespDeserialiser enableCHERI memResps
                 let consistent = andList
                       [ resp.valid .==. reg.val.valid
                       | (resp, reg) <- zip (toList respVec) dataRegs ]
-                dynamicAssert consistent
+                dynamicAssert ((flitCount.val .!=. 0) .==>. consistent)
                   "makeMemRespDeserialiser: inconsistent responses"
             else do
               -- Accumulate response
