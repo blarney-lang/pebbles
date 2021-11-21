@@ -16,6 +16,7 @@ import Blarney.Option
 import Blarney.SourceSink
 import Blarney.ClientServer
 import Blarney.Vector (Vec, toList, fromList)
+import Blarney.Vector qualified as V
 import Blarney.VendorIP.PipelinedDivider
 
 -- Pebbles imports
@@ -197,16 +198,6 @@ makeSeqDivUnit = do
 -- Full-throughput divider
 -- =======================
 
--- | Information about a full-throughout divider request
-data FullDivInfo n t_id =
-  FullDivInfo {
-    active    :: Bit n  -- ^ Per-lane: is lane active?
-  , wantRem   :: Bit n  -- ^ Per-lane: want remainder (or quotient)?
-  , divByZero :: Bit n  -- ^ Per-lane: Dividing by zero?
-  , reqId     :: t_id   -- ^ Request id
-  }
-  deriving (Generic, Bits)
-
 -- | Full throughput vector divider unit (using Blarney IP)
 makeFullVecDivUnit :: forall n t_id.
      (KnownNat n, Bits t_id)
@@ -219,11 +210,8 @@ makeFullVecDivUnit latency
       let vecSize = valueOf @n
 
       -- Result and request active/id queues
-      resultQueue :: Queue (t_id, Vec n (Option (Bit 32))) <- makeSizedQueue 5
-      infoQueue :: Queue (FullDivInfo n t_id) <- makeSizedQueue 5
-
-      -- Track size of the infoQueue
-      inflightCount :: Counter 6 <- makeCounter 32
+      resultQueue :: Queue (Vec n (Option (Bit 32))) <- makeSizedQueue 5
+      infoQueue :: Queue t_id <- makeSizedQueue 5
 
       -- Wire indicating request insertion
       reqInsertWire :: Wire (Bit 1) <- makeWire false
@@ -231,6 +219,7 @@ makeFullVecDivUnit latency
       -- Per-lane wires (numerator, denominator, want remainder)
       numWires   :: [Wire (Bit 33)] <- replicateM vecSize $ makeWire dontCare
       denomWires :: [Wire (Bit 33)] <- replicateM vecSize $ makeWire dontCare
+      remWires   :: [Wire (Bit 1)]  <- replicateM vecSize $ makeWire dontCare
 
       always do
         -- Output of pipelined divider megafunction
@@ -240,49 +229,39 @@ makeFullVecDivUnit latency
                       (map (.val) denomWires)
         -- Wait 'latency' cycles for result to be ready
         let ready = iterateN latency (delay false) reqInsertWire.val
+        let actives =
+              [ iterateN latency (delay false) remWire.active
+              | remWire <- remWires ]
+        let wantRems =
+              [ iterateN latency (delay false) remWire.val
+              | remWire <- remWires ]
+        let divByZeros =
+              [ iterateN latency (delay false) (denomWire.val .==. 0)
+              | denomWire <- denomWires ]
         -- Fill result queue
         when ready do
           -- Result queue must have space
           dynamicAssert (resultQueue.notFull)
             "FullVecDivUnit: result queue overflow"
-          -- Info queue must be non-empty
-          dynamicAssert (infoQueue.canDeq)
-            "FullVecDivUnit: info queue underflow"
-          -- Consume request info
-          infoQueue.deq
-          let info = infoQueue.first
           -- Enqueue result
           resultQueue.enq $
-            ( info.reqId
-            , fromList 
-                [ Option valid $
-                    truncate $
-                      if wantRem
-                        then rem
-                        else divByZero ? (ones, quot)
-                | (quot, rem, valid, wantRem, divByZero) <-
-                    zip5 quots rems
-                         (toBitList info.active)
-                         (toBitList info.wantRem)
-                         (toBitList info.divByZero)
-                ] )
+            fromList 
+              [ Option valid $
+                  truncate $
+                    if wantRem
+                      then rem
+                      else divByZero ? (ones, quot)
+              | (quot, rem, valid, wantRem, divByZero) <-
+                  zip5 quots rems actives wantRems divByZeros
+              ]
 
       return
         Server {
           reqs =
             Sink {
-              canPut = inv inflightCount.isFull
+              canPut = infoQueue.notFull
             , put = \(id, reqVec) -> do
-                incrBy inflightCount 1
-                infoQueue.enq
-                  FullDivInfo {
-                    active = fromBitList (map (.valid) (toList reqVec))
-                  , wantRem =
-                      fromBitList (map (.val.divReqGetRemainder) (toList reqVec))
-                  , divByZero =
-                      fromBitList [x .==. 0 | x <- map (.val) denomWires]
-                  , reqId = id
-                  }
+                infoQueue.enq id
                 -- Assign wires, per lane
                 sequence_
                   [ do -- Extend inputs to 33 bits
@@ -292,8 +271,10 @@ makeFullVecDivUnit latency
                                       (upper req.val.divReqDenom, false)
                        numWire <== numExt # req.val.divReqNum
                        denomWire <== denomExt # req.val.divReqDenom
-                  | (req, numWire, denomWire) <-
-                      zip3 (toList reqVec) numWires denomWires ]
+                       when req.valid do
+                         remWire <== req.val.divReqGetRemainder
+                  | (req, numWire, denomWire, remWire) <-
+                      zip4 (toList reqVec) numWires denomWires remWires ]
                 -- Insert request
                 reqInsertWire <== true
             }
@@ -301,15 +282,15 @@ makeFullVecDivUnit latency
             Source {
               canPeek = resultQueue.canDeq .&&. infoQueue.canDeq
             , peek =
-                ( resultQueue.first.fst
+                ( infoQueue.first
                 , fromList [ fmap (\d -> ResumeReq {
                                            resumeReqCap = none
                                          , resumeReqData = d
                                          } ) res
-                           | res <- toList resultQueue.first.snd ] )
+                           | res <- toList resultQueue.first ] )
             , consume = do
                 resultQueue.deq
-                decrBy inflightCount 1
+                infoQueue.deq
             }
         }
 
