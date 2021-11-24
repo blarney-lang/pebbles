@@ -63,11 +63,9 @@ isHalfAccess = (.==. 0b01)
 isWordAccess = (.==. 0b10)
 
 -- | Memory requests from the processor
-data MemReq id =
+data MemReq =
   MemReq {
-    memReqId :: id
-    -- ^ Identifier, to support out-of-order responses
-  , memReqAccessWidth :: AccessWidth
+    memReqAccessWidth :: AccessWidth
     -- ^ Access width of operation
   , memReqOp :: MemReqOp
     -- ^ Memory operation
@@ -79,6 +77,8 @@ data MemReq id =
     -- ^ Data to store
   , memReqDataTagBit :: Bit 1
     -- ^ Data tag bit
+  , memReqDataTagBitMask :: Bit 1
+    -- ^ Mask to apply to tag bit on response
   , memReqIsUnsigned :: Bit 1
     -- ^ Is it an unsigned load?
   , memReqIsFinal :: Bit 1
@@ -87,11 +87,9 @@ data MemReq id =
   } deriving (Generic, Interface, Bits)
 
 -- | Memory responses to the processor
-data MemResp id =
+data MemResp =
   MemResp {
-    memRespId :: id
-    -- ^ Idenitifier, to match up request and response
-  , memRespData :: Bit 32
+    memRespData :: Bit 32
     -- ^ Response data
   , memRespDataTagBit :: Bit 1
     -- ^ Data tag bit
@@ -99,15 +97,6 @@ data MemResp id =
     -- ^ Is this the final response of an atomic transaction?
     -- See note [Memory transactions]
   } deriving (Generic, Interface, Bits)
-
--- | Interface to the memory unit
-data MemUnit id =
-  MemUnit {
-    memReqs :: Sink (MemReq id)
-    -- ^ Request sink
-  , memResps :: Source (MemResp id)
-    -- ^ Response source
-  } deriving (Generic, Interface)
 
 -- | Information from a memory request needed to process response
 data MemReqInfo =
@@ -163,91 +152,14 @@ decodeAtomicOp amo =
 -- atomic manner.  The mechanism can be misused to hog busses for long
 -- durations, so use with care!
 
--- Resume request helpers
--- ======================
-
--- | Convert memory response flit(s) to pipeline resume request
-makeMemRespToResumeReq ::
-     Bool
-     -- ^ Is CHERI enabled?
-  -> Stream (MemResp InstrInfo)
-     -- ^ Stream of memory response flits
-  -> Module (Stream ResumeReq)
-     -- ^ Stream of resume requests
-makeMemRespToResumeReq enableCHERI memResps
-  | not enableCHERI =
-      return $
-        memResps {
-          peek =
-            ResumeReq {
-              resumeReqInfo = memResps.peek.memRespId
-            , resumeReqData = memResps.peek.memRespData
-            , resumeReqCap = none
-           }
-        }
-  | otherwise = do
-      -- Output buffer
-      outQueue :: Queue ResumeReq <- makePipelineQueue 1
-
-      -- Count flits in response
-      flitCount :: Reg (Bit 1) <- makeReg 0
-
-      -- Tag bit accumulator
-      tagBitReg :: Reg (Bit 1) <- makeReg true
-
-      -- Data acummulator
-      dataReg :: Reg (Bit 32) <- makeReg dontCare
-
-      always do
-        when (memResps.canPeek) do
-          let resp = memResps.peek
-
-          -- Currently, only one or two response flits are expected
-          -- Two-flit responses are assumed to be capabilities
-          dynamicAssert (flitCount.val .!=. 0 .==>. resp.memRespIsFinal)
-            "makeMemRespToResumeReq: too many flits in memory response"
-
-          -- The capability is valid if all its tag bits are set
-          let isValid = tagBitReg.val .&&. resp.memRespDataTagBit
-
-          if resp.memRespIsFinal
-            then do
-              when (outQueue.notFull) do
-                -- Reset accumlators for next transaction
-                flitCount <== 0
-                tagBitReg <== true
-                -- Decode capability
-                let tag = isValid .&&. resp.memRespId.instrTagMask
-                let meta = tag # resp.memRespData
-                let addr = dataReg.val
-                -- Create resume request
-                enq outQueue
-                  ResumeReq {
-                    resumeReqInfo = resp.memRespId
-                  , resumeReqData =
-                      if flitCount.val .==. 1 then addr else resp.memRespData
-                  , resumeReqCap = Option (flitCount.val .==. 1) meta
-                  }
-                -- Consume flit
-                memResps.consume
-            else do
-              -- Accumulate response
-              tagBitReg <== isValid
-              dataReg <== resp.memRespData
-              flitCount <== flitCount.val + 1
-              -- Consume flit
-              memResps.consume
-
-      return (toStream outQueue)
-
 -- Memory requests from a CHERI-enabled processor
 -- ==============================================
 
 -- | A memory request able to represent a standard (32-bit) memory
 -- request or a capability (64 bit) memory request.
-data CapMemReq t_id =
+data CapMemReq =
   CapMemReq {
-    capMemReqStd :: MemReq t_id
+    capMemReqStd :: MemReq
     -- ^ Standard memory request
   , capMemReqIsCapAccess :: Bit 1
     -- ^ Are we accessing a capability?
@@ -255,51 +167,8 @@ data CapMemReq t_id =
     -- ^ Extra data field for capability store
   } deriving (Generic, Interface, Bits)
 
--- | Convert 'CapMemReq's to 'MemReq's by serialisation
-makeCapMemReqSink :: Bits t_id =>
-     Sink (MemReq t_id)
-     -- ^ Sink for standard memory requets
-  -> Module (Sink (CapMemReq t_id))
-     -- ^ Sink for capability memory requests
-makeCapMemReqSink memReqSink = do
-  -- Are we currently serialising a request?
-  busy :: Reg (Bit 1) <- makeReg false
-
-  -- Register for request currently being serialised
-  reqReg :: Reg (CapMemReq t_id) <- makeReg dontCare
-
-  always do
-    when (busy.val .&&. memReqSink.canPut) do
-      let req = reqReg.val
-      let stdReq = req.capMemReqStd
-      -- Put the second (final) flit of the serialised request
-      put memReqSink
-        stdReq {
-          memReqData = req.capMemReqUpperData
-        , memReqAddr = stdReq.memReqAddr + 4
-        , memReqIsFinal = true
-        }
-      -- Serialisation complete
-      busy <== false
-
-  return
-    Sink {
-      canPut = inv busy.val .&&. memReqSink.canPut
-    , put = \req -> do
-        reqReg <== req
-        let stdReq = req.capMemReqStd
-        -- A capability access will require serialisation
-        busy <== req.capMemReqIsCapAccess
-        -- Put the first flit of the serialised request
-        put memReqSink
-          stdReq {
-            -- If it's a capability access, disable final bit
-            memReqIsFinal = inv req.capMemReqIsCapAccess
-          }
-    }
-
--- | Convert 'MemReq's to 'CapMemReq's
-toCapMemReq :: Bits t_id => MemReq t_id -> CapMemReq t_id
+-- | Convert 'MemReq's to 'CapMemReq's, ignoring capability meta-data
+toCapMemReq :: MemReq -> CapMemReq
 toCapMemReq req =
   CapMemReq {
     capMemReqStd = req

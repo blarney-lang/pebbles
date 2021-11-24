@@ -42,8 +42,10 @@ data CoalescingInfo t_id =
     -- ^ Use the SameBlock stategy?  (Otherwise, use SameAddress strategy)
   , coalInfoMask :: Bit SIMTLanes
     -- ^ Coalescing mask (lanes participating in coalesced access)
-  , coalInfoReqIds :: V.Vec SIMTLanes t_id
-    -- ^ Request id for each lane
+  , coalInfoReqId :: t_id
+    -- ^ Request id
+  , coalInfoTagBitMask :: Bit SIMTLanes
+    -- ^ Tag bit mask for each lane
   , coalInfoSameBlockMode :: Bit 2
     -- ^ Mode for SameBlock strategy
   , coalInfoAddr :: Bit DRAMBeatLogBytes
@@ -85,17 +87,18 @@ data CoalescingInfo t_id =
 --   * For capability accesses, the SameBlock strategy is currently
 --     only effective when accessing the SIMT stacks.
 makeCoalescingUnit :: Bits t_id =>
-     (MemReq t_id -> Bit 1)
+     (MemReq -> Bit 1)
      -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
-  -> Stream (V.Vec SIMTLanes (Option (MemReq t_id)))
+  -> Stream (t_id, V.Vec SIMTLanes (Option MemReq))
      -- ^ Stream of memory requests vectors
   -> Stream (DRAMResp DRAMReqId)
      -- ^ Responses from DRAM
-  -> V.Vec SIMTLanes (Stream (MemResp t_id))
+  -> Stream (t_id, V.Vec SIMTLanes (Option MemResp))
      -- ^ Responses from SRAM, per lane/bank
-  -> Module ( V.Vec SIMTLanes (Stream (MemResp t_id))
-            , Stream ( V.Vec SIMTLanes (Option (MemReq t_id))
-                     , Option (MemReq t_id) )
+  -> Module ( Stream (t_id, V.Vec SIMTLanes (Option MemResp))
+            , Stream ( t_id
+                     , V.Vec SIMTLanes (Option MemReq)
+                     , Option MemReq )
             , Stream (DRAMReq DRAMReqId)
             )
      -- ^ Outputs:
@@ -103,9 +106,7 @@ makeCoalescingUnit :: Bits t_id =>
      --     (2) SRAM requests per lane/bank, plus leader request,
      --         valid when all requests access same address;
      --     (3) DRAM requests
-makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
-  let sramResps = V.toList sramRespsVec
-
+makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
@@ -119,12 +120,18 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   go5 :: Reg (Bit 1) <- makeReg false
 
   -- Requests for each pipeline stage
-  memReqs1 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
-  memReqs2 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
-  memReqs3 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
-  memReqs4 :: [Reg (MemReq t_id)] <- replicateM SIMTLanes (makeReg dontCare)
-  memReqs5 :: [Reg (MemReq t_id)] <-
-    replicateM SIMTLanes (makeReg dontCare)
+  memReqs1 :: [Reg MemReq] <- replicateM SIMTLanes (makeReg dontCare)
+  memReqs2 :: [Reg MemReq] <- replicateM SIMTLanes (makeReg dontCare)
+  memReqs3 :: [Reg MemReq] <- replicateM SIMTLanes (makeReg dontCare)
+  memReqs4 :: [Reg MemReq] <- replicateM SIMTLanes (makeReg dontCare)
+  memReqs5 :: [Reg MemReq] <- replicateM SIMTLanes (makeReg dontCare)
+
+  -- Request ids for each pipeline stage
+  reqId1 :: Reg t_id <- makeReg dontCare
+  reqId2 :: Reg t_id <- makeReg dontCare
+  reqId3 :: Reg t_id <- makeReg dontCare
+  reqId4 :: Reg t_id <- makeReg dontCare
+  reqId5 :: Reg t_id <- makeReg dontCare
 
   -- Pending request mask for each pipeline stage
   pending1 :: Reg (Bit SIMTLanes) <- makeReg dontCare
@@ -133,9 +140,9 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   pending4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
   -- Leader requests for each pipeline stage
-  leaderReq3 :: Reg (MemReq t_id) <- makeReg dontCare
-  leaderReq4 :: Reg (MemReq t_id) <- makeReg dontCare
-  leaderReq5 :: Reg (MemReq t_id) <- makeReg dontCare
+  leaderReq3 :: Reg MemReq <- makeReg dontCare
+  leaderReq4 :: Reg MemReq <- makeReg dontCare
+  leaderReq5 :: Reg MemReq <- makeReg dontCare
 
   -- Bit vector identifying the chosen leader
   leader2 :: Reg (Bit SIMTLanes) <- makeReg 0
@@ -149,11 +156,9 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   inflightQueue :: Queue (CoalescingInfo t_id) <-
     makeSizedQueue DRAMLogMaxInFlight
 
-  -- DRAM response queues
-  -- There's a lot of logic feeding these queues, so let's use a
-  -- multi-level shift queue
-  dramRespQueues :: [Queue (MemResp t_id)] <-
-    replicateM SIMTLanes (makeShiftQueue 2)
+  -- DRAM response queue
+  dramRespQueue :: Queue (t_id, V.Vec SIMTLanes (Option MemResp)) <-
+    makeShiftQueue 1
 
   -- Stage 0: consume requests and feed pipeline
   -- ===========================================
@@ -179,7 +184,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
       "Coalescing Unit: feedback and stall both high"
 
     -- Memory requests to consume
-    let memReqs = V.toList (memReqsStream.peek)
+    let memReqs = V.toList (memReqsStream.peek.snd)
 
     -- Is this the final flit of a multi-flit transaction?
     let isFinal = orList [ r.valid .&&. r.val.memReqIsFinal
@@ -203,6 +208,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
         pending1 <== fromBitList [r.valid | r <- memReqs]
         -- Trigger pipeline
         go1 <== true
+        reqId1 <== memReqsStream.peek.fst
         incrBy inflightCount 1
         partialInsert <== inv isFinal
 
@@ -225,6 +231,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           go2 <== true
           zipWithM_ (<==) memReqs2 (map (.val) memReqs1)
           pending2 <== pending1.val
+          reqId2 <== reqId1.val
 
   -- Stage 2: Select leader's request
   -- ================================
@@ -245,6 +252,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           go3 <== true
           zipWithM_ (<==) memReqs3 (map (.val) memReqs2)
           pending3 <== pending2.val
+          reqId3 <== reqId2.val
           leader3 <== leader2.val
 
   -- Stage 3: Evaluate coalescing strategies
@@ -357,6 +365,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
       go4 <== true
       zipWithM_ (<==) memReqs4 (map (.val) memReqs3)
       pending4 <== pending3.val
+      reqId4 <== reqId3.val
       leader4 <== leader3.val
       leaderReq4 <== leaderReq3.val
 
@@ -376,8 +385,9 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   isFinalDRAM :: Reg (Bit 1) <- makeReg dontCare
 
   -- Requests to banked SRAMs
-  sramReqs :: Queue ( V.Vec SIMTLanes (Option (MemReq t_id))
-                    , Option (MemReq t_id) ) <- makeShiftQueue 2
+  sramReqs :: Queue ( t_id
+                    , V.Vec SIMTLanes (Option MemReq)
+                    , Option MemReq ) <- makeShiftQueue 2
 
   always do
     -- Use SameBlock strategy if it satisfies leader's request and at
@@ -412,13 +422,14 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
                     leaderReq4.val.memReqOp .==. memLoadOp .&&.
                       sramMask4.val .==. sameAddrMask4.val
               let leader = Option useSameAddr (leaderReq4.val)
-              enq sramReqs (reqs, leader)
+              enq sramReqs (reqId4.val, reqs, leader)
             else do
               go5 <== true
               coalSameBlockStrategy <== useSameBlock
               coalSameBlockMode <== sameBlockMode4.val
               coalMask <== mask
               leaderReq5 <== leaderReq4.val
+              reqId5 <== reqId4.val
               isFinalDRAM <== leaderReq4.val.memReqIsFinal
               forM_ (zip memReqs4 memReqs5) \(r4, r5) -> do
                 r5 <== r4.val
@@ -437,6 +448,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               partialFeedback <== inv leaderReq4.val.memReqIsFinal
               zipWithM_ (<==) memReqs1 (map (.val) memReqs4)
               pending1 <== remaining
+              reqId1 <== reqId4.val
 
   -- Stage 5 (DRAM): Issue DRAM requests
   -- ===================================
@@ -559,8 +571,9 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
               CoalescingInfo {
                 coalInfoUseSameBlock = useSameBlock
               , coalInfoMask = mask
-              , coalInfoReqIds =
-                  V.fromList [r.val.memReqId | r <- memReqs5]
+              , coalInfoReqId = reqId5.val
+              , coalInfoTagBitMask =
+                  fromBitList [r.val.memReqDataTagBitMask | r <- memReqs5]
               , coalInfoSameBlockMode = sameBlockMode
               , coalInfoAddr = truncate leaderReq5.val.memReqAddr
               , coalInfoBurstLen = burstLen - 1
@@ -587,6 +600,17 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
   -- Count register for burst load
   loadCount :: Reg DRAMBurst <- makeReg 0
 
+  -- For accumulating responses
+  dramRespsAccum :: [Reg MemResp] <-
+    replicateM SIMTLanes (makeReg dontCare)
+  dramRespsAccumValid :: Reg (Bit SIMTLanes) <- makeReg 0
+  dramRespId :: Reg t_id <- makeReg dontCare
+
+  -- This stage can be in one of two states: accumulation and response
+  let s_Accum6 :: Bit 1 = 0
+  let s_Respond6 :: Bit 1 = 1
+  state6 :: Reg (Bit 1) <- makeReg s_Accum6
+
   always do
     -- Fields needed for response
     let resp = dramResps.peek
@@ -610,11 +634,6 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
     let deliverAny = map (useSameBlock .<=.) deliverSameBlock
     -- Consider only those lanes participating in the strategy
     let activeAny = zipWith (.&.) deliverAny (toBitList mask)
-    -- Are needed response queues ready?
-    let respQueuesReady =
-          andList [ active .<=. q.notFull
-                  | (active, q) <- zip activeAny dramRespQueues
-                  ]
     -- Determine items of data response
     let beatBytes :: V.Vec DRAMBeatBytes (Bit 8) = unpack (resp.dramRespData)
     let beatHalfs :: V.Vec DRAMBeatHalfs (Bit 16) = unpack (resp.dramRespData)
@@ -654,55 +673,68 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramRespsVec = do
           , sameBlockHalfTagBits
           , resp.dramRespDataTagBits # resp.dramRespDataTagBits
           ] ! sameBlockMode
-    -- Condition for consuming DRAM response
-    let consumeResp = dramResps.canPeek .&.
-                      inflightQueue.canDeq .&.
-                      respQueuesReady
-    -- Consume DRAM response
-    when consumeResp do
-      dramResps.consume
-      if loadCount.val .==. info.coalInfoBurstLen
-        then do
-          inflightQueue.deq
-          loadCount <== 0
-        else do
-          loadCount <== loadCount.val + 1
 
-      -- Response info for each SIMT lane
-      let respInfo = zip5 dramRespQueues activeAny
-                          (V.toList (info.coalInfoReqIds))
-                          (V.toList sameBlockData)
-                          (toBitList sameBlockTagBits)
+    -- State machine
+    if state6.val .==. s_Respond6
+      then do
+        when dramRespQueue.notFull do
+          -- Enqueue responses
+          let vec = V.fromList
+                [ Option valid resp.val
+                | (valid, resp) <- zip (toBitList dramRespsAccumValid.val)
+                                       dramRespsAccum ]
+          dramRespQueue.enq (dramRespId.val, vec)
+          dramRespsAccumValid <== 0
+          state6 <== s_Accum6
+       else do
+         -- Condition for consuming DRAM response
+         let consumeResp = dramResps.canPeek .&.
+                           inflightQueue.canDeq
+         -- Consume DRAM response
+         when consumeResp do
+           -- Accumulate responses
+           dramResps.consume
+           if loadCount.val .==. info.coalInfoBurstLen
+             then do
+               inflightQueue.deq
+               loadCount <== 0
+               state6 <== s_Respond6
+             else do
+               loadCount <== loadCount.val + 1
 
-      -- For each SIMT lane
-      forM_ respInfo \(respQueue, active, id, d, t) -> do
-        when active do
-          enq respQueue
-            MemResp {
-              memRespId = id
-            , memRespData = useSameBlock ? (d, sameAddrData)
-            , memRespDataTagBit = useSameBlock ? (t, sameAddrTagBit)
-            , memRespIsFinal = info.coalInfoIsFinal
-            }
+           sequence_
+             [ when newValid do
+                 dynamicAssert (inv oldValid)
+                   "Coalescing unit: loosing DRAM resp (should be impossible)"
+                 accum <==
+                   MemResp {
+                     memRespData = useSameBlock ? (d, sameAddrData)
+                   , memRespDataTagBit = tMask .&&.
+                       (useSameBlock ? (t, sameAddrTagBit))
+                   , memRespIsFinal = info.coalInfoIsFinal
+                   }
+             | (newValid, oldValid, accum, d, t, tMask) <-
+                 zip6 activeAny
+                      (toBitList dramRespsAccumValid.val)
+                      dramRespsAccum
+                      (V.toList sameBlockData)
+                      (toBitList sameBlockTagBits)
+                      (toBitList info.coalInfoTagBitMask) ]
+           dramRespsAccumValid <== dramRespsAccumValid.val .|.
+                                     fromBitList activeAny
+           dramRespId <== info.coalInfoReqId
 
   -- Stage 6 (SRAM): Handle responses
   -- ================================
 
-  -- SRAM response queues
-  sramRespQueues :: [Queue (MemResp t_id)] <-
-    replicateM SIMTLanes (makeShiftQueue 1)
-
-  always do
-    -- Handle non-multicast responses
-    sequence_ [ when (s.canPeek .&&. q.notFull) do
-                  enq q (s.peek)
-                  s.consume
-              | (s, q) <- zip sramResps sramRespQueues ]
-
   -- Merge SRAM and DRAM responses
-  finalResps <- sequence
-    [ makeGenericFairMergeTwo (makePipelineQueue 1) (const true)
-       memRespIsFinal (toStream q0, toStream q1)
-    | (q0, q1) <- zip dramRespQueues sramRespQueues ]
+  let isFinalVec (id, v) = orList
+        [ valid .&&. resp.memRespIsFinal
+        | Option valid resp <- V.toList v ]
 
-  return (V.fromList finalResps, toStream sramReqs, toStream dramReqQueue)
+  finalResps <- makeGenericFairMergeTwo
+                  (makePipelineQueue 1)
+                  (const true) isFinalVec
+                  (toStream dramRespQueue, sramResps)
+
+  return (finalResps, toStream sramReqs, toStream dramReqQueue)

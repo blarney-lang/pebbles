@@ -26,7 +26,7 @@ import Control.Applicative
 -- The number of SRAM banks may be less than the number of lanes,
 -- which is resolved by serialisation.  During serialisation, we use a
 -- group id to remember which subgroup of the lane requests a bank
--- request came from.
+-- request comes from.
 type GroupId = Bit (SIMTLogLanes - SIMTLogSRAMBanks)
 
 -- | Create an array of indepdendent SRAM banks that are accessible as
@@ -36,10 +36,10 @@ type GroupId = Bit (SIMTLogLanes - SIMTLogSRAMBanks)
 -- cycle), then so too will the output streams.  Responses are
 -- returned in order.  See note [Capability atomicity in banked SRAMs].
 makeBankedSRAMs :: forall t_id. (Bits t_id, Interface t_id) =>
-     Stream (Vec SIMTLanes (Option (MemReq t_id)), Option (MemReq t_id))
+     Stream (t_id, Vec SIMTLanes (Option MemReq), Option MemReq)
      -- ^ Stream of memory requests per lane, and leader request which
      -- is only valid when all requests are accessing the same address
-  -> Module (Vec SIMTLanes (Stream (MemResp t_id)))
+  -> Module (Stream (t_id, Vec SIMTLanes (Option MemResp)))
      -- ^ Stream of memory responses per lane
 makeBankedSRAMs inputs = do
 
@@ -53,22 +53,29 @@ makeBankedSRAMs inputs = do
     replicateM SIMTSRAMBanks makeDualRAMForwardBE
 
   -- Requests for each pipeline stage
-  reqs1 :: [Reg (MemReq t_id, GroupId)] <-
+  reqs1 :: [Reg (MemReq, GroupId)] <-
     replicateM SIMTSRAMBanks (makeReg dontCare)
-  reqs2 :: [Reg (MemReq t_id)] <-
+  reqs2 :: [Reg MemReq] <-
     replicateM SIMTSRAMBanks (makeReg dontCare)
-  reqs3 :: [Reg (MemReq t_id)] <-
+  reqs3 :: [Reg MemReq] <-
     replicateM SIMTSRAMBanks (makeReg dontCare)
 
   -- Responses
-  resps4 :: [Reg (MemResp t_id)] <-
+  resps4 :: [Reg MemResp] <-
     replicateM SIMTSRAMBanks (makeReg dontCare)
-  resps5 :: [Reg (MemResp t_id)] <-
+  resps5 :: [Reg MemResp] <-
     replicateM SIMTSRAMBanks (makeReg dontCare)
 
-  -- Final response queues
-  respQueues :: [Queue (MemResp t_id)] <-
-    replicateM SIMTLanes makeQueue
+  -- Final response queue
+  respQueue :: Queue (t_id, Vec SIMTLanes (Option MemResp)) <-
+    makeShiftQueue 1
+
+  -- Request ids for each pipeline stage
+  reqId1 :: Reg t_id <- makeReg dontCare
+  reqId2 :: Reg t_id <- makeReg dontCare
+  reqId3 :: Reg t_id <- makeReg dontCare
+  reqId4 :: Reg t_id <- makeReg dontCare
+  reqId5 :: Reg t_id <- makeReg dontCare
 
   -- Active masks for each pipeline stage
   active1 :: Reg (Bit SIMTSRAMBanks) <- makeReg dontCare
@@ -103,6 +110,13 @@ makeBankedSRAMs inputs = do
   mcastMask4 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
   mcastMask5 :: Reg (Option (Bit SIMTLanes)) <- makeReg none
 
+  -- This bit marks that serialisation of the current request set is complete
+  last1 :: Reg (Bit 1) <- makeReg dontCare
+  last2 :: Reg (Bit 1) <- makeReg dontCare
+  last3 :: Reg (Bit 1) <- makeReg dontCare
+  last4 :: Reg (Bit 1) <- makeReg dontCare
+  last5 :: Reg (Bit 1) <- makeReg dontCare
+
   -- Trigger for each pipeline stage
   go1 :: Reg (Bit 1) <- makeDReg false
   go2 :: Reg (Bit 1) <- makeDReg false
@@ -134,6 +148,10 @@ makeBankedSRAMs inputs = do
   -- Bit mask of lanes that are consuming on the current cycle
   consumeWires :: [Wire (Bit 1)] <- replicateM SIMTLanes (makeWire false)
 
+  -- This wire is pulsed to indicate the requests from all active
+  -- lanes have been inserted into the pipeline
+  consumedAll :: Wire (Bit 1) <- makeWire false
+
   -- Convert stream of vectors to vector of streams
   -- If all requests accessing same address, then issue only via lane 0
   let reqStreams = 
@@ -143,17 +161,17 @@ makeBankedSRAMs inputs = do
                 inputs.canPeek
               , inv consumed
               , if i == 0
-                  then (snd inputs.peek).valid .||. req.valid
-                  else inv (snd inputs.peek).valid .&&. req.valid
+                  then inputs.peek._2.valid .||. req.valid
+                  else inv inputs.peek._2.valid .&&. req.valid
               ]
           , peek = if i == 0
-                      then (snd inputs.peek).valid ?
-                             ((snd inputs.peek).val, req.val)
+                      then inputs.peek._2.valid ?
+                             (inputs.peek._2.val, req.val)
                       else req.val
           , consume = consumeWire <== true
           }
         | (req, consumeWire, consumed, i) <-
-            zip4 (toList (fst inputs.peek))
+            zip4 (toList inputs.peek._1)
                  consumeWires
                  (toBitList consumedMask.val)
                  [0..]
@@ -164,9 +182,9 @@ makeBankedSRAMs inputs = do
   always do
     when (inputs.canPeek) do
       -- Bit mask of available requests
-      let avail = if (snd inputs.peek).valid
+      let avail = if inputs.peek._2.valid
                     then 1 {- Lane 0 -}
-                    else fromBitList $ map (.valid) $ toList (fst inputs.peek)
+                    else fromBitList $ map (.valid) $ toList inputs.peek._1
       -- Bit mask of requests being consumed on current cycle
       let consumeNow = fromBitList $ map (.val) consumeWires
       -- Have all requests been consumed?
@@ -177,6 +195,9 @@ makeBankedSRAMs inputs = do
           consumedMask <== 0
         else do
           consumedMask <== consumedMask.val .|. consumeNow
+      -- Observe cycle when all requests have been consumed
+      when (avail .==. consumedMask.val .|. consumeNow) do
+        consumedAll <== true
   
   -- Stage 0: Consume inputs and compute crossbar indices
   -- ====================================================
@@ -213,10 +234,12 @@ makeBankedSRAMs inputs = do
       -- Trigger next stage
       origActive1 <== chosenMask
       active1 <== fromBitList [m .!=. 0 | m <- masks]
+      reqId1 <== inputs.peek._0
       zipWithM_ (<==) reqs1 (map peek reqsPerBank)
       mcastMask1 <==
-        Option (snd inputs.peek).valid
-               (fromBitList $ map (.valid) $ toList $ fst inputs.peek)
+        Option inputs.peek._2.valid
+               (fromBitList $ map (.valid) $ toList inputs.peek._1)
+      last1 <== consumedAll.val
       when (chosenMask .!=. 0) do
         go1 <== true
 
@@ -237,6 +260,8 @@ makeBankedSRAMs inputs = do
         -- Trigger next stage
         go2 <== true
         active2 <== active1.val
+        reqId2 <== reqId1.val
+        last2 <== last1.val
         mcastMask2 <== mcastMask1.val
 
   -- Stage 2: Issue loads
@@ -288,8 +313,10 @@ makeBankedSRAMs inputs = do
       when (go2.val) do
         go3 <== true
         active3 <== active2.val
+        reqId3 <== reqId2.val
         zipWithM_ (<==) reqs3 (map (.val) reqs2)
         origActive3 <== origActive2.val
+        last3 <== last2.val
         mcastMask3 <== mcastMask2.val
         zipWithM_ (<==) origBankTargets3 (map (.val) origBankTargets2)
         zipWithM_ (<==) groupIds3 (map (.val) groupIds2)
@@ -330,9 +357,9 @@ makeBankedSRAMs inputs = do
           when needsResp do
             resp <==
               MemResp {
-                memRespId = req.memReqId
-              , memRespData = truncate sramBank.outBE
-              , memRespDataTagBit = at @32 (sramBank.outBE)
+                memRespData = truncate sramBank.outBE
+              , memRespDataTagBit = at @32 (sramBank.outBE) .&&.
+                  req.memReqDataTagBitMask
               , memRespIsFinal = req.memReqIsFinal
               }
             hasResp <== true
@@ -367,6 +394,8 @@ makeBankedSRAMs inputs = do
         let active = active3.val .&. fromBitList (map (.val) respValidWires4)
         go4 <== (active .!=. 0)
         active4 <== origActive3.val
+        reqId4 <== reqId3.val
+        last4 <== last3.val
         mcastMask4 <== mcastMask3.val
         zipWithM_ (<==) origBankTargets4 (map (.val) origBankTargets3)
         zipWithM_ (<==) groupIds4 (map (.val) groupIds3)
@@ -382,14 +411,27 @@ makeBankedSRAMs inputs = do
       -- Trigger next stage
       go5 <== true
       active5 <== active4.val
+      reqId5 <== reqId4.val
+      last5 <== last4.val
       mcastMask5 <== mcastMask4.val
       zipWithM_ (<==) groupIds5 (map (.val) groupIds4)
 
   -- Stage 5: Issue responses
   -- ========================
 
+  -- This stage is in one of two states: accumulate or respond
+  let s_Accum :: Bit 1 = 0
+  let s_Respond :: Bit 1 = 1
+  state5 :: Reg (Bit 1) <- makeReg s_Accum
+
+  -- Accummulated responses
+  respsAccum :: [Reg MemResp] <-
+    replicateM SIMTLanes (makeReg dontCare)
+  respsAccumValid :: Reg (Bit SIMTLanes) <- makeReg 0
+  mcastMaskAccum :: Reg (Option (Bit SIMTLanes)) <- makeReg none
+  reqIdAccum :: Reg t_id <- makeReg dontCare
+
   always do
-    let allNotFull = andList (map notFull respQueues)
     -- Expand bank responses to lane respnses
     let numGroups = 2 ^ (SIMTLogLanes - SIMTLogSRAMBanks)
     let resps = concat $ replicate numGroups $ map (.val) resps5
@@ -398,20 +440,45 @@ makeBankedSRAMs inputs = do
           [ [ act .&&. gid .==. fromInteger i
             | (gid, act) <- group ]
           | (i, group) <- zip [0..] (replicate numGroups gids_active) ]
-    -- Enqueue response queues
-    when (go5.val) do
-      if allNotFull
-        then do
-          sequence_
-            [ if mcastMask5.val.valid
-                then when mcast do enq q (head resps5).val
-                else when active do enq q resp
-            | (active, resp, q, mcast) <-
-                zip4 active resps respQueues (toBitList mcastMask5.val.val) ]
-        else do
-          stallWire <== true
 
-  return (fromList $ map toStream respQueues)
+    if state5.val .==. s_Respond
+      then do
+        -- Response state
+        stallWire <== go5.val
+        when respQueue.notFull do
+          -- Issue response
+          let vec =
+                if mcastMaskAccum.val.valid
+                  then fromList [ Option mcast (head respsAccum).val
+                                | mcast <- toBitList mcastMaskAccum.val.val ]
+                  else fromList [ Option valid resp.val
+                                | (valid, resp) <-
+                                    zip (toBitList respsAccumValid.val)
+                                        respsAccum ]
+          respQueue.enq (reqIdAccum.val, vec)
+          -- Clear accumulator
+          respsAccumValid <== 0
+          -- Move back to accumulation state
+          state5 <== s_Accum
+      else do
+        -- Accumulate responses for original request set
+        when go5.val do
+          respsAccumValid <== respsAccumValid.val .|. fromBitList active
+          sequence_
+            [ when newValid do
+                dynamicAssert (inv oldValid)
+                  "BankedSRAMs: overwriting response (should be impossible)"
+                accum <== resp
+            | (newValid, oldValid, resp, accum) <-
+                 zip4 active (toBitList respsAccumValid.val) resps respsAccum
+            ]
+          mcastMaskAccum <== mcastMask5.val
+          reqIdAccum <== reqId5.val
+          -- When accumulation complete, move to next state
+          when last5.val do
+            state5 <== s_Respond
+
+  return (toStream respQueue)
 
 -- Note [Capability atomicity in banked SRAMs]
 -- ===========================================

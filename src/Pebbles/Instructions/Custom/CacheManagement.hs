@@ -22,7 +22,7 @@ decodeCacheMgmt =
 -- Execute stage
 -- =============
 
-executeCacheMgmt :: Sink (MemReq InstrInfo) -> State -> Action ()
+executeCacheMgmt :: Sink MemReq -> State -> Action ()
 executeCacheMgmt memReqs s = do
   -- Cache line flush
   when (s.opcode `is` [CACHE_FLUSH_LINE]) do
@@ -31,13 +31,13 @@ executeCacheMgmt memReqs s = do
         -- Send request to memory unit
         put memReqs
           MemReq {
-            memReqId = dontCare
-          , memReqAccessWidth = dontCare
+            memReqAccessWidth = dontCare
           , memReqOp = memCacheFlushOp
           , memReqAMOInfo = dontCare
           , memReqAddr = s.opA
           , memReqData = dontCare
           , memReqDataTagBit = 0
+          , memReqDataTagBitMask = 0
           , memReqIsUnsigned = dontCare
           , memReqIsFinal = true
           }

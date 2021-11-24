@@ -73,8 +73,10 @@ getLineWordOffset addr = truncate (slice @31 @2 addr)
 makeSBDCache :: forall t_id. Bits t_id =>
      -- | Inputs: responses from DRAM
      Stream (DRAMResp DRAMReqId)
-     -- | Outputs: MemUnit and a stream of DRAM requests
-  -> Module (MemUnit t_id, Stream (DRAMReq DRAMReqId))
+     -- | Outputs: Mem req sink, mem resp stream, and a stream of DRAM requests
+  -> Module ( Sink (t_id, MemReq)
+            , Stream (t_id, MemResp)
+            , Stream (DRAMReq DRAMReqId) )
 makeSBDCache dramResps = do
   -- Data memory (block RAM with byte enables)
   dataMem :: RAMBE SBDCacheLogLines DRAMBeatBytes <- makeDualRAMBE
@@ -89,13 +91,16 @@ makeSBDCache dramResps = do
       else return nullRAM
 
   -- Request wire
-  reqWire :: Wire (MemReq t_id) <- makeWire dontCare
+  reqWire :: Wire MemReq <- makeWire dontCare
 
   -- Request register
-  reqReg :: Reg (MemReq t_id) <- makeReg dontCare
+  reqReg :: Reg MemReq <- makeReg dontCare
+
+  -- Request id register
+  reqIdReg :: Reg t_id <- makeReg dontCare
 
   -- Cache response queue
-  respQueue :: Queue (MemResp t_id) <- makeShiftQueue 1
+  respQueue :: Queue (t_id, MemResp) <- makeShiftQueue 1
 
   -- DRAM request queue
   dramReqQueue :: Queue (DRAMReq DRAMReqId) <- makeShiftQueue 1
@@ -156,16 +161,15 @@ makeSBDCache dramResps = do
                   -- Formulate load response
                   let loadResp =
                         MemResp {
-                          memRespId = reqReg.val.memReqId
-                        , memRespData = loadMux loadWord
+                          memRespData = loadMux loadWord
                             (truncate reqReg.val.memReqAddr)
                             (reqReg.val.memReqAccessWidth)
                             (reqReg.val.memReqIsUnsigned)
                         , memRespDataTagBit = loadTagBit
                         , memRespIsFinal = reqReg.val.memReqIsFinal
                         }
-                  -- Issue loadResponse
-                  enq respQueue loadResp
+                  -- Issue load response
+                  respQueue.enq (reqIdReg.val, loadResp)
                   -- Move back to initial state
                   state <== 0
                 else do
@@ -298,18 +302,16 @@ makeSBDCache dramResps = do
       state <== 1
 
   return
-    ( MemUnit {
-        memReqs =
-          Sink {
-            canPut = state.val .==. 0
-          , put = \req -> do
-              reqWire <== req
-              reqReg <== req
-              state <== (req.memReqOp .==. memGlobalFenceOp) ? (2, 1)
-              -- Checks
-              dynamicAssert (req.memReqOp .!=. memAtomicOp)
-                "Atomics not yet supported by SBDCache"
-          }
-      , memResps = toStream respQueue
+    ( Sink {
+        canPut = state.val .==. 0
+      , put = \(id, req) -> do
+          reqWire <== req
+          reqReg <== req
+          reqIdReg <== id
+          state <== (req.memReqOp .==. memGlobalFenceOp) ? (2, 1)
+          -- Checks
+          dynamicAssert (req.memReqOp .!=. memAtomicOp)
+            "Atomics not yet supported by SBDCache"
       }
+    , toStream respQueue
     , toStream dramReqQueue )
