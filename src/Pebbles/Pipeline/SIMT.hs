@@ -537,8 +537,8 @@ makeSIMTPipeline c inputs =
     -- Buffer the decode tables
     let tagMap5 = Map.map old tagMap4
 
-    -- Stages 5 and 6: Execute and Writeback
-    -- =====================================
+    -- Stages 5: Execute
+    -- =================
 
     -- Insert warp id back into warp queue, except on warp command
     always do
@@ -597,10 +597,17 @@ makeSIMTPipeline c inputs =
     let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
     let isSIMTPop = Map.findWithDefault false (c.simtPopTag) tagMap5
 
+    -- Per-lane result wires
+    resultWires :: [Wire (Bit 32)] <-
+      replicateM SIMTLanes (makeWire dontCare)
+    resultCapWires :: [Wire CapMemMeta] <-
+      replicateM SIMTLanes (makeWire dontCare)
+
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regFileA
                  regFileB capRegFileA capRegFileB
-                 stateMem incInstrCount pccMem excLocal laneId = do
+                 stateMem incInstrCount pccMem excLocal laneId
+                 resultWire resultCapWire = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <-
@@ -608,8 +615,6 @@ makeSIMTPipeline c inputs =
           pccNextWire :: Wire CapPipe <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
-          resultWire :: Wire (Bit 32) <- makeWire dontCare
-          resultCapWire :: Wire CapMemMeta <- makeWire dontCare
 
           -- Register operands
           let regA = getReg5 regFileA
@@ -695,17 +700,6 @@ makeSIMTPipeline c inputs =
               when (suspWire.val) do
                 suspMask!warpId5 <== true
 
-            -- Writeback stage
-            when (inv excLocal.val) do
-              let idx = (old warpId5, old (dst instr5))
-              when (delay false (resultWire.active)) do
-                regFileA.store idx (old resultWire.val)
-              if enableCHERI
-                then do
-                  when (delay false (resultCapWire.active)) do
-                    capRegFileA.store idx (old resultCapWire.val)
-                else return ()
-
     -- Create vector lanes
     sequence $ getZipList $
       makeLane <$> ZipList (c.executeStage)
@@ -720,11 +714,29 @@ makeSIMTPipeline c inputs =
                <*> ZipList pccMems
                <*> ZipList excLocals
                <*> ZipList [0..]
+               <*> ZipList resultWires
+               <*> ZipList resultCapWires
 
-    -- Thread resumption
-    -- =================
+    -- Stage 6: Writeback
+    -- ==================
 
     always do
+      -- Writeback
+      sequence_
+        [ when (inv excLocal.val) do
+             let idx = (old warpId5, old (dst instr5))
+             when (delay false (resultWire.active)) do
+               regFileA.store idx (old resultWire.val)
+             if enableCHERI
+               then do
+                 when (delay false (resultCapWire.active)) do
+                   capRegFileA.store idx (old resultCapWire.val)
+               else return ()
+        | (excLocal, resultWire, resultCapWire, regFileA, capRegFileA) <-
+            zip5 excLocals resultWires resultCapWires
+                 regFilesA capRegFilesA ]
+     
+      -- Thread resumption
       when inputs.simtResumeReqs.canPeek do
         let (info, vec) = inputs.simtResumeReqs.peek
         let idx = (info.warpId, info.destReg)
