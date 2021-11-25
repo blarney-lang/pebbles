@@ -477,26 +477,6 @@ makeSIMTPipeline c inputs =
       let isSusp3 = orList [map (.val) regs ! warpId3.val | regs <- suspBits]
       isSusp4 <== isSusp3
 
-      -- Capability register file tracing
-      case c.checkPCCFunc of
-        Nothing -> return ()
-        Just _ ->
-          if c.enableCapRegFileTrace
-            then do
-              let instr = instrMem.out
-              let (_, fieldMap) = matchMap False (c.decodeStage) instr
-              let useRegA = isSome (getBitField fieldMap "rs1" :: Option RegId)
-              let useRegB = isSome (getBitField fieldMap "rs2" :: Option RegId)
-              when (go3.val .&&. inv isSusp3) do
-                display "[CapRegFileTrace] read"
-                        " time=" (cycleCount.val)
-                        " pc=0x" (formatHex 0 $ state3.val.simtPC)
-                        " warp=" (warpId3.val)
-                        " active=0x" (formatHex 0 $ activeMask3.val)
-                        " rs1=" (if useRegA then srcA instr else 0)
-                        " rs2=" (if useRegB then srcB instr else 0)
-            else return ()
-
       -- Check PCC
       case c.checkPCCFunc of
         -- CHERI disabled; no check required
@@ -724,22 +704,6 @@ makeSIMTPipeline c inputs =
                 then do
                   when (delay false (resultCapWire.active)) do
                     capRegFileA.store idx (old resultCapWire.val)
-                    if c.enableCapRegFileTrace
-                      then do
-                        let cap = fromMem $ unpack
-                                    (old resultCapWire.val #
-                                       old resultWire.val)
-                        display "[CapRegFileTrace] write"
-                                " time="  (cycleCount.val)
-                                " lane="  (show laneId)
-                                " warp="  (fst idx)
-                                " rd="    (snd idx)
-                                " valid=" (isValidCap cap)
-                                " base=0x" (formatHex 0 $ getBase cap)
-                                " top=0x"  (formatHex 0 $ getTop cap)
-                                " meta=0x" (formatHex 0 $ getMeta cap)
-                                " addr=0x" (formatHex 0 $ getAddr cap)
-                      else return ()
                 else return ()
 
     -- Create vector lanes
@@ -775,21 +739,6 @@ makeSIMTPipeline c inputs =
                        let capVal = isSome req.resumeReqCap ?
                              (req.resumeReqCap.val, nullCapMemMetaVal)
                        capRegFileB.store idx capVal
-                       if c.enableCapRegFileTrace
-                         then do
-                           let cap = fromMem $ unpack
-                                       (capVal # req.resumeReqData)
-                           display "[CapRegFileTrace] resume"
-                                   " time="  (cycleCount.val)
-                                   " lane="  (show laneId)
-                                   " warp="  (fst idx)
-                                   " rd="    (snd idx)
-                                   " valid=" (isValidCap cap)
-                                   " base=0x" (formatHex 0 $ getBase cap)
-                                   " top=0x"  (formatHex 0 $ getTop cap)
-                                   " meta=0x" (formatHex 0 $ getMeta cap)
-                                   " addr=0x" (formatHex 0 $ getAddr cap)
-                         else return ()
                      else return ()
           | (laneId, Option valid req, suspMask, regFileB, capRegFileB) <-
               zip5 [0..] (toList vec) suspBits
