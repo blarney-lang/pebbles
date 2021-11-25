@@ -729,7 +729,7 @@ makeSIMTPipeline c inputs =
                      (old resWire.val)
             | (excLocal, resWire) <- zip excLocals resWires ]
       writeRegFile regFilesA writebackIdx (writebackVec resultWires)
-      -- write to cap register file
+      -- Write to cap register file
       when enableCHERI do
         writeRegFile capRegFilesA writebackIdx (writebackVec resultCapWires)
 
@@ -758,7 +758,8 @@ makeSIMTPipeline c inputs =
                           then req.val.resumeReqCap.val
                           else nullCapMemMetaVal)
               | req <- toList resumeVec ]
-        writeRegFile capRegFilesB resumeIdx resumeVecCap
+        when enableCHERI do
+          writeRegFile capRegFilesB resumeIdx resumeVecCap
 
     -- Handle barrier release
     -- ======================
