@@ -47,8 +47,10 @@ import Blarney.Queue
 import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
+import Blarney.PulseWire
 import Blarney.QuadPortRAM
 import Blarney.Interconnect
+import Blarney.Vector qualified as V
 import Blarney.Vector (Vec, fromList, toList)
 
 -- General imports
@@ -63,6 +65,7 @@ import Pebbles.Util.List
 import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
+import Pebbles.Pipeline.SIMT.RegFile
 import Pebbles.CSRs.TrapCodes
 import Pebbles.CSRs.Custom.SIMTDevice
 
@@ -197,20 +200,14 @@ makeSIMTPipeline c inputs =
     suspBits :: [[Reg (Bit 1)]] <-
       replicateM SIMTLanes (replicateM SIMTWarps (makeReg false))
 
-    -- Register files
-    (regFilesA, regFilesB) ::
-      ([RAM (Bit SIMTLogWarps, RegId) (Bit 32)],
-       [RAM (Bit SIMTLogWarps, RegId) (Bit 32)]) <-
-         unzip <$> replicateM SIMTLanes makeQuadRAM
+    -- Register file
+    regFile :: SIMTRegFile (Bit 32) <- makeSimpleSIMTRegFile Nothing
 
-    -- Capability register files (meta-data only)
-    (capRegFilesA, capRegFilesB) ::
-      ([RAM (Bit SIMTLogWarps, RegId) CapMemMeta],
-       [RAM (Bit SIMTLogWarps, RegId) CapMemMeta]) <-
-         unzip <$> replicateM SIMTLanes
-           (if enableCHERI
-              then makeQuadRAMCore (c.capRegInitFile)
-              else return (nullRAM, nullRAM))
+    -- Capability register file (meta-data only)
+    capRegFile :: SIMTRegFile CapMemMeta <-
+      if enableCHERI
+        then makeSimpleSIMTRegFile c.capRegInitFile
+        else makeNullSIMTRegFile
 
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg 0)
@@ -462,15 +459,13 @@ makeSIMTPipeline c inputs =
     let pcc4 = delay dontCare (pcc3.val)
 
     always do
-      -- Fetch operands from each register file
-      forM_ (zip regFilesA regFilesB) \(rfA, rfB) -> do
-        rfA.load (warpId3.val, srcA instrMem.out)
-        rfB.load (warpId3.val, srcB instrMem.out)
+      -- Fetch operands from register file
+      regFile.loadA (warpId3.val, srcA instrMem.out)
+      regFile.loadB (warpId3.val, srcB instrMem.out)
 
-      -- Fetch capability meta-data from each register file
-      forM_ (zip capRegFilesA capRegFilesB) \(rfA, rfB) -> do
-        rfA.load (warpId3.val, srcA instrMem.out)
-        rfB.load (warpId3.val, srcB instrMem.out)
+      -- Fetch capability meta-data from register file
+      capRegFile.loadA (warpId3.val, srcA instrMem.out)
+      capRegFile.loadB (warpId3.val, srcB instrMem.out)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
@@ -509,19 +504,23 @@ makeSIMTPipeline c inputs =
     let (tagMap4, fieldMap4) =
           matchMap False (c.decodeStage) (extraReg instr4.val)
 
-    -- Get stage 5 register value
-    let getReg5 regFile = extraReg (old regFile.out)
+    -- Stage 5 register operands
+    let vecRegA5 = extraReg (old regFile.outA)
+    let vecRegB5 = extraReg (old regFile.outB)
 
-    -- Get stage 5 capability register value
-    let getCapReg5 regFile capRegFile = old $ decodeCapMem $ extraReg $
-          (capRegFile.out # regFile.out)
+    -- Stage 5 capability register operands
+    let getCapReg intReg capReg =
+          old $ decodeCapMem $ extraReg (capReg # intReg)
+    let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
+    let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
 
-    -- Get stage 5 register B or immediate
-    let getRegBorImm5 rf = old $
+    -- Stage 5 register B or immediate
+    let getRegBorImm reg = old $
           if Map.member "imm" fieldMap4
             then let imm = getBitField fieldMap4 "imm"
-                 in  imm.valid ? (imm.val, extraReg rf.out)
-            else extraReg rf.out
+                 in  imm.valid ? (imm.val, extraReg reg)
+            else extraReg reg
+    let vecRegBorImm5 = V.map getRegBorImm regFile.outB
 
     -- Propagate signals to stage 5
     let pcc5 = extraReg (old pcc4)
@@ -604,10 +603,9 @@ makeSIMTPipeline c inputs =
       replicateM SIMTLanes (makeWire dontCare)
 
     -- Vector lane definition
-    let makeLane makeExecStage threadActive suspMask regFileA
-                 regFileB capRegFileA capRegFileB
-                 stateMem incInstrCount pccMem excLocal laneId
-                 resultWire resultCapWire = do
+    let makeLane makeExecStage threadActive suspMask regA regB regBorImm
+                 capRegA capRegB stateMem incInstrCount pccMem
+                 excLocal laneId resultWire resultCapWire = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <-
@@ -615,13 +613,6 @@ makeSIMTPipeline c inputs =
           pccNextWire :: Wire CapPipe <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
-
-          -- Register operands
-          let regA = getReg5 regFileA
-          let regB = getReg5 regFileB
-          let capRegA = getCapReg5 regFileA capRegFileA
-          let capRegB = getCapReg5 regFileB capRegFileB
-          let regBorImm = getRegBorImm5 regFileB
 
           -- Is destination register non-zero?
           let destNonZero = dst instr5 .!=. 0
@@ -705,10 +696,11 @@ makeSIMTPipeline c inputs =
       makeLane <$> ZipList (c.executeStage)
                <*> ZipList (toBitList activeMask5)
                <*> ZipList suspBits
-               <*> ZipList regFilesA
-               <*> ZipList regFilesB
-               <*> ZipList capRegFilesA
-               <*> ZipList capRegFilesB
+               <*> ZipList (toList vecRegA5)
+               <*> ZipList (toList vecRegB5)
+               <*> ZipList (toList vecRegBorImm5)
+               <*> ZipList (toList vecCapRegA5)
+               <*> ZipList (toList vecCapRegB5)
                <*> ZipList stateMems
                <*> ZipList incInstrCountRegs
                <*> ZipList pccMems
@@ -755,9 +747,9 @@ makeSIMTPipeline c inputs =
 
       -- Write to register file
       when (handleExecute .||. inputs.simtResumeReqs.canPeek) do
-        writeRegFile regFilesA writeIdx writeVec
+        regFile.store writeIdx writeVec
         when enableCHERI do
-          writeRegFile capRegFilesA writeIdx writeCapVec
+          capRegFile.store writeIdx writeCapVec
       -- Handle thread resumption
       when (inv handleExecute .&&. inputs.simtResumeReqs.canPeek) do
         inputs.simtResumeReqs.consume
