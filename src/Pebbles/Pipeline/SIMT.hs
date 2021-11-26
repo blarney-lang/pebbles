@@ -721,45 +721,51 @@ makeSIMTPipeline c inputs =
     -- ==================
 
     always do
-      -- Write to int register file
-      let writebackIdx = (old warpId5, old (dst instr5))
-      let writebackVec :: Bits t => [Wire t] -> Vec SIMTLanes (Option t)
-          writebackVec resWires = fromList
-            [ Option (inv excLocal.val .&&. delay false resWire.active)
-                     (old resWire.val)
-            | (excLocal, resWire) <- zip excLocals resWires ]
-      writeRegFile regFilesA writebackIdx (writebackVec resultWires)
-      -- Write to cap register file
-      when enableCHERI do
-        writeRegFile capRegFilesA writebackIdx (writebackVec resultCapWires)
+      -- Process data from Execute stage
+      let executeIdx = (old warpId5, old (dst instr5))
+      let executeVec :: Bits t => [Wire t] -> Vec SIMTLanes (Option t)
+          executeVec resWires = fromList
+            [ Option (inv excLocal.val .&&. delay false resultWire.active)
+                     (old resultWire.val)
+            | (excLocal, resultWire) <- zip excLocals resWires ]
+      -- Process data from resumption queue
+      let (resumeInfo, resumeVec) = inputs.simtResumeReqs.peek
+      let resumeIdx = (resumeInfo.warpId, resumeInfo.destReg)
+      let resumeVecInt = fromList
+            [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
+                       inv excGlobal.val)
+                     req.val.resumeReqData
+            | req <- toList resumeVec ]
+      let resumeVecCap = fromList
+            [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
+                       inv excGlobal.val)
+                     (if req.val.resumeReqCap.valid
+                        then req.val.resumeReqCap.val
+                        else nullCapMemMetaVal)
+            | req <- toList resumeVec ]
+      -- Handle writeback for execute or resumption?
+      let handleExecute = delay false $ orList
+            [ resultWire.active .||. capResultWire.active
+            | (resultWire, capResultWire) <- zip resultWires resultCapWires ]
+      -- Select one of the writes
+      let writeIdx = handleExecute ? (executeIdx, resumeIdx)
+      let writeVec = handleExecute ? (executeVec resultWires, resumeVecInt)
+      let writeCapVec = handleExecute ? (executeVec resultCapWires,
+                                           resumeVecCap)
 
-      -- Thread resumption
-      when inputs.simtResumeReqs.canPeek do
+      -- Write to register file
+      when (handleExecute .||. inputs.simtResumeReqs.canPeek) do
+        writeRegFile regFilesA writeIdx writeVec
+        when enableCHERI do
+          writeRegFile capRegFilesA writeIdx writeCapVec
+      -- Handle thread resumption
+      when (inv handleExecute .&&. inputs.simtResumeReqs.canPeek) do
         inputs.simtResumeReqs.consume
-        let (resumeInfo, resumeVec) = inputs.simtResumeReqs.peek
         -- Clear suspension bit
-        sequence
+        sequence_
           [ when valid do suspMask!(resumeInfo.warpId) <== false
           | (valid, suspMask) <-
               zip (map (.valid) (toList resumeVec)) suspBits ]
-        -- Write to int register file
-        let resumeIdx = (resumeInfo.warpId, resumeInfo.destReg)
-        let resumeVecInt = fromList
-              [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
-                         inv excGlobal.val)
-                       req.val.resumeReqData
-              | req <- toList resumeVec ]
-        writeRegFile regFilesB resumeIdx resumeVecInt
-        -- Write to cap register file
-        let resumeVecCap = fromList
-              [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
-                         inv excGlobal.val)
-                       (if req.val.resumeReqCap.valid
-                          then req.val.resumeReqCap.val
-                          else nullCapMemMetaVal)
-              | req <- toList resumeVec ]
-        when enableCHERI do
-          writeRegFile capRegFilesB resumeIdx resumeVecCap
 
     -- Handle barrier release
     -- ======================
