@@ -912,17 +912,3 @@ makeBarrierReleaseUnit ins = do
       -- Move back to state 1 when finished with block
       when (releaseWarpCount.val .==. ins.relWarpsPerBlock) do
         releaseState <== 1
-
--- | Helper function to write to the cap reg file
-writeRegFile :: (Bits t_idx, Bits t_val) =>
-     [RAM t_idx t_val]
-     -- ^ Register file banks
-  -> t_idx
-     -- ^ Index to write to
-  -> Vec SIMTLanes (Option t_val)
-     -- ^ Per-lane data to write
-  -> Action()
-writeRegFile banks idx vec =
-  sequence_
-    [ when item.valid do bank.store idx item.val
-    | (bank, item) <- zip banks (toList vec) ]
