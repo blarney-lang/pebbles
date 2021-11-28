@@ -502,24 +502,24 @@ makeSIMTPipeline c inputs =
 
     -- Decode instruction
     let (tagMap4, fieldMap4) =
-          matchMap False (c.decodeStage) (extraReg instr4.val)
+          matchMap False (c.decodeStage) (old instr4.val)
 
     -- Stage 5 register operands
-    let vecRegA5 = extraReg (old regFile.outA)
-    let vecRegB5 = extraReg (old regFile.outB)
+    let vecRegA5 = extraReg regFile.outA
+    let vecRegB5 = extraReg regFile.outB
 
     -- Stage 5 capability register operands
     let getCapReg intReg capReg =
-          old $ decodeCapMem $ extraReg (capReg # intReg)
+          extraReg $ decodeCapMem (capReg # intReg)
     let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
     let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
 
     -- Stage 5 register B or immediate
-    let getRegBorImm reg = old $
+    let getRegBorImm reg = extraReg $
           if Map.member "imm" fieldMap4
             then let imm = getBitField fieldMap4 "imm"
-                 in  imm.valid ? (imm.val, extraReg reg)
-            else extraReg reg
+                 in  imm.valid ? (imm.val, reg)
+            else reg
     let vecRegBorImm5 = V.map getRegBorImm regFile.outB
 
     -- Propagate signals to stage 5
@@ -534,7 +534,7 @@ makeSIMTPipeline c inputs =
                 else delay false (go4.val)
 
     -- Buffer the decode tables
-    let tagMap5 = Map.map old tagMap4
+    let tagMap5 = Map.map extraReg tagMap4
 
     -- Stages 5: Execute
     -- =================

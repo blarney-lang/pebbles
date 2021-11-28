@@ -28,9 +28,9 @@ data SIMTRegFile t_reg =
   , loadB :: SIMTRegFileIdx -> Action ()
     -- ^ Issue load for given register on port B
   , outA :: Vec SIMTLanes t_reg
-    -- ^ Port A's value available one cycle after load
+    -- ^ Port A's value available two cycles after load
   , outB :: Vec SIMTLanes t_reg
-    -- ^ Port B's value available one cycle after load
+    -- ^ Port B's value available two cycles after load
   , store :: SIMTRegFileIdx
           -> Vec SIMTLanes (Option t_reg)
           -> Action ()
@@ -66,8 +66,8 @@ makeSimpleSIMTRegFile initFile = do
     SIMTRegFile {
       loadA = \idx -> sequence_ [bank.load idx | bank <- banksA]
     , loadB = \idx -> sequence_ [bank.load idx | bank <- banksB]
-    , outA = fromList [bank.out | bank <- banksA]
-    , outB = fromList [bank.out | bank <- banksB]
+    , outA = fromList [buffer bank.out | bank <- banksA]
+    , outB = fromList [buffer bank.out | bank <- banksB]
     , store = \idx vec -> do
         sequence_
           [ when item.valid do bank.store idx item.val
