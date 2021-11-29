@@ -688,7 +688,9 @@ makeSIMTPipeline c inputs =
                 incInstrCount <== true
 
               -- Update suspension bits
-              when (suspWire.val) do
+              -- To allow latency in writeback, mark any thread
+              -- writing a result as suspended
+              when (suspWire.val .||. resultWire.active) do
                 suspMask!warpId5 <== true
 
     -- Create vector lanes
@@ -753,11 +755,21 @@ makeSIMTPipeline c inputs =
       -- Handle thread resumption
       when (inv handleExecute .&&. inputs.simtResumeReqs.canPeek) do
         inputs.simtResumeReqs.consume
-        -- Clear suspension bit
+
+      -- Clear suspension bit after write latency elapses
+      let latency = max regFile.writeLatency capRegFile.writeLatency
+      let getActiveBit result resume = iterateN latency (delay false)
+            (handleExecute ? (result.valid, resume.valid))
+      -- Which threads need to be resumed?
+      let active = zipWith getActiveBit
+            (toList $ executeVec resultWires) (toList resumeVec)
+      let warpId = iterateN latency (delay dontCare) writeIdx.fst
+      let doClear = iterateN latency (delay false)
+            (handleExecute .||. inputs.simtResumeReqs.canPeek)
+      when doClear do
         sequence_
-          [ when valid do suspMask!(resumeInfo.warpId) <== false
-          | (valid, suspMask) <-
-              zip (map (.valid) (toList resumeVec)) suspBits ]
+          [ when valid do suspMask!warpId <== false
+          | (valid, suspMask) <- zip active suspBits ]
 
     -- Handle barrier release
     -- ======================

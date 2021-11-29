@@ -35,6 +35,8 @@ data SIMTRegFile t_reg =
           -> Vec SIMTLanes (Option t_reg)
           -> Action ()
     -- ^ Write register
+  , writeLatency :: Int
+    -- ^ Number of cycles after 'store' before write is performed
   }
 
 -- | Null implementation
@@ -47,6 +49,7 @@ makeNullSIMTRegFile = do
     , outA = dontCare
     , outB = dontCare
     , store = \_ _ -> return ()
+    , writeLatency = 0
     }
 
 -- | Simple implemenation
@@ -72,4 +75,5 @@ makeSimpleSIMTRegFile initFile = do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
+    , writeLatency = 0
     }
