@@ -17,7 +17,7 @@ import Blarney.Vector (Vec, fromList, toList)
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
 
--- | Register file index
+-- | Per-warp register file index
 type SIMTRegFileIdx = (Bit SIMTLogWarps, RegId)
 
 -- | Vector register file
@@ -35,9 +35,16 @@ data SIMTRegFile t_reg =
           -> Vec SIMTLanes (Option t_reg)
           -> Action ()
     -- ^ Write register
-  , writeLatency :: Int
+  , storeLatency :: Int
     -- ^ Number of cycles after 'store' before write is performed
+  , init :: Action ()
+    -- ^ Trigger initialisation of register file
+  , initInProgress :: Bit 1
+    -- ^ Don't trigger intialisation while it is already in progress
   }
+
+-- Null implementation
+-- ===================
 
 -- | Null implementation
 makeNullSIMTRegFile :: Bits t_reg => Module (SIMTRegFile t_reg)
@@ -49,21 +56,45 @@ makeNullSIMTRegFile = do
     , outA = dontCare
     , outB = dontCare
     , store = \_ _ -> return ()
-    , writeLatency = 0
+    , storeLatency = 0
+    , init = return ()
+    , initInProgress = false
     }
+
+-- Simple implementation
+-- =====================
 
 -- | Simple implemenation
 makeSimpleSIMTRegFile :: Bits t_reg =>
-     Maybe String
+     Maybe t_reg
      -- ^ Optional initialisation file
   -> Module (SIMTRegFile t_reg)
-makeSimpleSIMTRegFile initFile = do
+makeSimpleSIMTRegFile m_initVal = do
 
   -- Register file banks, one per lane
   (banksA, banksB) ::
     ([RAM SIMTRegFileIdx t_reg],
      [RAM SIMTRegFileIdx t_reg]) <-
-       unzip <$> replicateM SIMTLanes (makeQuadRAMCore initFile)
+       unzip <$> replicateM SIMTLanes makeQuadRAM
+
+  -- Initialisation in progress?
+  initInProgress <- makeReg false
+
+  -- Initialisation counter
+  initIdx <- makeReg 0
+
+  -- Initialisation
+  case m_initVal of
+    Nothing -> return ()
+    Just initVal -> do
+      always do
+        when initInProgress.val do
+          sequence_
+            [ bank.store (unpack initIdx.val) initVal
+            | bank <- banksB ]
+          initIdx <== initIdx.val + 1
+          when (initIdx.val .==. ones) do
+            initInProgress <== false
 
   return
     SIMTRegFile {
@@ -75,5 +106,7 @@ makeSimpleSIMTRegFile initFile = do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
-    , writeLatency = 0
+    , storeLatency = 0
+    , init = do initInProgress <== true
+    , initInProgress = initInProgress.val
     }

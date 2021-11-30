@@ -206,7 +206,7 @@ makeSIMTPipeline c inputs =
     -- Capability register file (meta-data only)
     capRegFile :: SIMTRegFile CapMemMeta <-
       if enableCHERI
-        then makeSimpleSIMTRegFile c.capRegInitFile
+        then makeSimpleSIMTRegFile (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
 
     -- Barrier bit for each warp
@@ -285,6 +285,9 @@ makeSIMTPipeline c inputs =
     -- Is the pipeline active?
     pipelineActive :: Reg (Bit 1) <- makeReg false
 
+    -- Has initialisation completed?
+    initComplete :: Reg (Bit 1) <- makeReg false
+
     always do
       let start = startReg.val
       -- When start register is valid, perform initialisation
@@ -306,14 +309,19 @@ makeSIMTPipeline c inputs =
                    pccMem.store (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMems pccMems ]
-        -- Intialise PCC per kernel
-        pccShared <== almightyCapPipeVal -- TODO: constrain
 
-        -- Reset various state
-        excGlobal <== false
-        sequence_ [e <== false | e <- excLocals]
-        setCount barrierCount 0
-        sequence_ [r <== false | r <- barrierBits]
+        when (warpIdCounter.val .==. 0) do
+          -- Register file initialisation
+          capRegFile.init
+
+          -- Intialise PCC per kernel
+          pccShared <== almightyCapPipeVal -- TODO: constrain
+
+          -- Reset various state
+          excGlobal <== false
+          sequence_ [e <== false | e <- excLocals]
+          setCount barrierCount 0
+          sequence_ [r <== false | r <- barrierBits]
 
         -- Insert into warp queue
         dynamicAssert (warpQueue.notFull)
@@ -324,12 +332,19 @@ makeSIMTPipeline c inputs =
         if warpIdCounter.val .==. ones
           then do
             startReg <== none
-            pipelineActive <== true
+            initComplete <== true
             warpIdCounter <== 0
-            cycleCount <== 0
-            instrCount <== 0
           else
             warpIdCounter <== warpIdCounter.val + 1
+
+    always do
+      when (initComplete.val .&&. inv capRegFile.initInProgress) do
+        initComplete <== false
+        -- Start pipeline
+        pipelineActive <== true
+        -- Reset counters
+        cycleCount <== 0
+        instrCount <== 0
 
     -- Stat counters
     -- =============
@@ -757,7 +772,7 @@ makeSIMTPipeline c inputs =
         inputs.simtResumeReqs.consume
 
       -- Clear suspension bit after write latency elapses
-      let latency = max regFile.writeLatency capRegFile.writeLatency
+      let latency = max regFile.storeLatency capRegFile.storeLatency
       let getActiveBit result resume = iterateN latency (delay false)
             (handleExecute ? (result.valid, resume.valid))
       -- Which threads need to be resumed?
