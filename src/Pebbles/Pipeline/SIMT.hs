@@ -93,12 +93,8 @@ data SIMTPipelineConfig tag =
     -- ^ Base address of instruction memory in memory map
   , enableStatCounters :: Bool
     -- ^ Are stat counters enabled?
-  , capRegInitFile :: Maybe String
-    -- ^ File containing initial capability reg file meta-data
   , checkPCCFunc :: Maybe (Cap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
-  , enableCapRegFileTrace :: Bool
-    -- ^ Trace accesses to capability register file
   , useExtraPreExecStage :: Bool
     -- ^ Extra pipeline stage?
   , useSharedPCC :: Bool
@@ -111,6 +107,8 @@ data SIMTPipelineConfig tag =
   , simtPushTag :: tag
   , simtPopTag :: tag
     -- ^ Mnemonics for SIMT explicit convergence instructions
+  , useCapRegFileScalarisation :: Bool
+    -- ^ Use scalarising register file for capabilities?
   }
 
 -- | SIMT pipeline inputs
@@ -206,7 +204,10 @@ makeSIMTPipeline c inputs =
     -- Capability register file (meta-data only)
     capRegFile :: SIMTRegFile CapMemMeta <-
       if enableCHERI
-        then makeSimpleSIMTRegFile (Just nullCapMemMetaVal)
+        then
+          if c.useCapRegFileScalarisation
+            then makeBasicSIMTScalarisingRegFile (Just nullCapMemMetaVal)
+            else makeSimpleSIMTRegFile (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
 
     -- Barrier bit for each warp
@@ -845,10 +846,13 @@ makeSIMTPipeline c inputs =
           inputs.simtMgmtReqs.consume
         -- Read stat counter
         when (req.simtReqCmd .==. simtCmd_AskStats) do
-          let getStatId req = unpack (truncate req.simtReqAddr)
+          let statId = unpack (truncate req.simtReqAddr)
           when (inv pipelineActive.val .&&. kernelRespQueue.notFull) do
-            let resp = (getStatId req .==. simtStat_Cycles) ?
-                         (cycleCount.val, instrCount.val)
+            let resp = select
+                  [ statId .==. simtStat_Cycles  --> cycleCount.val
+                  , statId .==. simtStat_Instrs  --> instrCount.val
+                  , statId .==. simtStat_VecRegs -->
+                      zeroExtend capRegFile.maxVecRegs ]
             enq kernelRespQueue resp
             inputs.simtMgmtReqs.consume
 
