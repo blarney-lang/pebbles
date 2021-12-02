@@ -253,7 +253,8 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
       storeIsScalar2 <== isScalar
       storeIdx2 <== storeIdx1.val
       storeVec2 <== storeVec1.val
-      store2 <== true
+      when (orList [item.valid | item <- toList storeVec1.val]) do
+        store2 <== true
 
     -- Stage 2
     when store2.val do
