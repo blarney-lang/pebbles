@@ -19,7 +19,7 @@ module Pebbles.Pipeline.SIMT
 --  1. Active Thread Selection (consists of 2 sub-stages)
 --  2. Instruction Fetch
 --  3. Operand Fetch
---  4. Operand Latch (consists of 1 or 2 sub-stages)
+--  4. Operand Latch (one or more sub-stages)
 --  5. Execute (& Thread Suspension)
 --  6. Writeback (& Thread Resumption)
 --
@@ -47,8 +47,10 @@ import Blarney.Queue
 import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
+import Blarney.PulseWire
 import Blarney.QuadPortRAM
 import Blarney.Interconnect
+import Blarney.Vector qualified as V
 import Blarney.Vector (Vec, fromList, toList)
 
 -- General imports
@@ -63,6 +65,7 @@ import Pebbles.Util.List
 import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
+import Pebbles.Pipeline.SIMT.RegFile
 import Pebbles.CSRs.TrapCodes
 import Pebbles.CSRs.Custom.SIMTDevice
 
@@ -90,14 +93,8 @@ data SIMTPipelineConfig tag =
     -- ^ Base address of instruction memory in memory map
   , enableStatCounters :: Bool
     -- ^ Are stat counters enabled?
-  , capRegInitFile :: Maybe String
-    -- ^ File containing initial capability reg file meta-data
   , checkPCCFunc :: Maybe (Cap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
-  , enableCapRegFileTrace :: Bool
-    -- ^ Trace accesses to capability register file
-  , useExtraPreExecStage :: Bool
-    -- ^ Extra pipeline stage?
   , useSharedPCC :: Bool
     -- ^ When CHERI enabled, use shared PCC (meta-data) per kernel
   , decodeStage :: [(String, tag)]
@@ -108,6 +105,8 @@ data SIMTPipelineConfig tag =
   , simtPushTag :: tag
   , simtPopTag :: tag
     -- ^ Mnemonics for SIMT explicit convergence instructions
+  , useCapRegFileScalarisation :: Bool
+    -- ^ Use scalarising register file for capabilities?
   }
 
 -- | SIMT pipeline inputs
@@ -197,20 +196,18 @@ makeSIMTPipeline c inputs =
     suspBits :: [[Reg (Bit 1)]] <-
       replicateM SIMTLanes (replicateM SIMTWarps (makeReg false))
 
-    -- Register files
-    (regFilesA, regFilesB) ::
-      ([RAM (Bit SIMTLogWarps, RegId) (Bit 32)],
-       [RAM (Bit SIMTLogWarps, RegId) (Bit 32)]) <-
-         unzip <$> replicateM SIMTLanes makeQuadRAM
+    -- Capability register file (meta-data only)
+    capRegFile :: SIMTRegFile CapMemMeta <-
+      if enableCHERI
+        then
+          if c.useCapRegFileScalarisation
+            then makeBasicSIMTScalarisingRegFile (Just nullCapMemMetaVal)
+            else makeSimpleSIMTRegFile 1 (Just nullCapMemMetaVal)
+        else makeNullSIMTRegFile
 
-    -- Capability register files (meta-data only)
-    (capRegFilesA, capRegFilesB) ::
-      ([RAM (Bit SIMTLogWarps, RegId) CapMemMeta],
-       [RAM (Bit SIMTLogWarps, RegId) CapMemMeta]) <-
-         unzip <$> replicateM SIMTLanes
-           (if enableCHERI
-              then makeQuadRAMCore (c.capRegInitFile)
-              else return (nullRAM, nullRAM))
+    -- Register file
+    regFile :: SIMTRegFile (Bit 32) <-
+      makeSimpleSIMTRegFile (max 1 capRegFile.loadLatency) Nothing
 
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg 0)
@@ -288,6 +285,9 @@ makeSIMTPipeline c inputs =
     -- Is the pipeline active?
     pipelineActive :: Reg (Bit 1) <- makeReg false
 
+    -- Has initialisation completed?
+    initComplete :: Reg (Bit 1) <- makeReg false
+
     always do
       let start = startReg.val
       -- When start register is valid, perform initialisation
@@ -309,14 +309,19 @@ makeSIMTPipeline c inputs =
                    pccMem.store (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMems pccMems ]
-        -- Intialise PCC per kernel
-        pccShared <== almightyCapPipeVal -- TODO: constrain
 
-        -- Reset various state
-        excGlobal <== false
-        sequence_ [e <== false | e <- excLocals]
-        setCount barrierCount 0
-        sequence_ [r <== false | r <- barrierBits]
+        when (warpIdCounter.val .==. 0) do
+          -- Register file initialisation
+          capRegFile.init
+
+          -- Intialise PCC per kernel
+          pccShared <== almightyCapPipeVal -- TODO: constrain
+
+          -- Reset various state
+          excGlobal <== false
+          sequence_ [e <== false | e <- excLocals]
+          setCount barrierCount 0
+          sequence_ [r <== false | r <- barrierBits]
 
         -- Insert into warp queue
         dynamicAssert (warpQueue.notFull)
@@ -327,12 +332,19 @@ makeSIMTPipeline c inputs =
         if warpIdCounter.val .==. ones
           then do
             startReg <== none
-            pipelineActive <== true
+            initComplete <== true
             warpIdCounter <== 0
-            cycleCount <== 0
-            instrCount <== 0
           else
             warpIdCounter <== warpIdCounter.val + 1
+
+    always do
+      when (initComplete.val .&&. inv capRegFile.initInProgress) do
+        initComplete <== false
+        -- Start pipeline
+        pipelineActive <== true
+        -- Reset counters
+        cycleCount <== 0
+        instrCount <== 0
 
     -- Stat counters
     -- =============
@@ -462,40 +474,18 @@ makeSIMTPipeline c inputs =
     let pcc4 = delay dontCare (pcc3.val)
 
     always do
-      -- Fetch operands from each register file
-      forM_ (zip regFilesA regFilesB) \(rfA, rfB) -> do
-        rfA.load (warpId3.val, srcA instrMem.out)
-        rfB.load (warpId3.val, srcB instrMem.out)
+      -- Fetch operands from register file
+      regFile.loadA (warpId3.val, srcA instrMem.out)
+      regFile.loadB (warpId3.val, srcB instrMem.out)
 
-      -- Fetch capability meta-data from each register file
-      forM_ (zip capRegFilesA capRegFilesB) \(rfA, rfB) -> do
-        rfA.load (warpId3.val, srcA instrMem.out)
-        rfB.load (warpId3.val, srcB instrMem.out)
+      -- Fetch capability meta-data from register file
+      capRegFile.loadA (warpId3.val, srcA instrMem.out)
+      capRegFile.loadB (warpId3.val, srcB instrMem.out)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
       let isSusp3 = orList [map (.val) regs ! warpId3.val | regs <- suspBits]
       isSusp4 <== isSusp3
-
-      -- Capability register file tracing
-      case c.checkPCCFunc of
-        Nothing -> return ()
-        Just _ ->
-          if c.enableCapRegFileTrace
-            then do
-              let instr = instrMem.out
-              let (_, fieldMap) = matchMap False (c.decodeStage) instr
-              let useRegA = isSome (getBitField fieldMap "rs1" :: Option RegId)
-              let useRegB = isSome (getBitField fieldMap "rs2" :: Option RegId)
-              when (go3.val .&&. inv isSusp3) do
-                display "[CapRegFileTrace] read"
-                        " time=" (cycleCount.val)
-                        " pc=0x" (formatHex 0 $ state3.val.simtPC)
-                        " warp=" (warpId3.val)
-                        " active=0x" (formatHex 0 $ activeMask3.val)
-                        " rs1=" (if useRegA then srcA instr else 0)
-                        " rs2=" (if useRegB then srcB instr else 0)
-            else return ()
 
       -- Check PCC
       case c.checkPCCFunc of
@@ -521,44 +511,46 @@ makeSIMTPipeline c inputs =
     -- Stage 4: Operand Latch
     -- ======================
 
-    -- This stage may use one or two sub-stages
-    let extraReg :: Bits a => a -> a
-        extraReg inp = if c.useExtraPreExecStage then old inp else inp
+    -- Delay given signal by register file load latency
+    let loadDelay :: Bits a => a -> a
+        loadDelay inp = iterateN (regFile.loadLatency - 1) (delay zero) inp
 
     -- Decode instruction
-    let (tagMap4, fieldMap4) =
-          matchMap False (c.decodeStage) (extraReg instr4.val)
+    let (tagMap4, fieldMap4) = matchMap False (c.decodeStage)
+                                 (loadDelay instr4.val)
 
-    -- Get stage 5 register value
-    let getReg5 regFile = extraReg (old regFile.out)
+    -- Stage 5 register operands
+    let vecRegA5 = old regFile.outA
+    let vecRegB5 = old regFile.outB
 
-    -- Get stage 5 capability register value
-    let getCapReg5 regFile capRegFile = old $ decodeCapMem $ extraReg $
-          (capRegFile.out # regFile.out)
+    -- Stage 5 capability register operands
+    let getCapReg intReg capReg =
+          old $ decodeCapMem (capReg # intReg)
+    let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
+    let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
 
-    -- Get stage 5 register B or immediate
-    let getRegBorImm5 rf = old $
+    -- Stage 5 register B or immediate
+    let getRegBorImm reg = old $
           if Map.member "imm" fieldMap4
             then let imm = getBitField fieldMap4 "imm"
-                 in  imm.valid ? (imm.val, extraReg rf.out)
-            else extraReg rf.out
+                 in  imm.valid ? (imm.val, reg)
+            else reg
+    let vecRegBorImm5 = V.map getRegBorImm regFile.outB
 
     -- Propagate signals to stage 5
-    let pcc5 = extraReg (old pcc4)
-    let isSusp5 = extraReg (old isSusp4.val)
-    let warpId5 = extraReg (old warpId4.val)
-    let activeMask5 = extraReg (old activeMask4.val)
-    let instr5 = extraReg (old instr4.val)
-    let state5 = extraReg (old state4.val)
-    let go5 = if c.useExtraPreExecStage
-                then delay false $ delay false (go4.val)
-                else delay false (go4.val)
+    let pcc5 = old (loadDelay pcc4)
+    let isSusp5 = old (loadDelay isSusp4.val)
+    let warpId5 = old (loadDelay warpId4.val)
+    let activeMask5 = old (loadDelay activeMask4.val)
+    let instr5 = old (loadDelay instr4.val)
+    let state5 = old (loadDelay state4.val)
+    let go5 = delay false (loadDelay go4.val)
 
     -- Buffer the decode tables
     let tagMap5 = Map.map old tagMap4
 
-    -- Stages 5 and 6: Execute and Writeback
-    -- =====================================
+    -- Stages 5: Execute
+    -- =================
 
     -- Insert warp id back into warp queue, except on warp command
     always do
@@ -617,10 +609,16 @@ makeSIMTPipeline c inputs =
     let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
     let isSIMTPop = Map.findWithDefault false (c.simtPopTag) tagMap5
 
+    -- Per-lane result wires
+    resultWires :: [Wire (Bit 32)] <-
+      replicateM SIMTLanes (makeWire dontCare)
+    resultCapWires :: [Wire CapMemMeta] <-
+      replicateM SIMTLanes (makeWire dontCare)
+
     -- Vector lane definition
-    let makeLane makeExecStage threadActive suspMask regFileA
-                 regFileB capRegFileA capRegFileB
-                 stateMem incInstrCount pccMem excLocal laneId = do
+    let makeLane makeExecStage threadActive suspMask regA regB regBorImm
+                 capRegA capRegB stateMem incInstrCount pccMem
+                 excLocal laneId resultWire resultCapWire = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <-
@@ -628,15 +626,6 @@ makeSIMTPipeline c inputs =
           pccNextWire :: Wire CapPipe <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
-          resultWire :: Wire (Bit 32) <- makeWire dontCare
-          resultCapWire :: Wire CapMemMeta <- makeWire dontCare
-
-          -- Register operands
-          let regA = getReg5 regFileA
-          let regB = getReg5 regFileB
-          let capRegA = getCapReg5 regFileA capRegFileA
-          let capRegB = getCapReg5 regFileB capRegFileB
-          let regBorImm = getRegBorImm5 regFileB
 
           -- Is destination register non-zero?
           let destNonZero = dst instr5 .!=. 0
@@ -712,88 +701,88 @@ makeSIMTPipeline c inputs =
                 incInstrCount <== true
 
               -- Update suspension bits
-              when (suspWire.val) do
+              -- To allow latency in writeback, mark any thread
+              -- writing a result as suspended
+              when (suspWire.val .||. resultWire.active) do
                 suspMask!warpId5 <== true
-
-            -- Writeback stage
-            when (inv excLocal.val) do
-              let idx = (old warpId5, old (dst instr5))
-              when (delay false (resultWire.active)) do
-                regFileA.store idx (old resultWire.val)
-              if enableCHERI
-                then do
-                  when (delay false (resultCapWire.active)) do
-                    capRegFileA.store idx (old resultCapWire.val)
-                    if c.enableCapRegFileTrace
-                      then do
-                        let cap = fromMem $ unpack
-                                    (old resultCapWire.val #
-                                       old resultWire.val)
-                        display "[CapRegFileTrace] write"
-                                " time="  (cycleCount.val)
-                                " lane="  (show laneId)
-                                " warp="  (fst idx)
-                                " rd="    (snd idx)
-                                " valid=" (isValidCap cap)
-                                " base=0x" (formatHex 0 $ getBase cap)
-                                " top=0x"  (formatHex 0 $ getTop cap)
-                                " meta=0x" (formatHex 0 $ getMeta cap)
-                                " addr=0x" (formatHex 0 $ getAddr cap)
-                      else return ()
-                else return ()
 
     -- Create vector lanes
     sequence $ getZipList $
       makeLane <$> ZipList (c.executeStage)
                <*> ZipList (toBitList activeMask5)
                <*> ZipList suspBits
-               <*> ZipList regFilesA
-               <*> ZipList regFilesB
-               <*> ZipList capRegFilesA
-               <*> ZipList capRegFilesB
+               <*> ZipList (toList vecRegA5)
+               <*> ZipList (toList vecRegB5)
+               <*> ZipList (toList vecRegBorImm5)
+               <*> ZipList (toList vecCapRegA5)
+               <*> ZipList (toList vecCapRegB5)
                <*> ZipList stateMems
                <*> ZipList incInstrCountRegs
                <*> ZipList pccMems
                <*> ZipList excLocals
                <*> ZipList [0..]
+               <*> ZipList resultWires
+               <*> ZipList resultCapWires
 
-    -- Thread resumption
-    -- =================
+    -- Stage 6: Writeback
+    -- ==================
 
     always do
-      when inputs.simtResumeReqs.canPeek do
-        let (info, vec) = inputs.simtResumeReqs.peek
-        let idx = (info.warpId, info.destReg)
+      -- Process data from Execute stage
+      let executeIdx = (old warpId5, old (dst instr5))
+      let executeVec :: Bits t => [Wire t] -> Vec SIMTLanes (Option t)
+          executeVec resWires = fromList
+            [ Option (inv excLocal.val .&&. delay false resultWire.active)
+                     (old resultWire.val)
+            | (excLocal, resultWire) <- zip excLocals resWires ]
+      -- Process data from resumption queue
+      let (resumeInfo, resumeVec) = inputs.simtResumeReqs.peek
+      let resumeIdx = (resumeInfo.warpId, resumeInfo.destReg)
+      let resumeVecInt = fromList
+            [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
+                       inv excGlobal.val)
+                     req.val.resumeReqData
+            | req <- toList resumeVec ]
+      let resumeVecCap = fromList
+            [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
+                       inv excGlobal.val)
+                     (if req.val.resumeReqCap.valid
+                        then req.val.resumeReqCap.val
+                        else nullCapMemMetaVal)
+            | req <- toList resumeVec ]
+      -- Handle writeback for execute or resumption?
+      let handleExecute = delay false $ orList
+            [ resultWire.active .||. capResultWire.active
+            | (resultWire, capResultWire) <- zip resultWires resultCapWires ]
+      -- Select one of the writes
+      let writeIdx = handleExecute ? (executeIdx, resumeIdx)
+      let writeVec = handleExecute ? (executeVec resultWires, resumeVecInt)
+      let writeCapVec = handleExecute ? (executeVec resultCapWires,
+                                           resumeVecCap)
+
+      -- Write to register file
+      when (handleExecute .||. inputs.simtResumeReqs.canPeek) do
+        regFile.store writeIdx writeVec
+        when enableCHERI do
+          capRegFile.store writeIdx writeCapVec
+      -- Handle thread resumption
+      when (inv handleExecute .&&. inputs.simtResumeReqs.canPeek) do
         inputs.simtResumeReqs.consume
+
+      -- Clear suspension bit after write latency elapses
+      let latency = max regFile.storeLatency capRegFile.storeLatency
+      let getActiveBit result resume = iterateN latency (delay false)
+            (handleExecute ? (result.valid, resume.valid))
+      -- Which threads need to be resumed?
+      let active = zipWith getActiveBit
+            (toList $ executeVec resultWires) (toList resumeVec)
+      let warpId = iterateN latency (delay dontCare) writeIdx.fst
+      let doClear = iterateN latency (delay false)
+            (handleExecute .||. inputs.simtResumeReqs.canPeek)
+      when doClear do
         sequence_
-          [ do when valid do
-                 suspMask!(info.warpId) <== false
-                 when (info.destReg .!=. 0 .&&. inv excGlobal.val) do
-                   regFileB.store idx (req.resumeReqData)
-                   if enableCHERI
-                     then do
-                       let capVal = isSome req.resumeReqCap ?
-                             (req.resumeReqCap.val, nullCapMemMetaVal)
-                       capRegFileB.store idx capVal
-                       if c.enableCapRegFileTrace
-                         then do
-                           let cap = fromMem $ unpack
-                                       (capVal # req.resumeReqData)
-                           display "[CapRegFileTrace] resume"
-                                   " time="  (cycleCount.val)
-                                   " lane="  (show laneId)
-                                   " warp="  (fst idx)
-                                   " rd="    (snd idx)
-                                   " valid=" (isValidCap cap)
-                                   " base=0x" (formatHex 0 $ getBase cap)
-                                   " top=0x"  (formatHex 0 $ getTop cap)
-                                   " meta=0x" (formatHex 0 $ getMeta cap)
-                                   " addr=0x" (formatHex 0 $ getAddr cap)
-                         else return ()
-                     else return ()
-          | (laneId, Option valid req, suspMask, regFileB, capRegFileB) <-
-              zip5 [0..] (toList vec) suspBits
-                   regFilesB capRegFilesB ]
+          [ when valid do suspMask!warpId <== false
+          | (valid, suspMask) <- zip active suspBits ]
 
     -- Handle barrier release
     -- ======================
@@ -854,10 +843,13 @@ makeSIMTPipeline c inputs =
           inputs.simtMgmtReqs.consume
         -- Read stat counter
         when (req.simtReqCmd .==. simtCmd_AskStats) do
-          let getStatId req = unpack (truncate req.simtReqAddr)
+          let statId = unpack (truncate req.simtReqAddr)
           when (inv pipelineActive.val .&&. kernelRespQueue.notFull) do
-            let resp = (getStatId req .==. simtStat_Cycles) ?
-                         (cycleCount.val, instrCount.val)
+            let resp = select
+                  [ statId .==. simtStat_Cycles  --> cycleCount.val
+                  , statId .==. simtStat_Instrs  --> instrCount.val
+                  , statId .==. simtStat_VecRegs -->
+                      zeroExtend capRegFile.maxVecRegs ]
             enq kernelRespQueue resp
             inputs.simtMgmtReqs.consume
 

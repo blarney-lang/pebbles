@@ -214,7 +214,7 @@ executeI shiftUnit csrUnit memReqs s = do
     -- Condition for reading CSR
     let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
     -- Read CSR
-    x <- whenR doRead do csrUnitRead csrUnit (getCSRImm s.instr)
+    x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
     s.result <== x
     -- Condition for writing CSR
     let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)

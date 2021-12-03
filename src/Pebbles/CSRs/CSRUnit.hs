@@ -60,7 +60,7 @@ makeCSRUnit csrs = do
         Just rd -> do
           let cond = csrIdReadWire.active .&.
                        (fromInteger csr.csrId .==. csrIdReadWire.val)
-          x <- whenR cond rd
+          x <- whenAction cond rd
           return [(cond, x)]
 
   -- Select read value

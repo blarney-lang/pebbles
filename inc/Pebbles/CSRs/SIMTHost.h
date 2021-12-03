@@ -15,8 +15,9 @@
 #define CSR_SIMTHostAskStats         "0x828"
 
 // SIMT stat counter ids
-#define STAT_SIMT_CYCLES  0
-#define STAT_SIMT_INSTRS  1
+#define STAT_SIMT_CYCLES 0
+#define STAT_SIMT_INSTRS 1
+#define STAT_SIMT_MAX_VEC_REGS 2
 
 // Can issue command to SIMT core?
 INLINE int pebblesSIMTCanPut()

@@ -22,7 +22,7 @@ simtCmd_SetWarpsPerBlock = SIMTCmd 2
 simtCmd_AskStats = SIMTCmd 3
 
 -- | Id of a performance stat counter
-data SIMTStatId = SIMTStatId (Bit 1)
+data SIMTStatId = SIMTStatId (Bit 2)
   deriving (Generic, Interface, Bits, Cmp)
 
 -- | Cycle count
@@ -30,6 +30,9 @@ simtStat_Cycles = SIMTStatId 0
 
 -- | Instruction count
 simtStat_Instrs = SIMTStatId 1
+
+-- | Vector register count
+simtStat_VecRegs = SIMTStatId 2
 
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
