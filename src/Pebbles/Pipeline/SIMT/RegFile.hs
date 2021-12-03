@@ -16,6 +16,7 @@ import Blarney.Vector qualified as V
 import Blarney.Vector (Vec, fromList, toList)
 
 -- Pebbles imports
+import Pebbles.Util.List
 import Pebbles.Pipeline.Interface
 
 -- | Per-warp register file index
@@ -30,13 +31,15 @@ data SIMTRegFile t_reg =
   , loadB :: SIMTRegFileIdx -> Action ()
     -- ^ Issue load for given register on port B
   , outA :: Vec SIMTLanes t_reg
-    -- ^ Port A's value available two cycles after load
+    -- ^ Port A's value available one or more cycles after load
   , outB :: Vec SIMTLanes t_reg
-    -- ^ Port B's value available two cycles after load
+    -- ^ Port B's value available one or more cycles after load
   , store :: SIMTRegFileIdx
           -> Vec SIMTLanes (Option t_reg)
           -> Action ()
     -- ^ Write register
+  , loadLatency :: Int
+    -- ^ Number of cycles after 'load' before 'out' data is available
   , storeLatency :: Int
     -- ^ Number of cycles after 'store' before write is performed
   , init :: Action ()
@@ -60,6 +63,7 @@ makeNullSIMTRegFile = do
     , outA = dontCare
     , outB = dontCare
     , store = \_ _ -> return ()
+    , loadLatency = 0
     , storeLatency = 0
     , init = return ()
     , initInProgress = false
@@ -71,10 +75,12 @@ makeNullSIMTRegFile = do
 
 -- | Simple implemenation
 makeSimpleSIMTRegFile :: Bits t_reg =>
-     Maybe t_reg
+     Int
+     -- ^ Desired load latency
+  -> Maybe t_reg
      -- ^ Optional initialisation file
   -> Module (SIMTRegFile t_reg)
-makeSimpleSIMTRegFile m_initVal = do
+makeSimpleSIMTRegFile loadLatency m_initVal = do
 
   -- Register file banks, one per lane
   (banksA, banksB) ::
@@ -105,12 +111,15 @@ makeSimpleSIMTRegFile m_initVal = do
     SIMTRegFile {
       loadA = \idx -> sequence_ [bank.load idx | bank <- banksA]
     , loadB = \idx -> sequence_ [bank.load idx | bank <- banksB]
-    , outA = fromList [buffer bank.out | bank <- banksA]
-    , outB = fromList [buffer bank.out | bank <- banksB]
+    , outA = fromList [ iterateN (loadLatency-1) buffer bank.out
+                      | bank <- banksA ]
+    , outB = fromList [ iterateN (loadLatency-1) buffer bank.out
+                      | bank <- banksB ]
     , store = \idx vec -> do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
+    , loadLatency = loadLatency
     , storeLatency = 0
     , init = do initInProgress <== true
     , initInProgress = initInProgress.val
@@ -321,12 +330,12 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
         dirB.load idx
         scalarRegFileB.load idx
         loadWireB <== true
-    , outA = delay false dirA.out.isVector ?
+    , outA = old $ delay false dirA.out.isVector ?
                ( V.fromList [ bank.out.valid ?
                                 (bank.out.val, old scalarRegFileA.out)
                             | bank <- vecSpadA ]
                , V.replicate (old scalarRegFileA.out) )
-    , outB = delay false dirB.out.isVector ?
+    , outB = old $ delay false dirB.out.isVector ?
                ( V.fromList [ bank.out.valid ?
                                 (bank.out.val, old scalarRegFileB.out)
                             | bank <- vecSpadB ]
@@ -335,6 +344,7 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
         store1 <== true
         storeIdx1 <== idx
         storeVec1 <== vec
+    , loadLatency = 3
     , storeLatency = 2
     , init = do
         initInProgress <== true

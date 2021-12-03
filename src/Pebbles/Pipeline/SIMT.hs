@@ -19,7 +19,7 @@ module Pebbles.Pipeline.SIMT
 --  1. Active Thread Selection (consists of 2 sub-stages)
 --  2. Instruction Fetch
 --  3. Operand Fetch
---  4. Operand Latch (consists of 1 or 2 sub-stages)
+--  4. Operand Latch (one or more sub-stages)
 --  5. Execute (& Thread Suspension)
 --  6. Writeback (& Thread Resumption)
 --
@@ -95,8 +95,6 @@ data SIMTPipelineConfig tag =
     -- ^ Are stat counters enabled?
   , checkPCCFunc :: Maybe (Cap -> [(Bit 1, TrapCode)])
     -- ^ When CHERI is enabled, function to check PCC
-  , useExtraPreExecStage :: Bool
-    -- ^ Extra pipeline stage?
   , useSharedPCC :: Bool
     -- ^ When CHERI enabled, use shared PCC (meta-data) per kernel
   , decodeStage :: [(String, tag)]
@@ -198,17 +196,18 @@ makeSIMTPipeline c inputs =
     suspBits :: [[Reg (Bit 1)]] <-
       replicateM SIMTLanes (replicateM SIMTWarps (makeReg false))
 
-    -- Register file
-    regFile :: SIMTRegFile (Bit 32) <- makeSimpleSIMTRegFile Nothing
-
     -- Capability register file (meta-data only)
     capRegFile :: SIMTRegFile CapMemMeta <-
       if enableCHERI
         then
           if c.useCapRegFileScalarisation
             then makeBasicSIMTScalarisingRegFile (Just nullCapMemMetaVal)
-            else makeSimpleSIMTRegFile (Just nullCapMemMetaVal)
+            else makeSimpleSIMTRegFile 1 (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
+
+    -- Register file
+    regFile :: SIMTRegFile (Bit 32) <-
+      makeSimpleSIMTRegFile (max 1 capRegFile.loadLatency) Nothing
 
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg 0)
@@ -512,26 +511,26 @@ makeSIMTPipeline c inputs =
     -- Stage 4: Operand Latch
     -- ======================
 
-    -- This stage may use one or two sub-stages
-    let extraReg :: Bits a => a -> a
-        extraReg inp = if c.useExtraPreExecStage then old inp else inp
+    -- Delay given signal by register file load latency
+    let loadDelay :: Bits a => a -> a
+        loadDelay inp = iterateN (regFile.loadLatency - 1) (delay zero) inp
 
     -- Decode instruction
-    let (tagMap4, fieldMap4) =
-          matchMap False (c.decodeStage) (old instr4.val)
+    let (tagMap4, fieldMap4) = matchMap False (c.decodeStage)
+                                 (loadDelay instr4.val)
 
     -- Stage 5 register operands
-    let vecRegA5 = extraReg regFile.outA
-    let vecRegB5 = extraReg regFile.outB
+    let vecRegA5 = old regFile.outA
+    let vecRegB5 = old regFile.outB
 
     -- Stage 5 capability register operands
     let getCapReg intReg capReg =
-          extraReg $ decodeCapMem (capReg # intReg)
+          old $ decodeCapMem (capReg # intReg)
     let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
     let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
 
     -- Stage 5 register B or immediate
-    let getRegBorImm reg = extraReg $
+    let getRegBorImm reg = old $
           if Map.member "imm" fieldMap4
             then let imm = getBitField fieldMap4 "imm"
                  in  imm.valid ? (imm.val, reg)
@@ -539,18 +538,16 @@ makeSIMTPipeline c inputs =
     let vecRegBorImm5 = V.map getRegBorImm regFile.outB
 
     -- Propagate signals to stage 5
-    let pcc5 = extraReg (old pcc4)
-    let isSusp5 = extraReg (old isSusp4.val)
-    let warpId5 = extraReg (old warpId4.val)
-    let activeMask5 = extraReg (old activeMask4.val)
-    let instr5 = extraReg (old instr4.val)
-    let state5 = extraReg (old state4.val)
-    let go5 = if c.useExtraPreExecStage
-                then delay false $ delay false (go4.val)
-                else delay false (go4.val)
+    let pcc5 = old (loadDelay pcc4)
+    let isSusp5 = old (loadDelay isSusp4.val)
+    let warpId5 = old (loadDelay warpId4.val)
+    let activeMask5 = old (loadDelay activeMask4.val)
+    let instr5 = old (loadDelay instr4.val)
+    let state5 = old (loadDelay state4.val)
+    let go5 = delay false (loadDelay go4.val)
 
     -- Buffer the decode tables
-    let tagMap5 = Map.map extraReg tagMap4
+    let tagMap5 = Map.map old tagMap4
 
     -- Stages 5: Execute
     -- =================
