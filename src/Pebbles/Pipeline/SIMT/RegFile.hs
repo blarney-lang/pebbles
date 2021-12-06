@@ -7,6 +7,7 @@ module Pebbles.Pipeline.SIMT.RegFile where
 -- Blarney imports
 import Blarney
 import Blarney.Queue
+import Blarney.Stack
 import Blarney.Option
 import Blarney.Stream
 import Blarney.PulseWire
@@ -92,7 +93,7 @@ makeSimpleSIMTRegFile loadLatency m_initVal = do
   initInProgress <- makeReg false
 
   -- Initialisation counter
-  initIdx <- makeReg 0
+  initIdx <- makeReg ones
 
   -- Initialisation
   case m_initVal of
@@ -167,9 +168,9 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
      [RAM SIMTRegFileAddr (Option t_reg)]) <-
        unzip <$> replicateM SIMTLanes makeQuadRAM
 
-  -- Queue of free space in vector scratchpad
-  freeSlots :: Queue SIMTRegFileAddr <-
-    makeSizedQueue (SIMTLogWarps + 5)
+  -- Stack of free space in vector scratchpad
+  freeSlots :: Stack SIMTRegFileAddr <-
+    makeSizedStack (SIMTLogWarps + 5)
 
   -- Count number of vectors in use
   vecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
@@ -201,9 +202,9 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
           dirB.store idx initDirEntry
           dirD.store idx initDirEntry
           scalarRegFileB.store idx initVal
-          freeSlots.enq initIdx.val
-          initIdx <== initIdx.val + 1
-          when (initIdx.val .==. ones) do
+          freeSlots.push initIdx.val
+          initIdx <== initIdx.val - 1
+          when (initIdx.val .==. 0) do
             vecCount <== 0
             maxVecCount <== 0
             initInProgress <== false
@@ -277,20 +278,20 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
           -- Now a vector. Was it a scalar before? If so, update directory
           when (inv wasVector) do
             -- We need to allocate space for a new vector
-            dynamicAssert freeSlots.canDeq
+            dynamicAssert freeSlots.notEmpty
               "Scalarising reg file: out of free space"
-            freeSlots.deq
+            freeSlots.pop
             vecCount <== vecCount.val + 1
             -- Tell directory about new vector
             let newDirEntry =
                   DirEntry {
                     isVector = true
-                  , spadPtr = freeSlots.first
+                  , spadPtr = freeSlots.top
                   }
             dirA.store storeIdx2.val newDirEntry
             dirC.store storeIdx2.val newDirEntry
           -- Write to vector scratchpad
-          let spadAddr = wasVector ? (dirC.out.spadPtr, freeSlots.first)
+          let spadAddr = wasVector ? (dirC.out.spadPtr, freeSlots.top)
           sequence_
             [ when (item.valid .||. inv wasVector) do
                 bank.store spadAddr $
@@ -305,7 +306,7 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
             -- We need to reclaim the vector
             dynamicAssert freeSlots.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots.enq dirC.out.spadPtr
+            freeSlots.push dirC.out.spadPtr
             vecCount <== vecCount.val - 1
             -- Tell directory about new scalar
             let newDirEntry =
