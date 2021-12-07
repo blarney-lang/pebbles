@@ -93,7 +93,7 @@ makeSimpleSIMTRegFile loadLatency m_initVal = do
   initInProgress <- makeReg false
 
   -- Initialisation counter
-  initIdx <- makeReg ones
+  initIdx <- makeReg 0
 
   -- Initialisation
   case m_initVal of
@@ -185,7 +185,7 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
   initInProgress <- makeReg false
 
   -- Initialisation counter
-  initIdx <- makeReg 0
+  initIdx <- makeReg ones
 
   -- Initialisation
   case m_initVal of
