@@ -68,3 +68,8 @@ encodeList ins = enc paddedIns
     enc [a] = []
     enc as = zipWith (.|.) (enc ls) (enc rs) ++ [orList rs]
       where (ls, rs) = splitAt (length as `div` 2) as
+
+-- | Are all elements of list equal?
+allEqual :: Cmp a => [a] -> Bit 1
+allEqual [] = true
+allEqual (x:xs) = andList (zipWith (.==.) (x:xs) (xs ++ [x]))

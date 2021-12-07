@@ -18,6 +18,7 @@ import Blarney.Vector (Vec, fromList, toList)
 
 -- Pebbles imports
 import Pebbles.Util.List
+import Pebbles.Util.Either
 import Pebbles.Pipeline.Interface
 
 -- | Per-warp register file index
@@ -130,42 +131,36 @@ makeSimpleSIMTRegFile loadLatency m_initVal = do
 -- Basic scalarising implementation
 -- ================================
 
--- This scalarising register file consists of: (1) a directory of
--- pointers to a dynamically growing/shrinking vector scratchpad; and
--- (2) a per-warp scalar register file.  The scalar reg file has only
--- two read ports, which is somewhat restrictive.
+-- This scalarising register file consists of a scalar register
+-- file containing scalar values or pointers to a dynamically
+-- growing/shrinking vector scratchpad.
 
--- | Directory entry
-data DirEntry =
-  DirEntry {
-    isVector :: Bit 1
-    -- ^ Is reg stored in scalar reg file or vector scratchpad?
-  , spadPtr :: SIMTRegFileAddr
-    -- ^ If scratchpad, at what location?
-  }
-  deriving (Generic, Bits)
+-- | Pointer to vector in scratchpad
+type SpadPtr = SIMTRegFileAddr
+
+-- | A scalar register is either a scalar val or a pointer to a vector
+-- in the scratchpad
+type ScalarReg t_reg = t_reg :|: SpadPtr
 
 -- | Basic scalarising register file (all or nothing)
-makeBasicSIMTScalarisingRegFile :: (Bits t_reg, Cmp t_reg) =>
+makeBasicSIMTScalarisingRegFile :: forall t_reg. (Bits t_reg, Cmp t_reg) =>
      Maybe t_reg
-     -- ^ Optional initialisation file
+     -- ^ Optional initial value
   -> Module (SIMTRegFile t_reg)
 makeBasicSIMTScalarisingRegFile m_initVal = do
 
-  -- Directory (4 read ports, 2 write ports)
-  (dirA, dirB) :: (RAM SIMTRegFileIdx DirEntry,
-                   RAM SIMTRegFileIdx DirEntry) <- makeQuadRAM
-  (dirC, dirD) :: (RAM SIMTRegFileIdx DirEntry,
-                   RAM SIMTRegFileIdx DirEntry) <- makeQuadRAM
-
-  -- Scalar register file
+  -- Scalar register file (4 read ports, 2 write ports)
   (scalarRegFileA, scalarRegFileB) ::
-    (RAM SIMTRegFileIdx t_reg, RAM SIMTRegFileIdx t_reg) <- makeQuadRAM
+    (RAM SIMTRegFileIdx (ScalarReg t_reg),
+     RAM SIMTRegFileIdx (ScalarReg t_reg)) <- makeQuadRAM
+  (scalarRegFileC, scalarRegFileD) ::
+    (RAM SIMTRegFileIdx (ScalarReg t_reg),
+     RAM SIMTRegFileIdx (ScalarReg t_reg)) <- makeQuadRAM
 
   -- Vector scratchpad (banked)
   (vecSpadA, vecSpadB) ::
-    ([RAM SIMTRegFileAddr (Option t_reg)],
-     [RAM SIMTRegFileAddr (Option t_reg)]) <-
+    ([RAM SIMTRegFileAddr t_reg],
+     [RAM SIMTRegFileAddr t_reg]) <-
        unzip <$> replicateM SIMTLanes makeQuadRAM
 
   -- Stack of free space in vector scratchpad
@@ -193,15 +188,11 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
     Just initVal -> do
       always do
         when initInProgress.val do
-          let initDirEntry =
-                DirEntry {
-                  isVector = false
-                , spadPtr = 0
-                }
+          let initScalarVal = makeLeft initVal
+          --let initScalarVal = makeRight 0
           let idx = unpack initIdx.val
-          dirB.store idx initDirEntry
-          dirD.store idx initDirEntry
-          scalarRegFileB.store idx initVal
+          scalarRegFileB.store idx initScalarVal
+          scalarRegFileD.store idx initScalarVal
           freeSlots.push initIdx.val
           initIdx <== initIdx.val - 1
           when (initIdx.val .==. 0) do
@@ -226,13 +217,15 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
     let goLoad = delay false (loadWireA.val .||. loadWireB.val)
     when goLoad do
       -- If vector, issue load to vector scratchpad
-      when dirA.out.isVector do
+      let isVectorA = isRight scalarRegFileA.out
+      when isVectorA do
         sequence_
-          [ bank.load dirA.out.spadPtr
+          [ bank.load (getRight scalarRegFileA.out)
           | bank <- vecSpadA ]
-      when dirB.out.isVector do
+      let isVectorB = isRight scalarRegFileB.out
+      when isVectorB do
         sequence_
-          [ bank.load dirA.out.spadPtr
+          [ bank.load (getRight scalarRegFileB.out)
           | bank <- vecSpadB ]
 
   -- Store path
@@ -248,103 +241,86 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
   storeIdx2 <- makeReg dontCare
   storeVec2 <- makeReg dontCare
   storeIsScalar2 <- makeReg dontCare
+  storeScalarEntry2 <- makeReg dontCare
 
   always do
     -- Stage 1
     when store1.val do
-      -- Lookup directory
-      dirC.load storeIdx1.val
-      -- Is it a scalar write
-      let headItem = V.head storeVec1.val
-      let isScalar = andList
-            [ item.valid .&&. item.val .==. headItem.val
+      let newVec :: Vec SIMTLanes (Option t_reg) = fromList
+            [ item.valid ? (item, Option (isLeft scalarRegFileC.out)
+                                         (getLeft scalarRegFileC.out))
             | item <- toList storeVec1.val ]
+      -- Is it a scalar write?
+      let isScalar = allEqual (toList newVec)
+      let anyValid = orList [item.valid | item <- toList storeVec1.val]
       -- Trigger next stage
       storeIsScalar2 <== isScalar
+      storeScalarEntry2 <== scalarRegFileC.out
       storeIdx2 <== storeIdx1.val
-      storeVec2 <== storeVec1.val
-      when (orList [item.valid | item <- toList storeVec1.val]) do
+      storeVec2 <== newVec
+      when anyValid do
         store2 <== true
 
     -- Stage 2
     when store2.val do
       -- Was it a vector before this write?
-      let wasVector = dirC.out.isVector
+      let wasVector = isRight storeScalarEntry2.val
       -- Is it a vector after this write?
       let isVector = inv storeIsScalar2.val
 
       if isVector
         then do
-          -- Now a vector. Was it a scalar before? If so, update directory
+          -- Now a vector. Was it a scalar before?
           when (inv wasVector) do
             -- We need to allocate space for a new vector
             dynamicAssert freeSlots.notEmpty
               "Scalarising reg file: out of free space"
             freeSlots.pop
             vecCount <== vecCount.val + 1
-            -- Tell directory about new vector
-            let newDirEntry =
-                  DirEntry {
-                    isVector = true
-                  , spadPtr = freeSlots.top
-                  }
-            dirA.store storeIdx2.val newDirEntry
-            dirC.store storeIdx2.val newDirEntry
+            -- Tell scalar reg file about new vector
+            let newScalarRegEntry = makeRight freeSlots.top
+            scalarRegFileA.store storeIdx2.val newScalarRegEntry
+            scalarRegFileC.store storeIdx2.val newScalarRegEntry
           -- Write to vector scratchpad
-          let spadAddr = wasVector ? (dirC.out.spadPtr, freeSlots.top)
+          let spadAddr = wasVector ?
+                (getRight storeScalarEntry2.val, freeSlots.top)
           sequence_
-            [ when (item.valid .||. inv wasVector) do
-                bank.store spadAddr $
-                  Option {
-                    valid = wasVector ? (true, item.valid)
-                  , val = item.val
-                  }
+            [ when item.valid do bank.store spadAddr item.val
             | (bank, item) <- zip vecSpadA (toList storeVec2.val) ]
         else do
-          -- Now a scalar. Was it a vector before? If so, update directory
+          -- Now a scalar. Was it a vector before?
           when wasVector do
             -- We need to reclaim the vector
             dynamicAssert freeSlots.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots.push dirC.out.spadPtr
+            freeSlots.push (getRight storeScalarEntry2.val)
             vecCount <== vecCount.val - 1
-            -- Tell directory about new scalar
-            let newDirEntry =
-                  DirEntry {
-                    isVector = false
-                  , spadPtr = dontCare
-                  }
-            dirA.store storeIdx2.val newDirEntry
-            dirC.store storeIdx2.val newDirEntry
           -- Write to scalar reg file
           let scalarVal = V.head storeVec2.val
-          when scalarVal.valid do
-            scalarRegFileA.store storeIdx2.val scalarVal.val
+          scalarRegFileA.store storeIdx2.val (makeLeft scalarVal.val)
+          scalarRegFileC.store storeIdx2.val (makeLeft scalarVal.val)
 
   return
     SIMTRegFile {
       loadA = \idx -> do
-        dirA.load idx
         scalarRegFileA.load idx
         loadWireA <== true
     , loadB = \idx -> do
-        dirB.load idx
         scalarRegFileB.load idx
         loadWireB <== true
-    , outA = old $ delay false dirA.out.isVector ?
-               ( V.fromList [ bank.out.valid ?
-                                (bank.out.val, old scalarRegFileA.out)
-                            | bank <- vecSpadA ]
-               , V.replicate (old scalarRegFileA.out) )
-    , outB = old $ delay false dirB.out.isVector ?
-               ( V.fromList [ bank.out.valid ?
-                                (bank.out.val, old scalarRegFileB.out)
-                            | bank <- vecSpadB ]
-               , V.replicate (old scalarRegFileB.out) )
+    , outA =
+        let isVector = delay false (isRight scalarRegFileA.out) in
+          old $ isVector ? ( V.fromList [bank.out | bank <- vecSpadA]
+                           , V.replicate (old $ getLeft scalarRegFileA.out) )
+    , outB =
+        let isVector = delay false (isRight scalarRegFileB.out) in
+          old $ isVector ? ( V.fromList [bank.out | bank <- vecSpadB]
+                           , V.replicate (old $ getLeft scalarRegFileB.out) )
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx
         storeVec1 <== vec
+        scalarRegFileC.load idx
     , loadLatency = 3
     , storeLatency = 2
     , init = do
