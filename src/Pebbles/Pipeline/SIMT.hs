@@ -867,7 +867,8 @@ makeSIMTPipeline c inputs =
                       zeroExtend regFile.maxVecRegs
                   , statId .==. simtStat_CapVecRegs -->
                       zeroExtend capRegFile.maxVecRegs ]
-            enq kernelRespQueue resp
+            enq kernelRespQueue
+              (if c.enableStatCounters then resp else zero)
             inputs.simtMgmtReqs.consume
 
     -- Pipeline outputs
