@@ -40,8 +40,6 @@ data SIMTRegFile t_reg =
           -> Vec SIMTLanes (Option t_reg)
           -> Action ()
     -- ^ Write register
-  , loadLatency :: Int
-    -- ^ Number of cycles after 'load' before 'out' data is available
   , storeLatency :: Int
     -- ^ Number of cycles after 'store' before write is performed
   , init :: Action ()
@@ -65,7 +63,6 @@ makeNullSIMTRegFile = do
     , outA = dontCare
     , outB = dontCare
     , store = \_ _ -> return ()
-    , loadLatency = 0
     , storeLatency = 0
     , init = return ()
     , initInProgress = false
@@ -121,7 +118,6 @@ makeSimpleSIMTRegFile loadLatency m_initVal = do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
-    , loadLatency = loadLatency
     , storeLatency = 0
     , init = do initInProgress <== true
     , initInProgress = initInProgress.val
@@ -142,12 +138,15 @@ type SpadPtr = SIMTRegFileAddr
 -- in the scratchpad
 type ScalarReg t_reg = t_reg :|: SpadPtr
 
+-- | Load latency of this implementation
+basicSIMTScalarisingRegFile_loadLatency :: Int = 3
+
 -- | Basic scalarising register file (all or nothing)
 makeBasicSIMTScalarisingRegFile :: forall t_reg. (Bits t_reg, Cmp t_reg) =>
-     Maybe t_reg
-     -- ^ Optional initial value
+     t_reg
+     -- ^ Initial register value
   -> Module (SIMTRegFile t_reg)
-makeBasicSIMTScalarisingRegFile m_initVal = do
+makeBasicSIMTScalarisingRegFile initVal = do
 
   -- Scalar register file (4 read ports, 2 write ports)
   (scalarRegFileA, scalarRegFileB) ::
@@ -183,22 +182,18 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
   initIdx <- makeReg ones
 
   -- Initialisation
-  case m_initVal of
-    Nothing -> return ()
-    Just initVal -> do
-      always do
-        when initInProgress.val do
-          let initScalarVal = makeLeft initVal
-          --let initScalarVal = makeRight 0
-          let idx = unpack initIdx.val
-          scalarRegFileB.store idx initScalarVal
-          scalarRegFileD.store idx initScalarVal
-          freeSlots.push initIdx.val
-          initIdx <== initIdx.val - 1
-          when (initIdx.val .==. 0) do
-            vecCount <== 0
-            maxVecCount <== 0
-            initInProgress <== false
+  always do
+    when initInProgress.val do
+      let initScalarVal = makeLeft initVal
+      let idx = unpack initIdx.val
+      scalarRegFileB.store idx initScalarVal
+      scalarRegFileD.store idx initScalarVal
+      freeSlots.push initIdx.val
+      initIdx <== initIdx.val - 1
+      when (initIdx.val .==. 0) do
+        vecCount <== 0
+        maxVecCount <== 0
+        initInProgress <== false
 
   -- Track max vector count
   always do
@@ -321,7 +316,6 @@ makeBasicSIMTScalarisingRegFile m_initVal = do
         storeIdx1 <== idx
         storeVec1 <== vec
         scalarRegFileC.load idx
-    , loadLatency = 3
     , storeLatency = 2
     , init = do
         initInProgress <== true

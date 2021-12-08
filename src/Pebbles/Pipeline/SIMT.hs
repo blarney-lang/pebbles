@@ -105,6 +105,8 @@ data SIMTPipelineConfig tag =
   , simtPushTag :: tag
   , simtPopTag :: tag
     -- ^ Mnemonics for SIMT explicit convergence instructions
+  , useRegFileScalarisation :: Bool
+    -- ^ Use scalarising register file?
   , useCapRegFileScalarisation :: Bool
     -- ^ Use scalarising register file for capabilities?
   }
@@ -196,18 +198,26 @@ makeSIMTPipeline c inputs =
     suspBits :: [[Reg (Bit 1)]] <-
       replicateM SIMTLanes (replicateM SIMTWarps (makeReg false))
 
+    -- Register file load latency
+    let loadLatency =
+          if c.useCapRegFileScalarisation || c.useRegFileScalarisation
+            then basicSIMTScalarisingRegFile_loadLatency
+            else 1
+
+    -- Register file
+    regFile :: SIMTRegFile (Bit 32) <-
+      if c.useRegFileScalarisation
+        then makeBasicSIMTScalarisingRegFile 0
+        else makeSimpleSIMTRegFile loadLatency Nothing
+
     -- Capability register file (meta-data only)
     capRegFile :: SIMTRegFile CapMemMeta <-
       if enableCHERI
         then
           if c.useCapRegFileScalarisation
-            then makeBasicSIMTScalarisingRegFile (Just nullCapMemMetaVal)
-            else makeSimpleSIMTRegFile 1 (Just nullCapMemMetaVal)
+            then makeBasicSIMTScalarisingRegFile nullCapMemMetaVal
+            else makeSimpleSIMTRegFile loadLatency (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
-
-    -- Register file
-    regFile :: SIMTRegFile (Bit 32) <-
-      makeSimpleSIMTRegFile (max 1 capRegFile.loadLatency) Nothing
 
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg 0)
@@ -312,6 +322,7 @@ makeSIMTPipeline c inputs =
 
         when (warpIdCounter.val .==. 0) do
           -- Register file initialisation
+          regFile.init
           capRegFile.init
 
           -- Intialise PCC per kernel
@@ -338,7 +349,11 @@ makeSIMTPipeline c inputs =
             warpIdCounter <== warpIdCounter.val + 1
 
     always do
-      when (initComplete.val .&&. inv capRegFile.initInProgress) do
+      let initDone = andList
+            [ initComplete.val
+            , inv regFile.initInProgress
+            , inv capRegFile.initInProgress ]
+      when initDone do
         initComplete <== false
         -- Start pipeline
         pipelineActive <== true
@@ -513,7 +528,7 @@ makeSIMTPipeline c inputs =
 
     -- Delay given signal by register file load latency
     let loadDelay :: Bits a => a -> a
-        loadDelay inp = iterateN (regFile.loadLatency - 1) (delay zero) inp
+        loadDelay inp = iterateN (loadLatency - 1) (delay zero) inp
 
     -- Decode instruction
     let (tagMap4, fieldMap4) = matchMap False (c.decodeStage)
@@ -849,6 +864,8 @@ makeSIMTPipeline c inputs =
                   [ statId .==. simtStat_Cycles  --> cycleCount.val
                   , statId .==. simtStat_Instrs  --> instrCount.val
                   , statId .==. simtStat_VecRegs -->
+                      zeroExtend regFile.maxVecRegs
+                  , statId .==. simtStat_CapVecRegs -->
                       zeroExtend capRegFile.maxVecRegs ]
             enq kernelRespQueue resp
             inputs.simtMgmtReqs.consume

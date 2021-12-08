@@ -34,6 +34,9 @@ simtStat_Instrs = SIMTStatId 1
 -- | Vector register count
 simtStat_VecRegs = SIMTStatId 2
 
+-- | Capability vector register count
+simtStat_CapVecRegs = SIMTStatId 3
+
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
   SIMTReq {

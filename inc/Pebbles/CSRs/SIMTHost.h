@@ -18,6 +18,7 @@
 #define STAT_SIMT_CYCLES 0
 #define STAT_SIMT_INSTRS 1
 #define STAT_SIMT_MAX_VEC_REGS 2
+#define STAT_SIMT_MAX_CAP_VEC_REGS 3
 
 // Can issue command to SIMT core?
 INLINE int pebblesSIMTCanPut()
