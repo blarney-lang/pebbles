@@ -36,6 +36,10 @@ data SIMTRegFile t_reg =
     -- ^ Port A's value available one or more cycles after load
   , outB :: Vec SIMTLanes t_reg
     -- ^ Port B's value available one or more cycles after load
+  , isScalarA :: Bit 1
+    -- ^ Is Port A a scalar (valid when outA is valid)
+  , isScalarB :: Bit 1
+    -- ^ Is Port B a scalar (valid when outB is valid)
   , store :: SIMTRegFileIdx
           -> Vec SIMTLanes (Option t_reg)
           -> Action ()
@@ -62,6 +66,8 @@ makeNullSIMTRegFile = do
     , loadB = \_ -> return ()
     , outA = dontCare
     , outB = dontCare
+    , isScalarA = false
+    , isScalarB = false
     , store = \_ _ -> return ()
     , storeLatency = 0
     , init = return ()
@@ -77,7 +83,7 @@ makeSimpleSIMTRegFile :: Bits t_reg =>
      Int
      -- ^ Desired load latency
   -> Maybe t_reg
-     -- ^ Optional initialisation file
+     -- ^ Optional initialisation value
   -> Module (SIMTRegFile t_reg)
 makeSimpleSIMTRegFile loadLatency m_initVal = do
 
@@ -114,12 +120,17 @@ makeSimpleSIMTRegFile loadLatency m_initVal = do
                       | bank <- banksA ]
     , outB = fromList [ iterateN (loadLatency-1) buffer bank.out
                       | bank <- banksB ]
+    , isScalarA = false
+    , isScalarB = false
     , store = \idx vec -> do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
     , storeLatency = 0
-    , init = do initInProgress <== true
+    , init =
+        case m_initVal of
+          Nothing -> return ()
+          Just _ -> do initInProgress <== true
     , initInProgress = initInProgress.val
     , maxVecRegs = fromInteger (SIMTWarps * 32)
     }
@@ -311,6 +322,8 @@ makeBasicSIMTScalarisingRegFile initVal = do
         let isVector = delay false (isRight scalarRegFileB.out) in
           old $ isVector ? ( V.fromList [bank.out | bank <- vecSpadB]
                            , V.replicate (old $ getLeft scalarRegFileB.out) )
+    , isScalarA = delay false (isLeft scalarRegFileA.out)
+    , isScalarB = delay false (isLeft scalarRegFileB.out)
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx

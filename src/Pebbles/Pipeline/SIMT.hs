@@ -275,9 +275,14 @@ makeSIMTPipeline c inputs =
     -- Stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
     instrCount :: Reg (Bit 32) <- makeReg 0
+    scalarisableInstrCount :: Reg (Bit 32) <- makeReg 0
 
     -- Triggers from each lane to increment instruction count
     incInstrCountRegs :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg 0)
+
+    -- Wire indicates that current instruction is scalarisable
+    instrScalarisable5 <- makeDReg false
+    instrScalarisable6 <- makeDReg false
 
     -- Function to convert from 32-bit PC to instruction address
     let toInstrAddr :: Bit 32 -> Bit t_logInstrs =
@@ -360,6 +365,7 @@ makeSIMTPipeline c inputs =
         -- Reset counters
         cycleCount <== 0
         instrCount <== 0
+        scalarisableInstrCount <== 0
 
     -- Stat counters
     -- =============
@@ -376,6 +382,12 @@ makeSIMTPipeline c inputs =
                   map zeroExtend (map (.val) incInstrCountRegs)
             let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
             instrCount <== instrCount.val + instrInc
+
+            -- Incerement instructions that would be saved due to scalarisation
+            when (c.useRegFileScalarisation && not enableCHERI) do
+              when instrScalarisable6.val do
+                scalarisableInstrCount <==
+                  scalarisableInstrCount.val + instrInc - 1
       else
         return ()
 
@@ -564,12 +576,26 @@ makeSIMTPipeline c inputs =
     -- Buffer the decode tables
     let tagMap5 = Map.map old tagMap4
 
+    -- Count instruction executions that would be saved by scalarisation
+    when (c.useRegFileScalarisation && not enableCHERI) do
+      let isFieldInUse fld =
+            case Map.lookup fld fieldMap4 of
+              Nothing -> false
+              Just opt -> opt.valid
+      always do
+        when (loadDelay (go4.val .&&. inv isSusp4.val)) do
+          let scalarisable = andList
+                [ isFieldInUse "rs1" ? (regFile.isScalarA, true)
+                , isFieldInUse "rs2" ? (regFile.isScalarB, true) ]
+          when scalarisable do instrScalarisable5 <== true
+
     -- Stages 5: Execute
     -- =================
 
     -- Insert warp id back into warp queue, except on warp command
     always do
       when go5 do
+        instrScalarisable6 <== instrScalarisable5.val
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
         if isSusp5 .||.
@@ -866,7 +892,9 @@ makeSIMTPipeline c inputs =
                   , statId .==. simtStat_VecRegs -->
                       zeroExtend regFile.maxVecRegs
                   , statId .==. simtStat_CapVecRegs -->
-                      zeroExtend capRegFile.maxVecRegs ]
+                      zeroExtend capRegFile.maxVecRegs
+                  , statId .==. simtStat_ScalarisableInstrs -->
+                      scalarisableInstrCount.val ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)
             inputs.simtMgmtReqs.consume
