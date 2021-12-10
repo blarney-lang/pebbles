@@ -387,7 +387,7 @@ makeSIMTPipeline c inputs =
             when (c.useRegFileScalarisation && not enableCHERI) do
               when instrScalarisable6.val do
                 scalarisableInstrCount <==
-                  scalarisableInstrCount.val + instrInc - 1
+                  scalarisableInstrCount.val + instrInc
       else
         return ()
 
