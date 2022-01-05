@@ -13,12 +13,12 @@ import Blarney.Stream
 import Blarney.PulseWire
 import Blarney.QuadPortRAM
 import Blarney.Interconnect
+import Blarney.TaggedUnion
 import Blarney.Vector qualified as V
 import Blarney.Vector (Vec, fromList, toList)
 
 -- Pebbles imports
 import Pebbles.Util.List
-import Pebbles.Util.Either
 import Pebbles.Pipeline.Interface
 
 -- | Per-warp register file index
@@ -147,7 +147,11 @@ type SpadPtr = SIMTRegFileAddr
 
 -- | A scalar register is either a scalar val or a pointer to a vector
 -- in the scratchpad
-type ScalarReg t_reg = t_reg :|: SpadPtr
+type ScalarReg t_reg =
+  TaggedUnion [
+    "scalar" ::: t_reg
+  , "vector" ::: SpadPtr
+  ]
 
 -- | Load latency of this implementation
 basicSIMTScalarisingRegFile_loadLatency :: Int = 3
@@ -195,7 +199,7 @@ makeBasicSIMTScalarisingRegFile initVal = do
   -- Initialisation
   always do
     when initInProgress.val do
-      let initScalarVal = makeLeft initVal
+      let initScalarVal = tag #scalar initVal
       let idx = unpack initIdx.val
       scalarRegFileB.store idx initScalarVal
       scalarRegFileD.store idx initScalarVal
@@ -223,15 +227,15 @@ makeBasicSIMTScalarisingRegFile initVal = do
     let goLoad = delay false (loadWireA.val .||. loadWireB.val)
     when goLoad do
       -- If vector, issue load to vector scratchpad
-      let isVectorA = isRight scalarRegFileA.out
+      let isVectorA = scalarRegFileA.out `is` #vector
       when isVectorA do
         sequence_
-          [ bank.load (getRight scalarRegFileA.out)
+          [ bank.load (untag #vector scalarRegFileA.out)
           | bank <- vecSpadA ]
-      let isVectorB = isRight scalarRegFileB.out
+      let isVectorB = scalarRegFileB.out `is` #vector
       when isVectorB do
         sequence_
-          [ bank.load (getRight scalarRegFileB.out)
+          [ bank.load (untag #vector scalarRegFileB.out)
           | bank <- vecSpadB ]
 
   -- Store path
@@ -253,8 +257,8 @@ makeBasicSIMTScalarisingRegFile initVal = do
     -- Stage 1
     when store1.val do
       let newVec :: Vec SIMTLanes (Option t_reg) = fromList
-            [ item.valid ? (item, Option (isLeft scalarRegFileC.out)
-                                         (getLeft scalarRegFileC.out))
+            [ item.valid ? (item, Option (scalarRegFileC.out `is` #scalar)
+                                         (untag #scalar scalarRegFileC.out))
             | item <- toList storeVec1.val ]
       -- Is it a scalar write?
       let isScalar = allEqual (toList newVec)
@@ -270,7 +274,7 @@ makeBasicSIMTScalarisingRegFile initVal = do
     -- Stage 2
     when store2.val do
       -- Was it a vector before this write?
-      let wasVector = isRight storeScalarEntry2.val
+      let wasVector = storeScalarEntry2.val `is` #vector
       -- Is it a vector after this write?
       let isVector = inv storeIsScalar2.val
 
@@ -284,12 +288,12 @@ makeBasicSIMTScalarisingRegFile initVal = do
             freeSlots.pop
             vecCount <== vecCount.val + 1
             -- Tell scalar reg file about new vector
-            let newScalarRegEntry = makeRight freeSlots.top
+            let newScalarRegEntry = tag #vector freeSlots.top
             scalarRegFileA.store storeIdx2.val newScalarRegEntry
             scalarRegFileC.store storeIdx2.val newScalarRegEntry
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
-                (getRight storeScalarEntry2.val, freeSlots.top)
+                (untag #vector storeScalarEntry2.val, freeSlots.top)
           sequence_
             [ when item.valid do bank.store spadAddr item.val
             | (bank, item) <- zip vecSpadA (toList storeVec2.val) ]
@@ -299,12 +303,12 @@ makeBasicSIMTScalarisingRegFile initVal = do
             -- We need to reclaim the vector
             dynamicAssert freeSlots.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots.push (getRight storeScalarEntry2.val)
+            freeSlots.push (untag #vector storeScalarEntry2.val)
             vecCount <== vecCount.val - 1
           -- Write to scalar reg file
           let scalarVal = V.head storeVec2.val
-          scalarRegFileA.store storeIdx2.val (makeLeft scalarVal.val)
-          scalarRegFileC.store storeIdx2.val (makeLeft scalarVal.val)
+          scalarRegFileA.store storeIdx2.val (tag #scalar scalarVal.val)
+          scalarRegFileC.store storeIdx2.val (tag #scalar scalarVal.val)
 
   return
     SIMTRegFile {
@@ -315,15 +319,17 @@ makeBasicSIMTScalarisingRegFile initVal = do
         scalarRegFileB.load idx
         loadWireB <== true
     , outA =
-        let isVector = delay false (isRight scalarRegFileA.out) in
-          old $ isVector ? ( V.fromList [bank.out | bank <- vecSpadA]
-                           , V.replicate (old $ getLeft scalarRegFileA.out) )
+        let isVector = delay false (scalarRegFileA.out `is` #vector) in
+          old $ isVector ?
+            ( V.fromList [bank.out | bank <- vecSpadA]
+            , V.replicate (old $ untag #scalar scalarRegFileA.out) )
     , outB =
-        let isVector = delay false (isRight scalarRegFileB.out) in
-          old $ isVector ? ( V.fromList [bank.out | bank <- vecSpadB]
-                           , V.replicate (old $ getLeft scalarRegFileB.out) )
-    , isScalarA = delay false (isLeft scalarRegFileA.out)
-    , isScalarB = delay false (isLeft scalarRegFileB.out)
+        let isVector = delay false (scalarRegFileB.out `is` #vector) in
+          old $ isVector ?
+            ( V.fromList [bank.out | bank <- vecSpadB]
+            , V.replicate (old $ untag #scalar scalarRegFileB.out) )
+    , isScalarA = delay false (scalarRegFileA.out `is` #scalar)
+    , isScalarB = delay false (scalarRegFileB.out `is` #scalar)
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx
