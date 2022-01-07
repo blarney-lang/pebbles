@@ -202,7 +202,7 @@ makeSIMTPipeline c inputs =
     let loadLatency =
           if c.useCapRegFileScalarisation || c.useRegFileScalarisation
             then basicSIMTScalarisingRegFile_loadLatency
-            else 1
+            else if enableCHERI then 2 else 1
 
     -- Register file
     regFile :: SIMTRegFile (Bit 32) <-
