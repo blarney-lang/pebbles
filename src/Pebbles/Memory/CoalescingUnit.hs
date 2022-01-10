@@ -281,8 +281,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
       dynamicAssert sameOpAndAccessWidth
         "Coalescining unit: requests have different op or access width"
 
-    -- Which requests can be satisfied by SameBlock strategy?
-    -- ------------------------------------------------------
+    -- Which requests can be satisfied by SameAddr/SameBlock strategies?
+    -- -----------------------------------------------------------------
 
     -- There are three ways to satisfy the SameBlock Strategy: either
     -- the requests access a contiguous array of bytes (ByteMode=0),
@@ -293,7 +293,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
     -- allows efficient sub-word stack access, where stacks are
     -- interleaved at the word level.
     let sameBlockMatch req (laneId :: Bit SIMTLogLanes) =
-            [ sameBlock .&&. byteMatch
+            [ sameBlock .&&. sameAddr
+            , sameBlock .&&. byteMatch
             , sameBlock .&&. halfMatch
             , sameBlock .&&. wordMatch ]
           where
@@ -303,6 +304,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
             sameBlock =
               slice @31 @(SIMTLogLanes+2) a1 .==.
                 slice @31 @(SIMTLogLanes+2) a2
+            sameAddr  = slice @(SIMTLogLanes+1) @0 a1 .==.
+                          slice @(SIMTLogLanes+1) @0 a2
             byteMatch = slice @(SIMTLogLanes-1) @0 a1 .==. laneId
                    .&&. slice @(SIMTLogLanes+1) @SIMTLogLanes a1 .==.
                           slice @(SIMTLogLanes+1) @SIMTLogLanes a2
@@ -318,16 +321,8 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
             | (r, i) <- zip (map (.val) memReqs3) [0..] ]
 
     -- Take into account which requests are valid
-    let [byteModeMask, halfModeMask, wordModeMask] =
+    let [sameAddrMaskVal, byteModeMask, halfModeMask, wordModeMask] =
           map (pending3.val .&.) sameBlockMasks
-
-    -- Which requests can be satisfied by SameAddress strategy?
-    -- --------------------------------------------------------
-
-    -- Requests satisfied by SameAddress strategy
-    let sameAddrMaskVal :: Bit SIMTLanes = fromBitList
-          [ p .&&. r.memReqAddr .==. leaderReq3.val.memReqAddr
-          | (p, r) <- zip (toBitList pending3.val) (map (.val) memReqs3) ]
 
     -- Requests destined for banked SRAMs
     let sramMask = 
