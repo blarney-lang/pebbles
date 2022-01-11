@@ -25,23 +25,33 @@ import Pebbles.Pipeline.Interface
 type SIMTRegFileIdx = (Bit SIMTLogWarps, RegId)
 type SIMTRegFileAddr = Bit (SIMTLogWarps + 5)
 
+-- Info about a register
+data RegInfo =
+  RegInfo {
+    isScalar :: Bit 1
+    -- ^ Is it a scalar?
+  , isUniform :: Bit 1
+    -- ^ Is it uniform (i.e. not affine)?
+  }
+  deriving (Generic, Bits)
+
 -- | Vector register file
-data SIMTRegFile t_reg =
+data SIMTRegFile regWidth =
   SIMTRegFile {
     loadA :: SIMTRegFileIdx -> Action ()
     -- ^ Issue load for given register on port A
   , loadB :: SIMTRegFileIdx -> Action ()
     -- ^ Issue load for given register on port B
-  , outA :: Vec SIMTLanes t_reg
+  , outA :: Vec SIMTLanes (Bit regWidth)
     -- ^ Port A's value available one or more cycles after load
-  , outB :: Vec SIMTLanes t_reg
+  , outB :: Vec SIMTLanes (Bit regWidth)
     -- ^ Port B's value available one or more cycles after load
-  , isScalarA :: Bit 1
-    -- ^ Is Port A a scalar (valid when outA is valid)
-  , isScalarB :: Bit 1
-    -- ^ Is Port B a scalar (valid when outB is valid)
+  , infoA :: RegInfo
+    -- ^ Port A reg info (valid when outA is valid)?
+  , infoB :: RegInfo
+    -- ^ Port B reg info (valid when outB is valid)?
   , store :: SIMTRegFileIdx
-          -> Vec SIMTLanes (Option t_reg)
+          -> Vec SIMTLanes (Option (Bit regWidth))
           -> Action ()
     -- ^ Write register
   , storeLatency :: Int
@@ -58,7 +68,7 @@ data SIMTRegFile t_reg =
 -- ===================
 
 -- | Null implementation
-makeNullSIMTRegFile :: Bits t_reg => Module (SIMTRegFile t_reg)
+makeNullSIMTRegFile :: KnownNat regWidth => Module (SIMTRegFile regWidth)
 makeNullSIMTRegFile = do
   return
     SIMTRegFile {
@@ -66,8 +76,8 @@ makeNullSIMTRegFile = do
     , loadB = \_ -> return ()
     , outA = dontCare
     , outB = dontCare
-    , isScalarA = false
-    , isScalarB = false
+    , infoA = RegInfo false false
+    , infoB = RegInfo false false
     , store = \_ _ -> return ()
     , storeLatency = 0
     , init = return ()
@@ -75,22 +85,22 @@ makeNullSIMTRegFile = do
     , maxVecRegs = 0
     }
 
--- Simple implementation
--- =====================
+-- Plain register file implementation
+-- ==================================
 
--- | Simple implemenation
-makeSimpleSIMTRegFile :: Bits t_reg =>
+-- | Plain implemenation
+makeSIMTRegFile :: KnownNat regWidth =>
      Int
      -- ^ Desired load latency
-  -> Maybe t_reg
+  -> Maybe (Bit regWidth)
      -- ^ Optional initialisation value
-  -> Module (SIMTRegFile t_reg)
-makeSimpleSIMTRegFile loadLatency m_initVal = do
+  -> Module (SIMTRegFile regWidth)
+makeSIMTRegFile loadLatency m_initVal = do
 
   -- Register file banks, one per lane
   (banksA, banksB) ::
-    ([RAM SIMTRegFileIdx t_reg],
-     [RAM SIMTRegFileIdx t_reg]) <-
+    ([RAM SIMTRegFileIdx (Bit regWidth)],
+     [RAM SIMTRegFileIdx (Bit regWidth)]) <-
        unzip <$> replicateM SIMTLanes makeQuadRAM
 
   -- Initialisation in progress?
@@ -120,8 +130,8 @@ makeSimpleSIMTRegFile loadLatency m_initVal = do
                       | bank <- banksA ]
     , outB = fromList [ iterateN (loadLatency-1) buffer bank.out
                       | bank <- banksB ]
-    , isScalarA = false
-    , isScalarB = false
+    , infoA = RegInfo false false
+    , infoB = RegInfo false false
     , store = \idx vec -> do
         sequence_
           [ when item.valid do bank.store idx item.val
@@ -147,34 +157,47 @@ type SpadPtr = SIMTRegFileAddr
 
 -- | A scalar register is either a scalar val or a pointer to a vector
 -- in the scratchpad
-type ScalarReg t_reg =
+type ScalarReg regWidth =
   TaggedUnion [
-    "scalar" ::: t_reg
+    "scalar" ::: ScalarVal regWidth
   , "vector" ::: SpadPtr
   ]
 
--- | Load latency of this implementation
-basicSIMTScalarisingRegFile_loadLatency :: Int = 3
+-- | This structure represents a unform or affine vector
+data ScalarVal n =
+  ScalarVal {
+    val :: Bit n
+    -- ^ Value
+  , stride :: Bit SIMTAffineScalarisationBits
+    -- ^ Stride between values of an affine vector;
+    -- if stride is 0 then the vector is uniform
+  }
+  deriving (Generic, Bits)
 
--- | Basic scalarising register file (all or nothing)
-makeBasicSIMTScalarisingRegFile :: forall t_reg. (Bits t_reg, Cmp t_reg) =>
-     t_reg
+-- | Load latency of this implementation
+simtScalarisingRegFile_loadLatency :: Int = 3
+
+-- | Scalarising implementation
+makeSIMTScalarisingRegFile :: forall regWidth. KnownNat regWidth =>
+     Bool
+     -- ^ Use affine scalarisation?
+  -> Bit regWidth
      -- ^ Initial register value
-  -> Module (SIMTRegFile t_reg)
-makeBasicSIMTScalarisingRegFile initVal = do
+  -> Module (SIMTRegFile regWidth)
+makeSIMTScalarisingRegFile useAffine initVal = do
 
   -- Scalar register file (4 read ports, 2 write ports)
   (scalarRegFileA, scalarRegFileB) ::
-    (RAM SIMTRegFileIdx (ScalarReg t_reg),
-     RAM SIMTRegFileIdx (ScalarReg t_reg)) <- makeQuadRAM
+    (RAM SIMTRegFileIdx (ScalarReg regWidth),
+     RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
   (scalarRegFileC, scalarRegFileD) ::
-    (RAM SIMTRegFileIdx (ScalarReg t_reg),
-     RAM SIMTRegFileIdx (ScalarReg t_reg)) <- makeQuadRAM
+    (RAM SIMTRegFileIdx (ScalarReg regWidth),
+     RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
 
   -- Vector scratchpad (banked)
   (vecSpadA, vecSpadB) ::
-    ([RAM SIMTRegFileAddr t_reg],
-     [RAM SIMTRegFileAddr t_reg]) <-
+    ([RAM SIMTRegFileAddr (Bit regWidth)],
+     [RAM SIMTRegFileAddr (Bit regWidth)]) <-
        unzip <$> replicateM SIMTLanes makeQuadRAM
 
   -- Stack of free space in vector scratchpad
@@ -199,10 +222,14 @@ makeBasicSIMTScalarisingRegFile initVal = do
   -- Initialisation
   always do
     when initInProgress.val do
-      let initScalarVal = tag #scalar initVal
+      let initScalarReg = tag #scalar
+            ScalarVal {
+              val = initVal
+            , stride = 0
+            }
       let idx = unpack initIdx.val
-      scalarRegFileB.store idx initScalarVal
-      scalarRegFileD.store idx initScalarVal
+      scalarRegFileB.store idx initScalarReg
+      scalarRegFileD.store idx initScalarReg
       freeSlots.push initIdx.val
       initIdx <== initIdx.val - 1
       when (initIdx.val .==. 0) do
@@ -223,6 +250,14 @@ makeBasicSIMTScalarisingRegFile initVal = do
   loadWireA <- makeWire false
   loadWireB <- makeWire false
 
+  -- Affine offsets
+  affineOffsetsA ::
+    [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
+      replicateM SIMTLanes (makeReg 0)
+  affineOffsetsB ::
+    [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
+      replicateM SIMTLanes (makeReg 0)
+
   always do
     let goLoad = delay false (loadWireA.val .||. loadWireB.val)
     when goLoad do
@@ -237,6 +272,16 @@ makeBasicSIMTScalarisingRegFile initVal = do
         sequence_
           [ bank.load (untag #vector scalarRegFileB.out)
           | bank <- vecSpadB ]
+      -- Compute affine offsets
+      when useAffine do
+        let scalarA = untag #scalar scalarRegFileA.out
+        let scalarB = untag #scalar scalarRegFileB.out
+        zipWithM_ (<==) affineOffsetsA
+          [ zeroExtend scalarA.stride * fromInteger i
+          | i <- [0..SIMTLanes-1] ]
+        zipWithM_ (<==) affineOffsetsB
+          [ zeroExtend scalarB.stride * fromInteger i
+          | i <- [0..SIMTLanes-1] ]
 
   -- Store path
   -- ==========
@@ -245,6 +290,7 @@ makeBasicSIMTScalarisingRegFile initVal = do
   store1 <- makeDReg false
   storeIdx1 <- makeReg dontCare
   storeVec1 <- makeReg dontCare
+  storeStride1 :: Reg (Bit SIMTAffineScalarisationBits) <- makeReg 0
 
   -- Stage 2 pipeline registers
   store2 <- makeDReg false
@@ -252,25 +298,52 @@ makeBasicSIMTScalarisingRegFile initVal = do
   storeVec2 <- makeReg dontCare
   storeIsScalar2 <- makeReg dontCare
   storeScalarEntry2 <- makeReg dontCare
+  storeStride2 :: Reg (Bit SIMTAffineScalarisationBits) <- makeReg 0
+  storeOffsets2 ::
+    [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
+      replicateM SIMTLanes (makeReg 0)
 
   always do
     -- Stage 1
     when store1.val do
-      let newVec :: Vec SIMTLanes (Option t_reg) = fromList
-            [ item.valid ? (item, Option (scalarRegFileC.out `is` #scalar)
-                                         (untag #scalar scalarRegFileC.out))
-            | item <- toList storeVec1.val ]
-      -- Is it a scalar write?
-      let isScalar = allEqual (toList newVec)
+      -- Scalar reg before write
+      let scalarReg = untag #scalar scalarRegFileC.out
+      -- Is it a uniform vector?
+      let isUniform = scalarRegFileC.out `is` #scalar .&&.
+                        (if useAffine
+                           then scalarReg.stride .==. 0
+                           else true)
+      -- Validity of writes
       let anyValid = orList [item.valid | item <- toList storeVec1.val]
+      let allValid = andList [item.valid | item <- toList storeVec1.val]
+      -- Compute new vector to write
+      let writeVals :: Vec SIMTLanes (Bit regWidth) = fromList
+            [ item.valid ? (item.val, scalarReg.val)
+            | item <- toList storeVec1.val ]
+      -- Comparison function for detecting uniform/affine vectors
+      let equal x y =
+            if useAffine
+              then x + zeroExtendCast storeStride1.val .==. y
+              else x .==. y
+      -- Is it a scalar write?
+      let isScalar = (allValid .||. isUniform) .&&.
+            andList (zipWith equal (toList writeVals)
+                                   (drop 1 $ toList writeVals))
       -- Trigger next stage
       storeIsScalar2 <== isScalar
       storeScalarEntry2 <== scalarRegFileC.out
       storeIdx2 <== storeIdx1.val
-      storeVec2 <== newVec
+      storeVec2 <== V.zipWith (\item writeVal -> Option item.valid writeVal)
+                      storeVec1.val writeVals
+      storeStride2 <== storeStride1.val
       when anyValid do
         store2 <== true
-
+      -- Expand affine vector
+      when useAffine do
+        zipWithM_ (<==) storeOffsets2
+          [ item.valid ? (0, zeroExtend scalarReg.stride * fromInteger i)
+          | (item, i) <- zip (toList storeVec1.val) [0..SIMTLanes-1] ]
+ 
     -- Stage 2
     when store2.val do
       -- Was it a vector before this write?
@@ -294,9 +367,15 @@ makeBasicSIMTScalarisingRegFile initVal = do
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
                 (untag #vector storeScalarEntry2.val, freeSlots.top)
+          let isAffine = storeScalarEntry2.val `is` #scalar
           sequence_
-            [ when item.valid do bank.store spadAddr item.val
-            | (bank, item) <- zip vecSpadA (toList storeVec2.val) ]
+            [ when (item.valid .||. inv wasVector) do
+                if useAffine
+                  then bank.store spadAddr
+                         (item.val + zeroExtendCast offset.val)
+                  else bank.store spadAddr item.val
+            | (bank, item, offset) <-
+                zip3 vecSpadA (toList storeVec2.val) storeOffsets2 ]
         else do
           -- Now a scalar. Was it a vector before?
           when wasVector do
@@ -306,9 +385,20 @@ makeBasicSIMTScalarisingRegFile initVal = do
             freeSlots.push (untag #vector storeScalarEntry2.val)
             vecCount <== vecCount.val - 1
           -- Write to scalar reg file
-          let scalarVal = V.head storeVec2.val
-          scalarRegFileA.store storeIdx2.val (tag #scalar scalarVal.val)
-          scalarRegFileC.store storeIdx2.val (tag #scalar scalarVal.val)
+          let scalarVal =
+                ScalarVal {
+                  val = (V.head storeVec2.val).val
+                , stride = storeStride2.val
+                }
+          scalarRegFileA.store storeIdx2.val (tag #scalar scalarVal)
+          scalarRegFileC.store storeIdx2.val (tag #scalar scalarVal)
+
+  -- Expand scalar register to vector
+  let expandScalar scalarReg offsets = 
+        if useAffine
+          then fromList [ scalarReg.val + zeroExtendCast o.val
+                        | o <- offsets ]
+          else V.replicate scalarReg.val
 
   return
     SIMTRegFile {
@@ -322,19 +412,41 @@ makeBasicSIMTScalarisingRegFile initVal = do
         let isVector = delay false (scalarRegFileA.out `is` #vector) in
           old $ isVector ?
             ( V.fromList [bank.out | bank <- vecSpadA]
-            , V.replicate (old $ untag #scalar scalarRegFileA.out) )
+            , expandScalar (old $ untag #scalar scalarRegFileA.out)
+                           affineOffsetsA )
     , outB =
         let isVector = delay false (scalarRegFileB.out `is` #vector) in
           old $ isVector ?
             ( V.fromList [bank.out | bank <- vecSpadB]
-            , V.replicate (old $ untag #scalar scalarRegFileB.out) )
-    , isScalarA = delay false (scalarRegFileA.out `is` #scalar)
-    , isScalarB = delay false (scalarRegFileB.out `is` #scalar)
+            , expandScalar (old $ untag #scalar scalarRegFileB.out)
+                           affineOffsetsB )
+    , infoA = delay (RegInfo false false)
+        RegInfo {
+          isScalar = delay false (scalarRegFileA.out `is` #scalar)
+        , isUniform = delay false (scalarRegFileA.out `is` #scalar .&&.
+                        (untag #scalar scalarRegFileA.out).stride .==. 0)
+        }
+    , infoB = delay (RegInfo false false)
+        RegInfo {
+          isScalar = delay false (scalarRegFileB.out `is` #scalar)
+        , isUniform = delay false (scalarRegFileB.out `is` #scalar .&&.
+                        (untag #scalar scalarRegFileB.out).stride .==. 0)
+        }
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx
         storeVec1 <== vec
         scalarRegFileC.load idx
+        -- Determine stride for affine scalarisation
+        when useAffine do
+          let v0 = vec ! (0::Int)
+          let v1 = vec ! (1::Int)
+          let diff = v1.val - v0.val
+          let mask = fromInteger (2^SIMTAffineScalarisationBits - 1)
+          storeStride1 <==
+            if v0.valid .&&. v1.valid .&&. (diff .&. inv mask .==. 0)
+              then truncateCast diff
+              else 0
     , storeLatency = 2
     , init = do
         initInProgress <== true
