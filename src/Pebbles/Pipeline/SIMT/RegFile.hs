@@ -25,13 +25,14 @@ import Pebbles.Pipeline.Interface
 type SIMTRegFileIdx = (Bit SIMTLogWarps, RegId)
 type SIMTRegFileAddr = Bit (SIMTLogWarps + 5)
 
--- Info about a register
-data RegInfo =
-  RegInfo {
-    isScalar :: Bit 1
-    -- ^ Is it a scalar?
-  , isUniform :: Bit 1
-    -- ^ Is it uniform (i.e. not affine)?
+-- | This structure represents a unform or affine vector
+data ScalarVal n =
+  ScalarVal {
+    val :: Bit n
+    -- ^ Value
+  , stride :: Bit SIMTAffineScalarisationBits
+    -- ^ Stride between values of an affine vector;
+    -- if stride is 0 then the vector is uniform
   }
   deriving (Generic, Bits)
 
@@ -46,10 +47,10 @@ data SIMTRegFile regWidth =
     -- ^ Port A's value available one or more cycles after load
   , outB :: Vec SIMTLanes (Bit regWidth)
     -- ^ Port B's value available one or more cycles after load
-  , infoA :: RegInfo
-    -- ^ Port A reg info (valid when outA is valid)?
-  , infoB :: RegInfo
-    -- ^ Port B reg info (valid when outB is valid)?
+  , scalarA :: Option (ScalarVal regWidth)
+    -- ^ Port A scalar (valid when outA is valid)?
+  , scalarB :: Option (ScalarVal regWidth)
+    -- ^ Port B scalar (valid when outB is valid)?
   , store :: SIMTRegFileIdx
           -> Vec SIMTLanes (Option (Bit regWidth))
           -> Action ()
@@ -76,8 +77,8 @@ makeNullSIMTRegFile = do
     , loadB = \_ -> return ()
     , outA = dontCare
     , outB = dontCare
-    , infoA = RegInfo false false
-    , infoB = RegInfo false false
+    , scalarA = none
+    , scalarB = none
     , store = \_ _ -> return ()
     , storeLatency = 0
     , init = return ()
@@ -130,8 +131,8 @@ makeSIMTRegFile loadLatency m_initVal = do
                       | bank <- banksA ]
     , outB = fromList [ iterateN (loadLatency-1) buffer bank.out
                       | bank <- banksB ]
-    , infoA = RegInfo false false
-    , infoB = RegInfo false false
+    , scalarA = none
+    , scalarB = none
     , store = \idx vec -> do
         sequence_
           [ when item.valid do bank.store idx item.val
@@ -162,17 +163,6 @@ type ScalarReg regWidth =
     "scalar" ::: ScalarVal regWidth
   , "vector" ::: SpadPtr
   ]
-
--- | This structure represents a unform or affine vector
-data ScalarVal n =
-  ScalarVal {
-    val :: Bit n
-    -- ^ Value
-  , stride :: Bit SIMTAffineScalarisationBits
-    -- ^ Stride between values of an affine vector;
-    -- if stride is 0 then the vector is uniform
-  }
-  deriving (Generic, Bits)
 
 -- | Load latency of this implementation
 simtScalarisingRegFile_loadLatency :: Int = 3
@@ -420,18 +410,14 @@ makeSIMTScalarisingRegFile useAffine initVal = do
             ( V.fromList [bank.out | bank <- vecSpadB]
             , expandScalar (old $ untag #scalar scalarRegFileB.out)
                            affineOffsetsB )
-    , infoA = delay (RegInfo false false)
-        RegInfo {
-          isScalar = delay false (scalarRegFileA.out `is` #scalar)
-        , isUniform = delay false (scalarRegFileA.out `is` #scalar .&&.
-                        (untag #scalar scalarRegFileA.out).stride .==. 0)
-        }
-    , infoB = delay (RegInfo false false)
-        RegInfo {
-          isScalar = delay false (scalarRegFileB.out `is` #scalar)
-        , isUniform = delay false (scalarRegFileB.out `is` #scalar .&&.
-                        (untag #scalar scalarRegFileB.out).stride .==. 0)
-        }
+    , scalarA =
+        let isScalar = delay false (scalarRegFileA.out `is` #scalar)
+            scalar = old (untag #scalar scalarRegFileA.out)
+        in  delay none (Option isScalar scalar)
+    , scalarB =
+        let isScalar = delay false (scalarRegFileB.out `is` #scalar)
+            scalar = old (untag #scalar scalarRegFileB.out)
+        in  delay none (Option isScalar scalar)
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx

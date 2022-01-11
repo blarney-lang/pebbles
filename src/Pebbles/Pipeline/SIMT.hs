@@ -584,11 +584,12 @@ makeSIMTPipeline c inputs =
             case Map.lookup fld fieldMap4 of
               Nothing -> false
               Just opt -> opt.valid
+      let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
       always do
         when (loadDelay (go4.val .&&. inv isSusp4.val)) do
           let scalarisable = andList
-                [ isFieldInUse "rs1" ? (regFile.infoA.isUniform, true)
-                , isFieldInUse "rs2" ? (regFile.infoB.isUniform, true) ]
+                [ isFieldInUse "rs1" ? (isUniform regFile.scalarA, true)
+                , isFieldInUse "rs2" ? (isUniform regFile.scalarB, true) ]
           when scalarisable do instrScalarisable5 <== true
 
     -- Stages 5: Execute
