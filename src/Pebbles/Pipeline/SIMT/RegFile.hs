@@ -316,11 +316,13 @@ makeSIMTScalarisingRegFile useAffine initVal = do
               then x + zeroExtendCast storeStride1.val .==. y
               else x .==. y
       -- Is it a scalar write?
-      let isScalar = (allValid .||. isUniform) .&&.
-            andList (zipWith equal (toList writeVals)
-                                   (drop 1 $ toList writeVals))
+      -- If so, all bits in this list will be true. For timing
+      -- reasons, we "and" them together in the next cycle, not here
+      let isScalarConds = (allValid .||. isUniform) :
+            zipWith equal (toList writeVals)
+                          (drop 1 $ toList writeVals)
       -- Trigger next stage
-      storeIsScalar2 <== isScalar
+      storeIsScalar2 <== (fromBitList isScalarConds :: Bit SIMTLanes)
       storeScalarEntry2 <== scalarRegFileC.out
       storeIdx2 <== storeIdx1.val
       storeVec2 <== V.zipWith (\item writeVal -> Option item.valid writeVal)
@@ -339,7 +341,7 @@ makeSIMTScalarisingRegFile useAffine initVal = do
       -- Was it a vector before this write?
       let wasVector = storeScalarEntry2.val `is` #vector
       -- Is it a vector after this write?
-      let isVector = inv storeIsScalar2.val
+      let isVector = inv (storeIsScalar2.val .==. ones)
 
       if isVector
         then do
