@@ -107,6 +107,8 @@ data SIMTPipelineConfig tag =
     -- ^ Mnemonics for SIMT explicit convergence instructions
   , useRegFileScalarisation :: Bool
     -- ^ Use scalarising register file?
+  , useAffineScalarisation :: Bool
+    -- ^ Use affine scalarisation, or plain uniform scalarisation?
   , useCapRegFileScalarisation :: Bool
     -- ^ Use scalarising register file for capabilities?
   }
@@ -201,22 +203,22 @@ makeSIMTPipeline c inputs =
     -- Register file load latency
     let loadLatency =
           if c.useCapRegFileScalarisation || c.useRegFileScalarisation
-            then basicSIMTScalarisingRegFile_loadLatency
+            then simtScalarisingRegFile_loadLatency
             else if enableCHERI then 2 else 1
 
     -- Register file
-    regFile :: SIMTRegFile (Bit 32) <-
+    regFile :: SIMTRegFile 32 <-
       if c.useRegFileScalarisation
-        then makeBasicSIMTScalarisingRegFile 0
-        else makeSimpleSIMTRegFile loadLatency Nothing
+        then makeSIMTScalarisingRegFile c.useAffineScalarisation 0
+        else makeSIMTRegFile loadLatency Nothing
 
     -- Capability register file (meta-data only)
-    capRegFile :: SIMTRegFile CapMemMeta <-
+    capRegFile :: SIMTRegFile CapMemMetaWidth <-
       if enableCHERI
         then
           if c.useCapRegFileScalarisation
-            then makeBasicSIMTScalarisingRegFile nullCapMemMetaVal
-            else makeSimpleSIMTRegFile loadLatency (Just nullCapMemMetaVal)
+            then makeSIMTScalarisingRegFile False nullCapMemMetaVal
+            else makeSIMTRegFile loadLatency (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
 
     -- Barrier bit for each warp
@@ -582,11 +584,12 @@ makeSIMTPipeline c inputs =
             case Map.lookup fld fieldMap4 of
               Nothing -> false
               Just opt -> opt.valid
+      let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
       always do
         when (loadDelay (go4.val .&&. inv isSusp4.val)) do
           let scalarisable = andList
-                [ isFieldInUse "rs1" ? (regFile.isScalarA, true)
-                , isFieldInUse "rs2" ? (regFile.isScalarB, true) ]
+                [ isFieldInUse "rs1" ? (isUniform regFile.scalarA, true)
+                , isFieldInUse "rs2" ? (isUniform regFile.scalarB, true) ]
           when scalarisable do instrScalarisable5 <== true
 
     -- Stages 5: Execute
