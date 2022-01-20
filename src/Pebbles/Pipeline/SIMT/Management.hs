@@ -37,9 +37,6 @@ simtStat_VecRegs = SIMTStatId 2
 -- | Capability vector register count
 simtStat_CapVecRegs = SIMTStatId 3
 
--- | Count if scalarisable instructions executed
-simtStat_ScalarisableInstrs = SIMTStatId 4
-
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
   SIMTReq {

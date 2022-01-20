@@ -111,6 +111,10 @@ data SIMTPipelineConfig tag =
     -- ^ Use affine scalarisation, or plain uniform scalarisation?
   , useCapRegFileScalarisation :: Bool
     -- ^ Use scalarising register file for capabilities?
+  , useScalarUnit :: Bool
+    -- ^ Use dedicated scalar unit for parallel scalar/vector execution?
+  , scalarUnitAllowList :: [tag]
+    -- ^ A list of instructions that can execute on the scalar unit
   }
 
 -- | SIMT pipeline inputs
@@ -178,8 +182,12 @@ makeSIMTPipeline c inputs =
     let srcB :: Instr -> RegId = getBitFieldSel selMap "rs2"
     let dst  :: Instr -> RegId = getBitFieldSel selMap "rd"
 
-    -- Queue of active warps
+    -- Queue of active warps for vector pipeline
     warpQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
+
+    -- Queue of active warps for scalar pipeline
+    scalarQueue :: Queue (Bit SIMTLogWarps) <-
+      makeSizedQueue SIMTScalarUnitLogQueueSize
 
     -- One block RAM of thread states per lane
     stateMems ::  [RAM (Bit SIMTLogWarps) SIMTThreadState ] <-
@@ -221,6 +229,14 @@ makeSIMTPipeline c inputs =
             else makeSIMTRegFile loadLatency (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
 
+    -- Scalar prediction table: for each instruction in the
+    -- instruction memory, was the instruction scalarisable the
+    -- last time it was executed?
+    (scalarTableA, scalarTableB) ::
+      (RAM (Bit t_logInstrs) (Bit 1),
+       RAM (Bit t_logInstrs) (Bit 1)) <-
+         if c.useScalarUnit then makeQuadRAM else return (nullRAM, nullRAM)
+
     -- Barrier bit for each warp
     barrierBits :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg 0)
 
@@ -252,6 +268,9 @@ makeSIMTPipeline c inputs =
     -- Is any thread in the current warp suspended?
     isSusp4 :: Reg (Bit 1) <- makeReg dontCare
 
+    -- Insert warp back into warp queue at end of pipeline?
+    rescheduleWarp6 :: Reg (Bit 1) <- makeDReg false
+
     -- Global exception register for entire core
     excGlobal :: Reg (Bit 1) <- makeReg false
 
@@ -277,14 +296,12 @@ makeSIMTPipeline c inputs =
     -- Stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
     instrCount :: Reg (Bit 32) <- makeReg 0
-    scalarisableInstrCount :: Reg (Bit 32) <- makeReg 0
 
     -- Triggers from each lane to increment instruction count
     incInstrCountRegs :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg 0)
 
-    -- Wire indicates that current instruction is scalarisable
-    instrScalarisable5 <- makeDReg false
-    instrScalarisable6 <- makeDReg false
+    -- Indicates that current instruction is scalarisable
+    instrScalarisable5 <- makeReg false
 
     -- Function to convert from 32-bit PC to instruction address
     let toInstrAddr :: Bit 32 -> Bit t_logInstrs =
@@ -367,7 +384,6 @@ makeSIMTPipeline c inputs =
         -- Reset counters
         cycleCount <== 0
         instrCount <== 0
-        scalarisableInstrCount <== 0
 
     -- Stat counters
     -- =============
@@ -384,12 +400,6 @@ makeSIMTPipeline c inputs =
                   map zeroExtend (map (.val) incInstrCountRegs)
             let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
             instrCount <== instrCount.val + instrInc
-
-            -- Incerement instructions that would be saved due to scalarisation
-            when (c.useRegFileScalarisation && not enableCHERI) do
-              when instrScalarisable6.val do
-                scalarisableInstrCount <==
-                  scalarisableInstrCount.val + instrInc
       else
         return ()
 
@@ -578,35 +588,46 @@ makeSIMTPipeline c inputs =
     -- Buffer the decode tables
     let tagMap5 = Map.map old tagMap4
 
-    -- Count instruction executions that would be saved by scalarisation
-    when (c.useRegFileScalarisation && not enableCHERI) do
+    -- Determine if this instruction is scalarisable
+    when (c.useRegFileScalarisation && c.useScalarUnit) do
       let isFieldInUse fld =
             case Map.lookup fld fieldMap4 of
               Nothing -> false
               Just opt -> opt.valid
       let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
+      let isOpScalarisable = orList
+            [ Map.findWithDefault false op tagMap4
+            | op <- c.scalarUnitAllowList ]
       always do
-        when (loadDelay (go4.val .&&. inv isSusp4.val)) do
-          let scalarisable = andList
-                [ isFieldInUse "rs1" ? (isUniform regFile.scalarA, true)
-                , isFieldInUse "rs2" ? (isUniform regFile.scalarB, true) ]
-          when scalarisable do instrScalarisable5 <== true
+        instrScalarisable5 <== andList
+          [ loadDelay (activeMask4.val .==. ones)
+          , isFieldInUse "rs1" ? (isUniform regFile.scalarA, true)
+          , isFieldInUse "rs2" ? (isUniform regFile.scalarB, true)
+          , isOpScalarisable
+          ]
 
     -- Stages 5: Execute
     -- =================
 
+    -- For each lane, is PC being explicitly modified by instruction?
+    pcChangeRegs6 :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg false)
+
     -- Insert warp id back into warp queue, except on warp command
     always do
+      -- Lookup scalar prediction table
+      scalarTableA.load (toInstrAddr (state5.simtPC + 4))
+
       when go5 do
-        instrScalarisable6 <== instrScalarisable5.val
+        -- Update scalar prediction table
+        when (inv isSusp5) do
+          scalarTableA.store (toInstrAddr state5.simtPC)
+                             instrScalarisable5.val
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
         if isSusp5 .||.
               (inv inputs.simtWarpCmdWire.active .&&. inv excGlobal.val)
           then do
-            -- Reschedule
-            dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
-            enq warpQueue warpId5
+            rescheduleWarp6 <== true
           else do
             -- Instruction is warp command or exception has occurred.
             -- Warp commands assume that warp has converged
@@ -650,8 +671,8 @@ makeSIMTPipeline c inputs =
         excPC <== old state5.simtPC
 
     -- Is it a SIMT convergence instruction?
-    let isSIMTPush = Map.findWithDefault false (c.simtPushTag) tagMap5
-    let isSIMTPop = Map.findWithDefault false (c.simtPopTag) tagMap5
+    let isSIMTPush = Map.findWithDefault false c.simtPushTag tagMap5
+    let isSIMTPop = Map.findWithDefault false c.simtPopTag tagMap5
 
     -- Per-lane result wires
     resultWires :: [Wire (Bit 32)] <-
@@ -662,7 +683,7 @@ makeSIMTPipeline c inputs =
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regA regB regBorImm
                  capRegA capRegB stateMem incInstrCount pccMem
-                 excLocal laneId resultWire resultCapWire = do
+                 excLocal laneId resultWire resultCapWire pcChange = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <-
@@ -715,6 +736,9 @@ makeSIMTPipeline c inputs =
             }
 
           always do
+            -- Did PC change?
+            pcChange <== pcNextWire.active
+
             -- Execute stage
             when (go5 .&&. threadActive .&&.
                     inv isSusp5 .&&. inv excGlobal.val) do
@@ -767,13 +791,15 @@ makeSIMTPipeline c inputs =
                <*> ZipList [0..]
                <*> ZipList resultWires
                <*> ZipList resultCapWires
+               <*> ZipList pcChangeRegs6
 
     -- Stage 6: Writeback
     -- ==================
 
     always do
+      let warpId6 = old warpId5
       -- Process data from Execute stage
-      let executeIdx = (old warpId5, old (dst instr5))
+      let executeIdx = (warpId6, old (dst instr5))
       let executeVec :: Bits t => [Wire t] -> Vec SIMTLanes (Option t)
           executeVec resWires = fromList
             [ Option (inv excLocal.val .&&. delay false resultWire.active)
@@ -827,6 +853,25 @@ makeSIMTPipeline c inputs =
         sequence_
           [ when valid do suspMask!warpId <== false
           | (valid, suspMask) <- zip active suspBits ]
+
+      -- Reschedule warp
+      when rescheduleWarp6.val do
+        -- Put warp in scalar or vector queue?
+        let putInScalarQueue =
+              if c.useScalarUnit
+                then andList
+                  [ old activeMask5 .==. ones
+                  , scalarTableA.out
+                  , inv $ orList $ map (.val) pcChangeRegs6
+                  , scalarQueue.notFull
+                  ]
+                else false
+        if putInScalarQueue
+          then do
+            enq scalarQueue warpId6
+          else do
+            dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
+            enq warpQueue warpId6
 
     -- Handle barrier release
     -- ======================
@@ -896,8 +941,7 @@ makeSIMTPipeline c inputs =
                       zeroExtend regFile.maxVecRegs
                   , statId .==. simtStat_CapVecRegs -->
                       zeroExtend capRegFile.maxVecRegs
-                  , statId .==. simtStat_ScalarisableInstrs -->
-                      scalarisableInstrCount.val ]
+                  ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)
             inputs.simtMgmtReqs.consume
