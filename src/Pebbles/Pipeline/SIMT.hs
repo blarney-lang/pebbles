@@ -13,7 +13,7 @@ module Pebbles.Pipeline.SIMT
 -- Simple 32-bit SIMT pipeline with a configurable number of warps and
 -- warp size.
 --
--- There are 8 pipeline stages:
+-- There are 7 pipeline stages:
 --
 --  0. Warp Scheduling
 --  1. Active Thread Selection (consists of 2 sub-stages)
@@ -155,6 +155,16 @@ data SIMTThreadState =
   }
   deriving (Generic, Bits, Interface)
 
+-- | Scalar unit warp queue entry
+data ScalarWarpQueueEntry =
+  ScalarWarpQueueEntry {
+    pc :: Bit 32
+    -- ^ Program counter
+  , warpId :: Bit SIMTLogWarps
+    -- ^ Unique warp id
+  }
+  deriving (Generic, Bits, Interface)
+
 -- | SIMT pipeline module
 makeSIMTPipeline :: Tag tag =>
      SIMTPipelineConfig tag
@@ -186,7 +196,7 @@ makeSIMTPipeline c inputs =
     warpQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
 
     -- Queue of active warps for scalar pipeline
-    scalarQueue :: Queue (Bit SIMTLogWarps) <-
+    scalarQueue :: Queue ScalarWarpQueueEntry <-
       makeSizedQueue SIMTScalarUnitLogQueueSize
 
     -- One block RAM of thread states per lane
@@ -201,8 +211,9 @@ makeSIMTPipeline c inputs =
           else return nullRAM
 
     -- Instruction memory
-    instrMem :: RAM (Bit t_logInstrs) Instr <-
-      makeDualRAMCore (c.instrMemInitFile)
+    (instrMemA, instrMemB) ::
+      (RAM (Bit t_logInstrs) Instr, RAM (Bit t_logInstrs) Instr) <-
+        makeQuadRAMCore c.instrMemInitFile
 
     -- Suspension bit for each thread
     suspBits :: [[Reg (Bit 1)]] <-
@@ -403,6 +414,10 @@ makeSIMTPipeline c inputs =
       else
         return ()
 
+    -- ===============
+    -- Vector Pipeline
+    -- ===============
+
     -- Stage 0: Warp Scheduling
     -- ========================
 
@@ -495,7 +510,7 @@ makeSIMTPipeline c inputs =
 
       -- Issue load to instruction memory
       let pc = state2.simtPC
-      instrMem.load (toInstrAddr pc)
+      instrMemA.load (toInstrAddr pc)
 
       -- Trigger stage 3
       warpId3 <== warpId2
@@ -514,12 +529,12 @@ makeSIMTPipeline c inputs =
 
     always do
       -- Fetch operands from register file
-      regFile.loadA (warpId3.val, srcA instrMem.out)
-      regFile.loadB (warpId3.val, srcB instrMem.out)
+      regFile.loadA (warpId3.val, srcA instrMemA.out)
+      regFile.loadB (warpId3.val, srcB instrMemA.out)
 
       -- Fetch capability meta-data from register file
-      capRegFile.loadA (warpId3.val, srcA instrMem.out)
-      capRegFile.loadB (warpId3.val, srcB instrMem.out)
+      capRegFile.loadA (warpId3.val, srcA instrMemA.out)
+      capRegFile.loadB (warpId3.val, srcB instrMemA.out)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
@@ -543,7 +558,7 @@ makeSIMTPipeline c inputs =
       -- Trigger stage 4
       warpId4 <== warpId3.val
       activeMask4 <== activeMask3.val
-      instr4 <== instrMem.out
+      instr4 <== instrMemA.out
       state4 <== state3.val
       go4 <== go3.val
 
@@ -612,10 +627,15 @@ makeSIMTPipeline c inputs =
     -- For each lane, is PC being explicitly modified by instruction?
     pcChangeRegs6 :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg false)
 
+    -- New PC assuming no write to PC
+    straightlinePC6 :: Reg (Bit 32) <- makeReg dontCare
+
     -- Insert warp id back into warp queue, except on warp command
     always do
       -- Lookup scalar prediction table
-      scalarTableA.load (toInstrAddr (state5.simtPC + 4))
+      let pcPlus4 = state5.simtPC + 4
+      straightlinePC6 <== pcPlus4
+      scalarTableA.load (toInstrAddr pcPlus4)
 
       when go5 do
         -- Update scalar prediction table
@@ -868,10 +888,60 @@ makeSIMTPipeline c inputs =
                 else false
         if putInScalarQueue
           then do
-            enq scalarQueue warpId6
+            scalarQueue.enq
+              ScalarWarpQueueEntry {
+                pc = straightlinePC6.val
+              , warpId = warpId6
+              }
           else do
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
-            enq warpQueue warpId6
+            warpQueue.enq warpId6
+
+{-  WORK IN PROGRESS
+
+    -- ===============
+    -- Scalar Pipeline
+    -- ===============
+
+    when c.enableScalarUnit do
+
+      -- Stage 0: Warp Scheduling
+      -- ========================
+
+      always do
+        -- Next warp
+        let warp = scalarQueue.first
+
+        -- Load next instruction
+        instrMemB.load (toInstrAddr warp.pc)
+
+        when scalarQueue.canDeq do
+          scalarQueue.deq
+          -- Trigger stage 1
+          scalarGo1 <== true
+          scalarWarp1 <== warp
+
+      -- Stage 1: Operand Fetch
+      -- ======================
+
+      always do
+        -- Fetch operands from register file
+        -- TODO: need extra read ports; A and B in use... XXXXXXXXX
+        regFile.loadA (scalarWarp1.val.warpId, srcA instrMemB.out)
+        regFile.loadB (scalarWarp1.val.warpId, srcB instrMemB.out)
+        -- Trigger next stage
+        scalarGo2 <== scalarGo1.val
+        scalarWarp2 <== scalarWarp1.val
+        scalarInstr2 <== instrMemB.out
+          
+      -- Stage 2: Operand Latch
+      -- ======================
+
+      -- Decode instruction
+      -- TODO: regfile load latency XXXXXXXXXXXXX
+      let (scalarTagMap4, scalarFieldMap4) =
+            matchMap False c.decodeStage scalarInstr2.val
+-}
 
     -- Handle barrier release
     -- ======================
@@ -914,7 +984,7 @@ makeSIMTPipeline c inputs =
         when (req.simtReqCmd .==. simtCmd_WriteInstr) do
           dynamicAssert (inv busy)
             "SIMT pipeline: writing instruction while pipeline busy"
-          instrMem.store (toInstrAddr req.simtReqAddr) (req.simtReqData)
+          instrMemA.store (toInstrAddr req.simtReqAddr) (req.simtReqData)
           inputs.simtMgmtReqs.consume
         -- Start pipeline
         when (req.simtReqCmd .==. simtCmd_StartPipeline) do
