@@ -219,7 +219,7 @@ makeSIMTPipeline c inputs =
     suspBits :: [[Reg (Bit 1)]] <-
       replicateM SIMTLanes (replicateM SIMTWarps (makeReg false))
 
-    -- Register file load latency
+    -- Register file load latency (for vector pipeline)
     let loadLatency =
           if c.useCapRegFileScalarisation || c.useRegFileScalarisation
             then simtScalarisingRegFile_loadLatency
@@ -228,7 +228,8 @@ makeSIMTPipeline c inputs =
     -- Register file
     regFile :: SIMTRegFile 32 <-
       if c.useRegFileScalarisation
-        then makeSIMTScalarisingRegFile c.useAffineScalarisation 0
+        then makeSIMTScalarisingRegFile
+               c.useAffineScalarisation c.useScalarUnit 0
         else makeSIMTRegFile loadLatency Nothing
 
     -- Capability register file (meta-data only)
@@ -236,7 +237,8 @@ makeSIMTPipeline c inputs =
       if enableCHERI
         then
           if c.useCapRegFileScalarisation
-            then makeSIMTScalarisingRegFile False nullCapMemMetaVal
+            then makeSIMTScalarisingRegFile
+                   False False nullCapMemMetaVal
             else makeSIMTRegFile loadLatency (Just nullCapMemMetaVal)
         else makeNullSIMTRegFile
 

@@ -43,18 +43,30 @@ data SIMTRegFile regWidth =
     -- ^ Issue load for given register on port A
   , loadB :: SIMTRegFileIdx -> Action ()
     -- ^ Issue load for given register on port B
+  , loadScalarC :: SIMTRegFileIdx -> Action ()
+    -- ^ Issue load for given scalar register on port C
+  , loadScalarD :: SIMTRegFileIdx -> Action ()
+    -- ^ Issue load for given scalar register on port D
   , outA :: Vec SIMTLanes (Bit regWidth)
     -- ^ Port A's value available one or more cycles after load
   , outB :: Vec SIMTLanes (Bit regWidth)
     -- ^ Port B's value available one or more cycles after load
   , scalarA :: Option (ScalarVal regWidth)
-    -- ^ Port A scalar (valid when outA is valid)?
+    -- ^ Port A scalar (valid when 'outA' is valid)
   , scalarB :: Option (ScalarVal regWidth)
-    -- ^ Port B scalar (valid when outB is valid)?
+    -- ^ Port B scalar (valid when 'outB' is valid)
+  , scalarC :: Option (ScalarVal regWidth)
+    -- ^ Port C scalar (valid one cycle after 'scalarLoadC')
+  , scalarD :: Option (ScalarVal regWidth)
+    -- ^ Port D scalar (valid one cycle after 'scalarLoadD')
   , store :: SIMTRegFileIdx
           -> Vec SIMTLanes (Option (Bit regWidth))
           -> Action ()
     -- ^ Write register
+  , storeScalar :: SIMTRegFileIdx
+                -> ScalarVal regWidth
+                -> Action ()
+    -- ^ Write scalar register (can be called in parallel to 'store')
   , storeLatency :: Int
     -- ^ Number of cycles after 'store' before write is performed
   , init :: Action ()
@@ -75,11 +87,16 @@ makeNullSIMTRegFile = do
     SIMTRegFile {
       loadA = \_ -> return ()
     , loadB = \_ -> return ()
+    , loadScalarC = \_ -> return ()
+    , loadScalarD = \_ -> return ()
     , outA = dontCare
     , outB = dontCare
     , scalarA = none
     , scalarB = none
+    , scalarC = none
+    , scalarD = none
     , store = \_ _ -> return ()
+    , storeScalar = \_ _ -> return ()
     , storeLatency = 0
     , init = return ()
     , initInProgress = false
@@ -127,16 +144,21 @@ makeSIMTRegFile loadLatency m_initVal = do
     SIMTRegFile {
       loadA = \idx -> sequence_ [bank.load idx | bank <- banksA]
     , loadB = \idx -> sequence_ [bank.load idx | bank <- banksB]
+    , loadScalarC = error "makeSIMTRegFile: loadScalarC unavailable"
+    , loadScalarD = error "makeSIMTRegFile: loadScalarD unavailable"
     , outA = fromList [ iterateN (loadLatency-1) buffer bank.out
                       | bank <- banksA ]
     , outB = fromList [ iterateN (loadLatency-1) buffer bank.out
                       | bank <- banksB ]
     , scalarA = none
     , scalarB = none
+    , scalarC = none
+    , scalarD = none
     , store = \idx vec -> do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
+    , storeScalar = error "makeSIMTRegFile: storeScalar unavailable"
     , storeLatency = 0
     , init =
         case m_initVal of
@@ -171,16 +193,24 @@ simtScalarisingRegFile_loadLatency :: Int = 3
 makeSIMTScalarisingRegFile :: forall regWidth. KnownNat regWidth =>
      Bool
      -- ^ Use affine scalarisation?
+  -> Bool
+     -- ^ Provide extra ports for scalar unit accesses?
   -> Bit regWidth
      -- ^ Initial register value
   -> Module (SIMTRegFile regWidth)
-makeSIMTScalarisingRegFile useAffine initVal = do
+makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
 
-  -- Scalar register file (4 read ports, 2 write ports)
+  -- Scalar register file (6 read ports, 2 write ports)
   (scalarRegFileA, scalarRegFileB) ::
     (RAM SIMTRegFileIdx (ScalarReg regWidth),
      RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
   (scalarRegFileC, scalarRegFileD) ::
+    (RAM SIMTRegFileIdx (ScalarReg regWidth),
+     RAM SIMTRegFileIdx (ScalarReg regWidth)) <-
+       if useScalarUnit
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+  (scalarRegFileE, scalarRegFileF) ::
     (RAM SIMTRegFileIdx (ScalarReg regWidth),
      RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
 
@@ -297,9 +327,9 @@ makeSIMTScalarisingRegFile useAffine initVal = do
     -- Stage 1
     when store1.val do
       -- Scalar reg before write
-      let scalarReg = untag #scalar scalarRegFileC.out
+      let scalarReg = untag #scalar scalarRegFileE.out
       -- Is it a uniform vector?
-      let isUniform = scalarRegFileC.out `is` #scalar .&&.
+      let isUniform = scalarRegFileE.out `is` #scalar .&&.
                         (if useAffine
                            then scalarReg.stride .==. 0
                            else true)
@@ -323,7 +353,7 @@ makeSIMTScalarisingRegFile useAffine initVal = do
                           (drop 1 $ toList writeVals)
       -- Trigger next stage
       storeIsScalar2 <== (fromBitList isScalarConds :: Bit SIMTLanes)
-      storeScalarEntry2 <== scalarRegFileC.out
+      storeScalarEntry2 <== scalarRegFileE.out
       storeIdx2 <== storeIdx1.val
       storeVec2 <== V.zipWith (\item writeVal -> Option item.valid writeVal)
                       storeVec1.val writeVals
@@ -356,6 +386,7 @@ makeSIMTScalarisingRegFile useAffine initVal = do
             let newScalarRegEntry = tag #vector freeSlots.top
             scalarRegFileA.store storeIdx2.val newScalarRegEntry
             scalarRegFileC.store storeIdx2.val newScalarRegEntry
+            scalarRegFileE.store storeIdx2.val newScalarRegEntry
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
                 (untag #vector storeScalarEntry2.val, freeSlots.top)
@@ -384,6 +415,7 @@ makeSIMTScalarisingRegFile useAffine initVal = do
                 }
           scalarRegFileA.store storeIdx2.val (tag #scalar scalarVal)
           scalarRegFileC.store storeIdx2.val (tag #scalar scalarVal)
+          scalarRegFileE.store storeIdx2.val (tag #scalar scalarVal)
 
   -- Expand scalar register to vector
   let expandScalar scalarReg offsets = 
@@ -400,6 +432,10 @@ makeSIMTScalarisingRegFile useAffine initVal = do
     , loadB = \idx -> do
         scalarRegFileB.load idx
         loadWireB <== true
+    , loadScalarC = \idx -> do
+        scalarRegFileC.load idx
+    , loadScalarD = \idx -> do
+        scalarRegFileD.load idx
     , outA =
         let isVector = delay false (scalarRegFileA.out `is` #vector) in
           old $ isVector ?
@@ -420,11 +456,17 @@ makeSIMTScalarisingRegFile useAffine initVal = do
         let isScalar = delay false (scalarRegFileB.out `is` #scalar)
             scalar = old (untag #scalar scalarRegFileB.out)
         in  delay none (Option isScalar scalar)
+    , scalarC =
+        Option (scalarRegFileC.out `is` #scalar)
+               (untag #scalar scalarRegFileC.out)
+    , scalarD =
+        Option (scalarRegFileD.out `is` #scalar)
+               (untag #scalar scalarRegFileD.out)
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx
         storeVec1 <== vec
-        scalarRegFileC.load idx
+        scalarRegFileE.load idx
         -- Determine stride for affine scalarisation
         when useAffine do
           let v0 = vec ! (0::Int)
@@ -435,6 +477,11 @@ makeSIMTScalarisingRegFile useAffine initVal = do
             if v0.valid .&&. v1.valid .&&. (diff .&. inv mask .==. 0)
               then truncateCast diff
               else 0
+    , storeScalar = \idx x -> do
+        let s = tag #scalar x
+        scalarRegFileB.store idx s
+        scalarRegFileD.store idx s
+        scalarRegFileF.store idx s
     , storeLatency = 2
     , init = do
         initInProgress <== true
