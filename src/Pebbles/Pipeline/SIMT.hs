@@ -127,7 +127,9 @@ data SIMTPipelineIns =
       -- stage (assumed to be converged) is issuing a warp command
     , simtResumeReqs :: Stream (SIMTPipelineInstrInfo,
                                   Vec SIMTLanes (Option ResumeReq))
-      -- ^ Resume requests for multi-cycle instructions
+      -- ^ Resume requests for multi-cycle instructions (vector pipeline)
+    , simtScalarResumeReqs :: Stream (SIMTPipelineInstrInfo, ResumeReq)
+      -- ^ Resume requests for multi-cycle instructions (scalar pipeline)
   }
 
 -- | SIMT pipeline outputs
@@ -152,16 +154,6 @@ data SIMTThreadState =
     -- ^ SIMT divergence nesting level
   , simtRetry :: Bit 1
     -- ^ The last thing this thread did was a retry
-  }
-  deriving (Generic, Bits, Interface)
-
--- | Scalar unit warp queue entry
-data ScalarWarpQueueEntry =
-  ScalarWarpQueueEntry {
-    pc :: Bit 32
-    -- ^ Program counter
-  , warpId :: Bit SIMTLogWarps
-    -- ^ Unique warp id
   }
   deriving (Generic, Bits, Interface)
 
@@ -195,13 +187,18 @@ makeSIMTPipeline c inputs =
     -- Queue of active warps for vector pipeline
     warpQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
 
-    -- Queue of active warps for scalar pipeline
-    scalarQueue :: Queue ScalarWarpQueueEntry <-
+    -- Queue of warps moving from vector pipeline to scalar pipeline
+    toScalarQueue :: Queue ScalarWarpQueueEntry <-
+      makeSizedQueue SIMTScalarUnitLogQueueSize
+
+    -- Queue of warps moving from scalar pipeline to vector pipeline
+    toVectorQueue :: Queue ScalarWarpQueueEntry <-
       makeSizedQueue SIMTScalarUnitLogQueueSize
 
     -- One block RAM of thread states per lane
-    stateMems ::  [RAM (Bit SIMTLogWarps) SIMTThreadState ] <-
-      replicateM SIMTLanes makeDualRAM
+    (stateMemsA, stateMemsB) :: ([RAM (Bit SIMTLogWarps) SIMTThreadState],
+                                 [RAM (Bit SIMTLogWarps) SIMTThreadState]) <-
+      unzip <$> replicateM SIMTLanes makeQuadRAM
 
     -- One program counter capability RAM (meta-data only) per lane
     pccMems :: [RAM (Bit SIMTLogWarps) CapMem] <-
@@ -355,7 +352,7 @@ makeSIMTPipeline c inputs =
                    let initPCC = almightyCapMemVal -- TODO: constrain
                    pccMem.store (warpIdCounter.val) initPCC
                  else return ()
-          | (stateMem, pccMem) <- zip stateMems pccMems ]
+          | (stateMem, pccMem) <- zip stateMemsA pccMems ]
 
         when (warpIdCounter.val .==. 0) do
           -- Register file initialisation
@@ -432,12 +429,13 @@ makeSIMTPipeline c inputs =
         }
 
     -- Stream of warps to schedule next
-    warpStream <- makeGenericFairMergeTwo (makePipelineQueue 1) (const true)
-                    (const true) (toStream releaseQueue, toStream warpQueue)
+    warpStream <- makeFairMerger $
+         [toStream releaseQueue, toStream warpQueue]
+      ++ [toStream toVectorQueue | c.useScalarUnit]
 
     always do
       -- Load state for next warp on each lane
-      forM_ stateMems \stateMem -> do
+      forM_ stateMemsA \stateMem -> do
         stateMem.load (warpStream.peek)
 
       -- Load PCC for next warp on each lane
@@ -471,11 +469,11 @@ makeSIMTPipeline c inputs =
             [ ( mem.out.simtNestLevel
               , mem.out.simtRetry
               , fromInteger i :: Bit SIMTLogLanes )
-            | (mem, i) <- zip stateMems [0..] ]
+            | (mem, i) <- zip stateMemsA [0..] ]
 
     -- Wait for leader index to be computed
     let states2_tmp =
-          [iterateN (stage1Substages-1) buffer (mem.out) | mem <- stateMems]
+          [iterateN (stage1Substages-1) buffer (mem.out) | mem <- stateMemsA]
     let pccs2_tmp =
           [iterateN (stage1Substages-1) buffer (mem.out) | mem <- pccMems]
   
@@ -605,12 +603,14 @@ makeSIMTPipeline c inputs =
     -- Buffer the decode tables
     let tagMap5 = Map.map old tagMap4
 
+    -- Determine if field is available in current instruction
+    let isFieldInUse fld fldMap =
+          case Map.lookup fld fdlMap of
+            Nothing -> false
+            Just opt -> opt.valid
+
     -- Determine if this instruction is scalarisable
     when (c.useRegFileScalarisation && c.useScalarUnit) do
-      let isFieldInUse fld =
-            case Map.lookup fld fieldMap4 of
-              Nothing -> false
-              Just opt -> opt.valid
       let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
       let isOpScalarisable = orList
             [ Map.findWithDefault false op tagMap4
@@ -618,8 +618,8 @@ makeSIMTPipeline c inputs =
       always do
         instrScalarisable5 <== andList
           [ loadDelay (activeMask4.val .==. ones)
-          , isFieldInUse "rs1" ? (isUniform regFile.scalarA, true)
-          , isFieldInUse "rs2" ? (isUniform regFile.scalarB, true)
+          , isFieldInUse "rs1" fieldMap4 ? (isUniform regFile.scalarA, true)
+          , isFieldInUse "rs2" fieldMap4 ? (isUniform regFile.scalarB, true)
           , isOpScalarisable
           ]
 
@@ -629,15 +629,11 @@ makeSIMTPipeline c inputs =
     -- For each lane, is PC being explicitly modified by instruction?
     pcChangeRegs6 :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg false)
 
-    -- New PC assuming no write to PC
-    straightlinePC6 :: Reg (Bit 32) <- makeReg dontCare
-
     -- Insert warp id back into warp queue, except on warp command
     always do
       -- Lookup scalar prediction table
-      let pcPlus4 = state5.simtPC + 4
-      straightlinePC6 <== pcPlus4
-      scalarTableA.load (toInstrAddr pcPlus4)
+      -- (Future: consider looking up lane 0's pcNext here)
+      scalarTableA.load (toInstrAddr (state5.simtPC + 4))
 
       when go5 do
         -- Update scalar prediction table
@@ -806,7 +802,7 @@ makeSIMTPipeline c inputs =
                <*> ZipList (toList vecRegBorImm5)
                <*> ZipList (toList vecCapRegA5)
                <*> ZipList (toList vecCapRegB5)
-               <*> ZipList stateMems
+               <*> ZipList stateMemsA
                <*> ZipList incInstrCountRegs
                <*> ZipList pccMems
                <*> ZipList excLocals
@@ -885,16 +881,12 @@ makeSIMTPipeline c inputs =
                   [ old activeMask5 .==. ones
                   , scalarTableA.out
                   , inv $ orList $ map (.val) pcChangeRegs6
-                  , scalarQueue.notFull
+                  , toScalarQueue.notFull
                   ]
                 else false
-        if putInScalarQueue
+        if putInScalarQueue .&&. toScalarQueue.notFull
           then do
-            scalarQueue.enq
-              ScalarWarpQueueEntry {
-                pc = straightlinePC6.val
-              , warpId = warpId6
-              }
+            toScalarQueue.enq warpId6
           else do
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             warpQueue.enq warpId6
@@ -905,44 +897,196 @@ makeSIMTPipeline c inputs =
     -- Scalar Pipeline
     -- ===============
 
+    -- Note that CHERI is not yet supported in the scalar pipeline
+
     when c.enableScalarUnit do
+
+      -- Scalar warp queue
+      scalarQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
+
+      -- Merge scalar pipeline warp queues
+      scalarWarps <- makeFairMerger
+        [toStream scalarQueue, toStream toScalarQueue]
 
       -- Stage 0: Warp Scheduling
       -- ========================
 
       always do
         -- Next warp
-        let warp = scalarQueue.first
+        let warpId = scalarWarps.peek
 
-        -- Load next instruction
-        instrMemB.load (toInstrAddr warp.pc)
+        -- Lookup warp's PC
+        (head stateMemsB).load warpId
 
-        when scalarQueue.canDeq do
-          scalarQueue.deq
+        when scalarWarps.canPeek do
+          scalarWarps.consume
           -- Trigger stage 1
           scalarGo1 <== true
           scalarWarp1 <== warp
 
-      -- Stage 1: Operand Fetch
+      -- Stage 1: Instruction Fetch
+      -- ==========================
+
+      always do
+        let state = (head stateMemsB).out
+
+        -- Load next instruction
+        instrMemB.load (toInstrAddr state.simtPC)
+
+        -- Trigger next stage
+        scalarGo2 <== scalarGo1.val
+        scalarWarp2 <== scalarWarp1.val
+        scalarState2 <== state
+
+      -- Stage 2: Operand Fetch
       -- ======================
 
       always do
         -- Fetch operands from register file
-        -- TODO: need extra read ports; A and B in use... XXXXXXXXX
-        regFile.loadA (scalarWarp1.val.warpId, srcA instrMemB.out)
-        regFile.loadB (scalarWarp1.val.warpId, srcB instrMemB.out)
+        regFile.loadScalarC (scalarWarp2.val, srcA instrMemB.out)
+        regFile.loadScalarD (scalarWarp2.val, srcB instrMemB.out)
+        -- Is any thread in warp suspended?
+        scalarIsSusp3 <== orList [ map (.val) regs ! scalarWarp2
+                                 | regs <- suspBits ]
         -- Trigger next stage
-        scalarGo2 <== scalarGo1.val
-        scalarWarp2 <== scalarWarp1.val
-        scalarInstr2 <== instrMemB.out
-          
-      -- Stage 2: Operand Latch
+        scalarGo3 <== scalarGo2.val
+        scalarWarp3 <== scalarWarp2.val
+        scalarState3 <== scalarState2.val
+        scalarInstr3 <== instrMemB.out
+
+      -- Stage 3: Operand Latch
       -- ======================
 
       -- Decode instruction
-      -- TODO: regfile load latency XXXXXXXXXXXXX
-      let (scalarTagMap4, scalarFieldMap4) =
-            matchMap False c.decodeStage scalarInstr2.val
+      let (scalarTagMap3, scalarFieldMap3) =
+            matchMap False c.scalarUnitDecodeStage scalarInstr3.val
+
+      -- Use "imm" field if valid, otherwise use register b
+      let bOrImm = if Map.member "imm" scalarFieldMap3
+                     then let imm = getBitField scalarFieldMap3 "imm"
+                          in imm.valid ? (imm.val, regFile.scalarD.val)
+                     else regFile.scalarD.val
+
+      always do
+        -- Trigger next stage
+        scalarGo4 <== scalarGo3.val
+        -- Latch operands
+        scalarOpA4 <== regFile.scalarC.val
+        scalarOpB4 <== regFile.scalarD.val
+        scalarOpBOrImm4 <== bOrImm
+        scalarWarp4 <== scalarWarp3.val
+        scalarState4 <== scalarState3.val
+        scalarInstr4 <== scalarInstr3.val
+        scalarIsSusp4 <== scalarIsSusp3.val
+        -- Abort if any used operand is a vector
+        scalarAbort4 <== orList
+              [ isFieldInUse "rs1" scalarFieldMap3 .&&.
+                  (regFile.scalarC `is` #vector)
+              , isFieldInUse "rs2" scalarFieldMap3 .&&.
+                  (regFile.scalarD `is` #vector) ]
+
+      -- Stage 4: Execute & Suspend
+      -- ==========================
+
+      let scalarTagMap4 = Map.map old scalarTagMap3
+
+      -- Instantiate execute stage
+      execStage <- c.scalarUnitExecuteStage
+        State {
+          instr = scalarInstr4.val
+        , opA = scalarOpA4.val
+        , opB = scalarOpB4.val
+        , opBorImm = scalarOpBOrImm4.val
+        , opAIndex = srcA scalarInstr4.val
+        , opBIndex = srcB scalarInstr4.val
+        , resultIndex = dst scalarInstr4.val
+        , pc = ReadWrite scalarState4.val.simtPC \pcNew -> do
+                 scalarPCNextWire <== pcNew
+        , result = WriteOnly \x ->
+                     when (dst scalarInstr4.val .!=. 0) do
+                       scalarResultWire <== x
+        , suspend = do scalarSuspend <== true
+        , retry = do scalarRetry <== true
+        , opcode = packTagMap scalarTagMap4
+        , trap = \code -> do
+            display "Scalar unit trap: code=" code
+                    " pc=0x" (formatHex 8 scalarState4.val.simtPC)
+        , capA = dontCare
+        , capB = dontCare
+        , pcc = dontCare
+        , pccNew = WriteOnly \pccNew -> return ()
+        , resultCap = WriteOnly \cap -> return ()
+        }
+
+      always do
+        -- Invoke execute stage
+        when (scalarGo4.val .&&. inv scalarIsSusp4.val .&&.
+                inv scalarAbort4.val) do
+          execStage.execute
+
+        -- Lookup scalar prediction table
+        scalarTableB.load (toInstrAddr scalarPCNextWire.val)
+
+        -- Trigger next stage
+        scalarGo5 <== scalarGo4.val
+        scalarWarp5 <== scalarWarp4.val
+        scalarState5 <== scalarState4.val
+        scalarIsSusp5 <== scalarIsSusp4.val
+        scalarInstr5 <== scalarInstr4.val
+        scalarAbort5 <== scalarAbort4.val
+
+      -- Stage 5: Writeback & Resume
+      -- ===========================
+
+      always do
+        when scalarGo5.val do
+          -- Update PC
+          let doUpdatePC =
+                andList [ inv scalarIsSusp5.val
+                        , inv scalarRetry.val
+                        , inv scalarAbort5.val ]
+          when doUpdatePC do
+            let newPC = old scalarPCNextWire.val
+            let newState = scalarState5.val { simtPC = newPC }
+            sequence_
+              [ stateMem.store scalarWarp5.val newState
+              | stateMem <- stateMemsB ]
+
+          -- Reschedule warp
+          if scalarAbort5.val .||. inv scalarTableB.out
+            then do
+              -- If instr was not scalarisable
+              -- or next instr is not predicted scalarisable,
+              -- then move warp to vector pipeline
+              dynamicAssert toVectorQueue.notFull
+                            "SIMT scalar pipeline: toVectorQueue overflow"
+              toVectorQueue.enq scalarWarp5.val
+            else do
+              -- Otherwise, keep warp in scalar pipeline
+              dynamicAssert scalarQueue.notFull
+                            "SIMT scalar pipeline: scalarQueue overflow"
+              scalarQueue.enq scalarWarp5.val
+
+          -- Suspend warp
+          when scalarSuspend.val do
+            ((head suspBits)!warpId5.val) <== true
+
+        -- Write to reg file
+        if delay false scalarResultWire.active
+          then do
+            let dest = (scalarWarp5.val, dst scalarInstr5.val)
+            regFile.storeScalar dest (old scalarResultWire.val)
+          else do
+            let resumeReqs = inputs.simtScalarResumeReqs
+            when resumeReqs.canPeek do
+              -- Process resume request
+              resumeReqs.consume
+              let (info, req) = resumeReqs.peek
+              let dest = (req.warpId, req.destReg)
+              regFile.storeScalar dest req.resumeReqData
+              -- Resume warp
+              ((head suspBits)!req.warpId) <== false
+
 -}
 
     -- Handle barrier release
