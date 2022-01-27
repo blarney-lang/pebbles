@@ -142,7 +142,9 @@ data SIMTPipelineOuts =
     , simtKernelAddr :: Bit 32
       -- ^ Address of kernel closure as set by CPU
     , simtInstrInfo :: SIMTPipelineInstrInfo
-      -- ^ Info for instruction currently in execute stage
+      -- ^ Info for instruction currently in execute stage (vector pipeline)
+    , simtScalarInstrInfo :: SIMTPipelineInstrInfo
+      -- ^ Info for instruction currently in execute stage (scalar pipeline)
   }
 
 -- | Per-thread state
@@ -188,12 +190,12 @@ makeSIMTPipeline c inputs =
     warpQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
 
     -- Queue of warps moving from vector pipeline to scalar pipeline
-    toScalarQueue :: Queue ScalarWarpQueueEntry <-
-      makeSizedQueue SIMTScalarUnitLogQueueSize
+    toScalarQueue :: Queue (Bit SIMTLogWarps) <-
+      makeSizedQueue SIMTLogWarps
 
     -- Queue of warps moving from scalar pipeline to vector pipeline
-    toVectorQueue :: Queue ScalarWarpQueueEntry <-
-      makeSizedQueue SIMTScalarUnitLogQueueSize
+    toVectorQueue :: Queue (Bit SIMTLogWarps) <-
+      makeSizedQueue SIMTLogWarps
 
     -- One block RAM of thread states per lane
     (stateMemsA, stateMemsB) :: ([RAM (Bit SIMTLogWarps) SIMTThreadState],
@@ -605,7 +607,7 @@ makeSIMTPipeline c inputs =
 
     -- Determine if field is available in current instruction
     let isFieldInUse fld fldMap =
-          case Map.lookup fld fdlMap of
+          case Map.lookup fld fldMap of
             Nothing -> false
             Just opt -> opt.valid
 
@@ -632,7 +634,7 @@ makeSIMTPipeline c inputs =
     -- Insert warp id back into warp queue, except on warp command
     always do
       -- Lookup scalar prediction table
-      -- (Future: consider looking up lane 0's pcNext here)
+      -- (NOTE: consider looking up lane 0's pcNext here)
       scalarTableA.load (toInstrAddr (state5.simtPC + 4))
 
       when go5 do
@@ -876,6 +878,7 @@ makeSIMTPipeline c inputs =
       when rescheduleWarp6.val do
         -- Put warp in scalar or vector queue?
         let putInScalarQueue =
+              -- (NOTE: consider relaxing these restrictions)
               if c.useScalarUnit
                 then andList
                   [ old activeMask5 .==. ones
@@ -891,7 +894,6 @@ makeSIMTPipeline c inputs =
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             warpQueue.enq warpId6
 
-{-  WORK IN PROGRESS
 
     -- ===============
     -- Scalar Pipeline
@@ -899,6 +901,13 @@ makeSIMTPipeline c inputs =
 
     -- Note that CHERI is not yet supported in the scalar pipeline
 
+    -- Id of warp in scalar unit execute stage
+    scalarWarpId5 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+
+    -- InstrucionDestination regist
+    scalarInstr5 :: Reg (Bit 32) <- makeReg dontCare
+
+{-  WORK IN PROGRESS
     when c.enableScalarUnit do
 
       -- Scalar warp queue
@@ -1172,6 +1181,11 @@ makeSIMTPipeline c inputs =
           SIMTPipelineInstrInfo {
             destReg = dst instr5
           , warpId = warpId5
+          }
+      , simtScalarInstrInfo =
+          SIMTPipelineInstrInfo {
+            destReg = dst scalarInstr5.val
+          , warpId = scalarWarpId5.val
           }
       }
 
