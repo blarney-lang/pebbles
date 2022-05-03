@@ -75,3 +75,10 @@ makeCSRUnit csrs = do
         csrIdWriteWire <== id
         csrWriteWire <== x
     }
+
+nullCSRUnit :: CSRUnit
+nullCSRUnit =
+  CSRUnit {
+      csrUnitRead = \id -> return dontCare
+    , csrUnitWrite = \id x -> return ()
+    }

@@ -48,6 +48,7 @@ import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
 import Blarney.PulseWire
+import Blarney.TaggedUnion
 import Blarney.QuadPortRAM
 import Blarney.Interconnect
 import Blarney.Vector qualified as V
@@ -115,6 +116,10 @@ data SIMTPipelineConfig tag =
     -- ^ Use dedicated scalar unit for parallel scalar/vector execution?
   , scalarUnitAllowList :: [tag]
     -- ^ A list of instructions that can execute on the scalar unit
+  , scalarUnitDecodeStage :: [(String, tag)]
+    -- ^ Decode table for scalar unit
+  , scalarUnitExecuteStage :: State -> Module ExecuteStage
+    -- ^ Execute stage for scalar unit
   }
 
 -- | SIMT pipeline inputs
@@ -613,6 +618,7 @@ makeSIMTPipeline c inputs =
 
     -- Determine if this instruction is scalarisable
     when (c.useRegFileScalarisation && c.useScalarUnit) do
+      -- XXX: affine vectors not yet allowed in scalar pipeline
       let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
       let isOpScalarisable = orList
             [ Map.findWithDefault false op tagMap4
@@ -894,21 +900,57 @@ makeSIMTPipeline c inputs =
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             warpQueue.enq warpId6
 
-
     -- ===============
     -- Scalar Pipeline
     -- ===============
 
-    -- Note that CHERI is not yet supported in the scalar pipeline
+    -- XXX: CHERI is not yet supported in the SIMT scalar pipeline
+    staticAssert (c.useScalarUnit <= not enableCHERI)
+      "CHERI is not yet supported in the SIMT scalar pipeline"
 
-    -- Id of warp in scalar unit execute stage
-    scalarWarpId5 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    -- Scalar pipeline stage trigger signals
+    scalarGo1 :: Reg (Bit 1) <- makeDReg false
+    scalarGo2 :: Reg (Bit 1) <- makeDReg false
+    scalarGo3 :: Reg (Bit 1) <- makeDReg false
+    scalarGo4 :: Reg (Bit 1) <- makeDReg false
+    scalarGo5 :: Reg (Bit 1) <- makeDReg false
 
-    -- InstrucionDestination regist
+    -- Instruction register, per pipeline stage
+    scalarInstr3 :: Reg (Bit 32) <- makeReg dontCare
+    scalarInstr4 :: Reg (Bit 32) <- makeReg dontCare
     scalarInstr5 :: Reg (Bit 32) <- makeReg dontCare
 
-{-  WORK IN PROGRESS
-    when c.enableScalarUnit do
+    -- Warp id, per pipeline stage
+    scalarWarpId1 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    scalarWarpId2 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    scalarWarpId3 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    scalarWarpId4 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+    scalarWarpId5 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
+
+    -- Warp state, per pipeline stage
+    scalarState2 :: Reg SIMTThreadState <- makeReg dontCare
+    scalarState3 :: Reg SIMTThreadState <- makeReg dontCare
+    scalarState4 :: Reg SIMTThreadState <- makeReg dontCare
+    scalarState5 :: Reg SIMTThreadState <- makeReg dontCare
+
+    -- Warp suspension status, per pipeline stage
+    scalarIsSusp3 :: Reg (Bit 1) <- makeReg dontCare
+    scalarIsSusp4 :: Reg (Bit 1) <- makeReg dontCare
+    scalarIsSusp5 :: Reg (Bit 1) <- makeReg dontCare
+
+    -- Instruciton operand registers
+    scalarOpA4 :: Reg (Bit 32) <- makeReg dontCare
+    scalarOpB4 :: Reg (Bit 32) <- makeReg dontCare
+    scalarOpBOrImm4 :: Reg (Bit 32) <- makeReg dontCare
+
+    -- Abort scalar pipeline if instruction turns out not to be scalarisable
+    scalarAbort4 :: Reg (Bit 1) <- makeReg dontCare
+
+    -- Retry/suspend wires from execute stage
+    scalarSuspend5 :: Reg (Bit 1) <- makeDReg false
+    scalarRetry5 :: Reg (Bit 1) <- makeDReg false
+
+    when c.useScalarUnit do
 
       -- Scalar warp queue
       scalarQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
@@ -931,7 +973,7 @@ makeSIMTPipeline c inputs =
           scalarWarps.consume
           -- Trigger stage 1
           scalarGo1 <== true
-          scalarWarp1 <== warp
+          scalarWarpId1 <== warpId
 
       -- Stage 1: Instruction Fetch
       -- ==========================
@@ -944,7 +986,7 @@ makeSIMTPipeline c inputs =
 
         -- Trigger next stage
         scalarGo2 <== scalarGo1.val
-        scalarWarp2 <== scalarWarp1.val
+        scalarWarpId2 <== scalarWarpId1.val
         scalarState2 <== state
 
       -- Stage 2: Operand Fetch
@@ -952,50 +994,61 @@ makeSIMTPipeline c inputs =
 
       always do
         -- Fetch operands from register file
-        regFile.loadScalarC (scalarWarp2.val, srcA instrMemB.out)
-        regFile.loadScalarD (scalarWarp2.val, srcB instrMemB.out)
+        regFile.loadScalarC (scalarWarpId2.val, srcA instrMemB.out)
+        regFile.loadScalarD (scalarWarpId2.val, srcB instrMemB.out)
         -- Is any thread in warp suspended?
-        scalarIsSusp3 <== orList [ map (.val) regs ! scalarWarp2
+        scalarIsSusp3 <== orList [ map (.val) regs ! scalarWarpId2.val
                                  | regs <- suspBits ]
         -- Trigger next stage
         scalarGo3 <== scalarGo2.val
-        scalarWarp3 <== scalarWarp2.val
+        scalarWarpId3 <== scalarWarpId2.val
         scalarState3 <== scalarState2.val
         scalarInstr3 <== instrMemB.out
 
       -- Stage 3: Operand Latch
       -- ======================
 
+      -- XXX: affine vectors not yet allowed in scalar pipeline
+
       -- Decode instruction
       let (scalarTagMap3, scalarFieldMap3) =
             matchMap False c.scalarUnitDecodeStage scalarInstr3.val
 
       -- Use "imm" field if valid, otherwise use register b
+      -- XXX: assume uniform
       let bOrImm = if Map.member "imm" scalarFieldMap3
                      then let imm = getBitField scalarFieldMap3 "imm"
-                          in imm.valid ? (imm.val, regFile.scalarD.val)
-                     else regFile.scalarD.val
+                          in imm.valid ? (imm.val, regFile.scalarD.val.val)
+                     else regFile.scalarD.val.val
 
       always do
         -- Trigger next stage
         scalarGo4 <== scalarGo3.val
         -- Latch operands
-        scalarOpA4 <== regFile.scalarC.val
-        scalarOpB4 <== regFile.scalarD.val
+        scalarOpA4 <== regFile.scalarC.val.val  -- XXX: assume uniform
+        scalarOpB4 <== regFile.scalarD.val.val  -- XXX: assume uniform
         scalarOpBOrImm4 <== bOrImm
-        scalarWarp4 <== scalarWarp3.val
+        scalarWarpId4 <== scalarWarpId3.val
         scalarState4 <== scalarState3.val
         scalarInstr4 <== scalarInstr3.val
         scalarIsSusp4 <== scalarIsSusp3.val
         -- Abort if any used operand is a vector
+        -- XXX: affine vectors not yet allowed in scalar pipeline
         scalarAbort4 <== orList
               [ isFieldInUse "rs1" scalarFieldMap3 .&&.
-                  (regFile.scalarC `is` #vector)
+                  (inv regFile.scalarC.valid .||.
+                     regFile.scalarC.val.stride .!=. 0)
               , isFieldInUse "rs2" scalarFieldMap3 .&&.
-                  (regFile.scalarD `is` #vector) ]
+                  (inv regFile.scalarD.valid .||.
+                     regFile.scalarD.val.stride .!=. 0) ]
 
       -- Stage 4: Execute & Suspend
       -- ==========================
+
+      -- Execute stage wires
+      scalarPCNextWire :: Wire (Bit 32) <-
+        makeWire (scalarState4.val.simtPC + 4)
+      scalarResultWire :: Wire (Bit 32) <- makeWire dontCare
 
       let scalarTagMap4 = Map.map old scalarTagMap3
 
@@ -1014,8 +1067,8 @@ makeSIMTPipeline c inputs =
         , result = WriteOnly \x ->
                      when (dst scalarInstr4.val .!=. 0) do
                        scalarResultWire <== x
-        , suspend = do scalarSuspend <== true
-        , retry = do scalarRetry <== true
+        , suspend = do scalarSuspend5 <== true
+        , retry = do scalarRetry5 <== true
         , opcode = packTagMap scalarTagMap4
         , trap = \code -> do
             display "Scalar unit trap: code=" code
@@ -1027,6 +1080,8 @@ makeSIMTPipeline c inputs =
         , resultCap = WriteOnly \cap -> return ()
         }
 
+      return ()
+{-  WORK IN PROGRESS
       always do
         -- Invoke execute stage
         when (scalarGo4.val .&&. inv scalarIsSusp4.val .&&.
@@ -1038,7 +1093,7 @@ makeSIMTPipeline c inputs =
 
         -- Trigger next stage
         scalarGo5 <== scalarGo4.val
-        scalarWarp5 <== scalarWarp4.val
+        scalarWarpId5 <== scalarWarpId4.val
         scalarState5 <== scalarState4.val
         scalarIsSusp5 <== scalarIsSusp4.val
         scalarInstr5 <== scalarInstr4.val
@@ -1058,7 +1113,7 @@ makeSIMTPipeline c inputs =
             let newPC = old scalarPCNextWire.val
             let newState = scalarState5.val { simtPC = newPC }
             sequence_
-              [ stateMem.store scalarWarp5.val newState
+              [ stateMem.store scalarWarpId5.val newState
               | stateMem <- stateMemsB ]
 
           -- Reschedule warp
@@ -1069,21 +1124,21 @@ makeSIMTPipeline c inputs =
               -- then move warp to vector pipeline
               dynamicAssert toVectorQueue.notFull
                             "SIMT scalar pipeline: toVectorQueue overflow"
-              toVectorQueue.enq scalarWarp5.val
+              toVectorQueue.enq scalarWarpId5.val
             else do
               -- Otherwise, keep warp in scalar pipeline
               dynamicAssert scalarQueue.notFull
                             "SIMT scalar pipeline: scalarQueue overflow"
-              scalarQueue.enq scalarWarp5.val
+              scalarQueue.enq scalarWarpId5.val
 
           -- Suspend warp
-          when scalarSuspend.val do
+          when scalarSuspend5.val do
             ((head suspBits)!warpId5.val) <== true
 
         -- Write to reg file
         if delay false scalarResultWire.active
           then do
-            let dest = (scalarWarp5.val, dst scalarInstr5.val)
+            let dest = (scalarWarpId5.val, dst scalarInstr5.val)
             regFile.storeScalar dest (old scalarResultWire.val)
           else do
             let resumeReqs = inputs.simtScalarResumeReqs
