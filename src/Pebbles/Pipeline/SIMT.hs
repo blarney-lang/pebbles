@@ -945,6 +945,7 @@ makeSIMTPipeline c inputs =
 
     -- Abort scalar pipeline if instruction turns out not to be scalarisable
     scalarAbort4 :: Reg (Bit 1) <- makeReg dontCare
+    scalarAbort5 :: Reg (Bit 1) <- makeReg dontCare
 
     -- Retry/suspend wires from execute stage
     scalarSuspend5 :: Reg (Bit 1) <- makeDReg false
@@ -1008,14 +1009,13 @@ makeSIMTPipeline c inputs =
       -- Stage 3: Operand Latch
       -- ======================
 
-      -- XXX: affine vectors not yet allowed in scalar pipeline
 
       -- Decode instruction
       let (scalarTagMap3, scalarFieldMap3) =
             matchMap False c.scalarUnitDecodeStage scalarInstr3.val
 
       -- Use "imm" field if valid, otherwise use register b
-      -- XXX: assume uniform
+      -- XXX: affine vectors not yet allowed in scalar pipeline
       let bOrImm = if Map.member "imm" scalarFieldMap3
                      then let imm = getBitField scalarFieldMap3 "imm"
                           in imm.valid ? (imm.val, regFile.scalarD.val.val)
@@ -1080,8 +1080,6 @@ makeSIMTPipeline c inputs =
         , resultCap = WriteOnly \cap -> return ()
         }
 
-      return ()
-{-  WORK IN PROGRESS
       always do
         -- Invoke execute stage
         when (scalarGo4.val .&&. inv scalarIsSusp4.val .&&.
@@ -1107,7 +1105,7 @@ makeSIMTPipeline c inputs =
           -- Update PC
           let doUpdatePC =
                 andList [ inv scalarIsSusp5.val
-                        , inv scalarRetry.val
+                        , inv scalarRetry5.val
                         , inv scalarAbort5.val ]
           when doUpdatePC do
             let newPC = old scalarPCNextWire.val
@@ -1133,25 +1131,27 @@ makeSIMTPipeline c inputs =
 
           -- Suspend warp
           when scalarSuspend5.val do
-            ((head suspBits)!warpId5.val) <== true
+            ((head suspBits)!scalarWarpId5.val) <== true
 
         -- Write to reg file
         if delay false scalarResultWire.active
           then do
             let dest = (scalarWarpId5.val, dst scalarInstr5.val)
-            regFile.storeScalar dest (old scalarResultWire.val)
+            -- XXX: affine vectors not yet allowed in scalar pipeline
+            regFile.storeScalar dest
+              ScalarVal { val = old scalarResultWire.val, stride = 0 }
           else do
             let resumeReqs = inputs.simtScalarResumeReqs
             when resumeReqs.canPeek do
               -- Process resume request
               resumeReqs.consume
               let (info, req) = resumeReqs.peek
-              let dest = (req.warpId, req.destReg)
-              regFile.storeScalar dest req.resumeReqData
+              let dest = (info.warpId, info.destReg)
+              -- XXX: affine vectors not yet allowed in scalar pipeline
+              regFile.storeScalar dest
+                ScalarVal { val = req.resumeReqData, stride = 0 }
               -- Resume warp
-              ((head suspBits)!req.warpId) <== false
-
--}
+              ((head suspBits)!info.warpId) <== false
 
     -- Handle barrier release
     -- ======================
