@@ -250,6 +250,7 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
       let idx = unpack initIdx.val
       scalarRegFileB.store idx initScalarReg
       scalarRegFileD.store idx initScalarReg
+      scalarRegFileF.store idx initScalarReg
       freeSlots.push initIdx.val
       initIdx <== initIdx.val - 1
       when (initIdx.val .==. 0) do
