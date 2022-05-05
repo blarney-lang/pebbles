@@ -1032,6 +1032,10 @@ makeSIMTPipeline c inputs =
         scalarState4 <== scalarState3.val
         scalarInstr4 <== scalarInstr3.val
         scalarIsSusp4 <== scalarIsSusp3.val
+        -- Is instruction in the allow list for the scalar unit?
+        let isOpScalarisable = orList
+              [ Map.findWithDefault false op scalarTagMap3
+              | op <- c.scalarUnitAllowList ]
         -- Abort if any used operand is a vector
         -- XXX: affine vectors not yet allowed in scalar pipeline
         scalarAbort4 <== orList
@@ -1040,7 +1044,8 @@ makeSIMTPipeline c inputs =
                      regFile.scalarC.val.stride .!=. 0)
               , isFieldInUse "rs2" scalarFieldMap3 .&&.
                   (inv regFile.scalarD.valid .||.
-                     regFile.scalarD.val.stride .!=. 0) ]
+                     regFile.scalarD.val.stride .!=. 0)
+              , inv isOpScalarisable ]
 
       -- Stage 4: Execute & Suspend
       -- ==========================
