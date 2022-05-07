@@ -1152,9 +1152,10 @@ makeSIMTPipeline c inputs =
               resumeReqs.consume
               let (info, req) = resumeReqs.peek
               let dest = (info.warpId, info.destReg)
-              -- XXX: affine vectors not yet allowed in scalar pipeline
-              regFile.storeScalar dest
-                ScalarVal { val = req.resumeReqData, stride = 0 }
+              when (info.destReg .!=. 0) do
+                -- XXX: affine vectors not yet allowed in scalar pipeline
+                regFile.storeScalar dest
+                  ScalarVal { val = req.resumeReqData, stride = 0 }
               -- Resume warp
               ((head suspBits)!info.warpId) <== false
 
@@ -1244,8 +1245,8 @@ makeSIMTPipeline c inputs =
           }
       , simtScalarInstrInfo =
           SIMTPipelineInstrInfo {
-            destReg = dst scalarInstr5.val
-          , warpId = scalarWarpId5.val
+            destReg = dst scalarInstr4.val
+          , warpId = scalarWarpId4.val
           }
       }
 
