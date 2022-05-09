@@ -66,7 +66,8 @@ data SIMTRegFile regWidth =
   , storeScalar :: SIMTRegFileIdx
                 -> ScalarVal regWidth
                 -> Action ()
-    -- ^ Write scalar register (can be called in parallel to 'store')
+    -- ^ Write scalar register (can be called in parallel to 'store').
+    -- Store occurs on cycle after method is called.
   , storeLatency :: Int
     -- ^ Number of cycles after 'store' before write is performed
   , init :: Action ()
@@ -221,8 +222,14 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
        unzip <$> replicateM SIMTLanes makeQuadRAM
 
   -- Stack of free space in vector scratchpad
-  freeSlots :: Stack SIMTRegFileAddr <-
+  freeSlots1 :: Stack SIMTRegFileAddr <-
     makeSizedStack (SIMTLogWarps + 5)
+  freeSlots2 :: Stack SIMTRegFileAddr <-
+    makeSizedStack (SIMTLogWarps + 5)
+  let freeSlots =
+        if useScalarUnit
+          then toStream freeSlots1 `mergeTwo` toStream freeSlots2
+          else toStream freeSlots1
 
   -- Count number of vectors in use
   vecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
@@ -251,7 +258,7 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
       scalarRegFileB.store idx initScalarReg
       scalarRegFileD.store idx initScalarReg
       scalarRegFileF.store idx initScalarReg
-      freeSlots.push initIdx.val
+      freeSlots1.push initIdx.val
       initIdx <== initIdx.val - 1
       when (initIdx.val .==. 0) do
         vecCount <== 0
@@ -379,18 +386,18 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
           -- Now a vector. Was it a scalar before?
           when (inv wasVector) do
             -- We need to allocate space for a new vector
-            dynamicAssert freeSlots.notEmpty
+            dynamicAssert freeSlots.canPeek
               "Scalarising reg file: out of free space"
-            freeSlots.pop
+            freeSlots.consume
             vecCount <== vecCount.val + 1
             -- Tell scalar reg file about new vector
-            let newScalarRegEntry = tag #vector freeSlots.top
+            let newScalarRegEntry = tag #vector freeSlots.peek
             scalarRegFileA.store storeIdx2.val newScalarRegEntry
             scalarRegFileC.store storeIdx2.val newScalarRegEntry
             scalarRegFileE.store storeIdx2.val newScalarRegEntry
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
-                (untag #vector storeScalarEntry2.val, freeSlots.top)
+                (untag #vector storeScalarEntry2.val, freeSlots.peek)
           let isAffine = storeScalarEntry2.val `is` #scalar
           sequence_
             [ when (item.valid .||. inv wasVector) do
@@ -404,9 +411,9 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
           -- Now a scalar. Was it a vector before?
           when wasVector do
             -- We need to reclaim the vector
-            dynamicAssert freeSlots.notFull
+            dynamicAssert freeSlots1.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots.push (untag #vector storeScalarEntry2.val)
+            freeSlots1.push (untag #vector storeScalarEntry2.val)
             vecCount <== vecCount.val - 1
           -- Write to scalar reg file
           let scalarVal =
@@ -417,6 +424,29 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
           scalarRegFileA.store storeIdx2.val (tag #scalar scalarVal)
           scalarRegFileC.store storeIdx2.val (tag #scalar scalarVal)
           scalarRegFileE.store storeIdx2.val (tag #scalar scalarVal)
+
+  -- Scalar store path
+  -- =================
+
+  -- Pipeline registers
+  storeScalarGo <- makeDReg false
+  storeScalarIdx <- makeReg dontCare
+  storeScalarVal <- makeReg dontCare
+
+  always do
+    when useScalarUnit do
+      when storeScalarGo.val do
+        -- Update scalar reg file
+        let s = tag #scalar storeScalarVal.val
+        let idx = storeScalarIdx.val
+        scalarRegFileB.store idx s
+        scalarRegFileD.store idx s
+        scalarRegFileF.store idx s
+        -- Reclaim vector space
+        when (scalarRegFileF.out `is` #vector) do
+          dynamicAssert freeSlots2.notFull
+            "Scalarising reg file: freeSlots2 overflow"
+          freeSlots2.push (untag #vector scalarRegFileF.out)
 
   -- Expand scalar register to vector
   let expandScalar scalarReg offsets = 
@@ -479,14 +509,15 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
               then truncateCast diff
               else 0
     , storeScalar = \idx x -> do
-        let s = tag #scalar x
-        scalarRegFileB.store idx s
-        scalarRegFileD.store idx s
-        scalarRegFileF.store idx s
+        scalarRegFileF.load idx
+        storeScalarGo <== true
+        storeScalarIdx <== idx
+        storeScalarVal <== x
     , storeLatency = 2
     , init = do
         initInProgress <== true
-        freeSlots.clear
+        freeSlots1.clear
+        when useScalarUnit do freeSlots2.clear
     , initInProgress = initInProgress.val
     , maxVecRegs = maxVecCount.val
     }

@@ -1110,6 +1110,10 @@ makeSIMTPipeline c inputs =
       -- Stage 5: Writeback & Resume
       -- ===========================
 
+      -- For resuming thread after scalar store latency
+      scalarResumeGo <- makeDReg false
+      scalarResumeWarpId <- makeReg dontCare
+
       always do
         when scalarGo5.val do
           -- Update PC
@@ -1161,8 +1165,13 @@ makeSIMTPipeline c inputs =
                 -- XXX: affine vectors not yet allowed in scalar pipeline
                 regFile.storeScalar dest
                   ScalarVal { val = req.resumeReqData, stride = 0 }
-              -- Resume warp
-              ((head suspBits)!info.warpId) <== false
+              -- Trigger warp resumption
+              scalarResumeGo <== true
+              scalarResumeWarpId <== info.warpId
+
+        -- Resume warp after scalar reg file store latency has elapsed
+        when scalarResumeGo.val do
+          ((head suspBits)!scalarResumeWarpId.val) <== false
 
     -- Handle barrier release
     -- ======================
