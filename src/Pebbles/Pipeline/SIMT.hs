@@ -198,6 +198,11 @@ makeSIMTPipeline c inputs =
     toScalarQueue :: Queue (Bit SIMTLogWarps) <-
       makeSizedQueue SIMTLogWarps
 
+    -- Track number of warps in scalar pipeline
+    -- (Max val set to half num warps for load balancing)
+    scalarUnitWarpCount :: Counter SIMTLogWarps <-
+      makeCounter (fromInteger (SIMTWarps `div` 2))
+
     -- Queue of warps moving from scalar pipeline to vector pipeline
     toVectorQueue :: Queue (Bit SIMTLogWarps) <-
       makeSizedQueue SIMTLogWarps
@@ -898,8 +903,10 @@ makeSIMTPipeline c inputs =
                   ]
                 else false
         if putInScalarQueue .&&. toScalarQueue.notFull
+                  .&&. inv scalarUnitWarpCount.isFull
           then do
             toScalarQueue.enq warpId6
+            scalarUnitWarpCount.incrBy 1
           else do
             dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
             warpQueue.enq warpId6
@@ -1137,6 +1144,7 @@ makeSIMTPipeline c inputs =
               dynamicAssert toVectorQueue.notFull
                             "SIMT scalar pipeline: toVectorQueue overflow"
               toVectorQueue.enq scalarWarpId5.val
+              scalarUnitWarpCount.decrBy 1
             else do
               -- Otherwise, keep warp in scalar pipeline
               dynamicAssert scalarQueue.notFull
