@@ -314,8 +314,9 @@ makeSIMTPipeline c inputs =
     cycleCount :: Reg (Bit 32) <- makeReg 0
     instrCount :: Reg (Bit 32) <- makeReg 0
 
-    -- Triggers from each lane to increment instruction count
+    -- Triggers from each execute unit to increment instruction count
     incInstrCountRegs :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg 0)
+    incScalarInstrCount :: Reg (Bit 1) <- makeDReg 0
 
     -- Indicates that current instruction is scalarisable
     instrScalarisable5 <- makeReg false
@@ -416,7 +417,10 @@ makeSIMTPipeline c inputs =
             let instrIncs :: [Bit 32] =
                   map zeroExtend (map (.val) incInstrCountRegs)
             let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
-            instrCount <== instrCount.val + instrInc
+            let scalarInstrInc =
+                  incScalarInstrCount.val ? (SIMTLanes, 0)
+            instrCount <== instrCount.val + instrInc + scalarInstrInc
+
       else
         return ()
 
@@ -1090,6 +1094,7 @@ makeSIMTPipeline c inputs =
         when (scalarGo4.val .&&. inv scalarIsSusp4.val .&&.
                 inv scalarAbort4.val) do
           execStage.execute
+          incScalarInstrCount <== true
 
         -- Lookup scalar prediction table
         scalarTableB.load (toInstrAddr scalarPCNextWire.val)
