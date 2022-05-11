@@ -315,9 +315,13 @@ makeSIMTPipeline c inputs =
     pccShared :: Reg CapPipe <- makeReg dontCare
     pcc3 :: Reg Cap <- makeReg dontCare
 
-    -- Stat counters
+    -- Basic stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
     instrCount :: Reg (Bit 32) <- makeReg 0
+
+    -- Stat counter for scalarisable instructions (if scalar unit
+    -- disabled) or scalarised instructions (if scalar unit enabled)
+    scalarisableInstrCount :: Reg (Bit 32) <- makeReg 0
 
     -- Triggers from each execute unit to increment instruction count
     incInstrCountRegs :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg 0)
@@ -407,6 +411,7 @@ makeSIMTPipeline c inputs =
         -- Reset counters
         cycleCount <== 0
         instrCount <== 0
+        scalarisableInstrCount <== 0
 
     -- Stat counters
     -- =============
@@ -424,7 +429,15 @@ makeSIMTPipeline c inputs =
             let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
             let scalarInstrInc =
                   incScalarInstrCount.val ? (SIMTLanes, 0)
-            instrCount <== instrCount.val + instrInc + scalarInstrInc
+            if c.useScalarUnit
+              then do
+                instrCount <== instrCount.val + instrInc + scalarInstrInc
+                scalarisableInstrCount <==
+                  scalarisableInstrCount.val + scalarInstrInc
+              else do
+                instrCount <== instrCount.val + instrInc
+                scalarisableInstrCount <== scalarisableInstrCount.val +
+                  (if delay false instrScalarisable5.val then instrInc else 0)
 
       else
         return ()
@@ -626,13 +639,13 @@ makeSIMTPipeline c inputs =
             Just opt -> opt.valid
 
     -- Determine if this instruction is scalarisable
-    when (c.useRegFileScalarisation && c.useScalarUnit) do
-      -- XXX: affine vectors not yet allowed in scalar pipeline
-      let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
-      let isOpScalarisable = orList
-            [ Map.findWithDefault false op tagMap4
-            | op <- c.scalarUnitAllowList ]
+    when c.useRegFileScalarisation do
       always do
+        -- XXX: affine vectors not yet allowed in scalar pipeline
+        let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
+        let isOpScalarisable = orList
+              [ Map.findWithDefault false op tagMap4
+              | op <- c.scalarUnitAllowList ]
         instrScalarisable5 <== andList
           [ loadDelay (activeMask4.val .==. ones)
           , isFieldInUse "rs1" fieldMap4 ? (isUniform regFile.scalarA, true)
@@ -657,6 +670,7 @@ makeSIMTPipeline c inputs =
         when (inv isSusp5) do
           scalarTableA.store (toInstrAddr state5.simtPC)
                              instrScalarisable5.val
+
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
         if isSusp5 .||.
@@ -903,7 +917,7 @@ makeSIMTPipeline c inputs =
                   ]
                 else false
         if putInScalarQueue .&&. toScalarQueue.notFull
-                  .&&. inv scalarUnitWarpCount.isFull
+                            .&&. inv scalarUnitWarpCount.isFull
           then do
             toScalarQueue.enq warpId6
             scalarUnitWarpCount.incrBy 1
@@ -1249,6 +1263,8 @@ makeSIMTPipeline c inputs =
                       zeroExtend regFile.maxVecRegs
                   , statId .==. simtStat_CapVecRegs -->
                       zeroExtend capRegFile.maxVecRegs
+                  , statId .==. simtStat_ScalarisableInstrs -->
+                      scalarisableInstrCount.val
                   ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)

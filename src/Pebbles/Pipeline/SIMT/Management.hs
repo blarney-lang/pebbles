@@ -21,6 +21,10 @@ simtCmd_SetWarpsPerBlock = SIMTCmd 2
 -- | Read stats from SIMT core
 simtCmd_AskStats = SIMTCmd 3
 
+-- | Count scalarisable instructions (when scalar unit disabled)
+-- and scalarised instructions (when scalar unit enabled)
+simtStat_ScalarisableInstrs = SIMTStatId 4
+
 -- | Id of a performance stat counter
 data SIMTStatId = SIMTStatId (Bit 3)
   deriving (Generic, Interface, Bits, Cmp)
