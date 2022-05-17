@@ -1082,6 +1082,17 @@ makeSIMTPipeline c inputs =
 
       let scalarTagMap4 = Map.map old scalarTagMap3
 
+      -- SIMT convergence registers nesting level
+      scalarNestLevel5 :: Reg (Bit SIMTLogMaxNestLevel) <- makeReg dontCare
+      always do
+        -- Compute SIMT nesting level
+        let isSIMTPush = Map.findWithDefault false c.simtPushTag scalarTagMap4
+        let isSIMTPop = Map.findWithDefault false c.simtPopTag scalarTagMap4
+        let nestInc = zeroExtendCast isSIMTPush
+        let nestDec = zeroExtendCast isSIMTPop
+        scalarNestLevel5 <==
+         (scalarState4.val.simtNestLevel + nestInc) - nestDec
+
       -- Instantiate execute stage
       execStage <- c.scalarUnitExecuteStage
         State {
@@ -1144,7 +1155,9 @@ makeSIMTPipeline c inputs =
                         , inv scalarAbort5.val ]
           when doUpdatePC do
             let newPC = old scalarPCNextWire.val
-            let newState = scalarState5.val { simtPC = newPC }
+            let newState = scalarState5.val {
+                    simtPC = newPC
+                  , simtNestLevel = scalarNestLevel5.val }
             sequence_
               [ stateMem.store scalarWarpId5.val newState
               | stateMem <- stateMemsB ]
