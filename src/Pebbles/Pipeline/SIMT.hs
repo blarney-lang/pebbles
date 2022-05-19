@@ -116,6 +116,8 @@ data SIMTPipelineConfig tag =
     -- ^ Use dedicated scalar unit for parallel scalar/vector execution?
   , scalarUnitAllowList :: [tag]
     -- ^ A list of instructions that can execute on the scalar unit
+  , scalarUnitAffineAdder :: Maybe tag
+    -- ^ Optionally replace add instr with built-in affine add instr
   , scalarUnitDecodeStage :: [(String, tag)]
     -- ^ Decode table for scalar unit
   , scalarUnitExecuteStage :: State -> Module ExecuteStage
@@ -641,16 +643,30 @@ makeSIMTPipeline c inputs =
     -- Determine if this instruction is scalarisable
     when c.useRegFileScalarisation do
       always do
-        -- XXX: affine vectors not yet allowed in scalar pipeline
-        let isUniform scalar = scalar.valid .&&. scalar.val.stride .==. 0
-        let isOpScalarisable = orList
+        let usesA = isFieldInUse "rs1" fieldMap4
+        let usesB = isFieldInUse "rs2" fieldMap4
+        let isAffineA = regFile.scalarA.valid
+        let isAffineB = regFile.scalarB.valid
+        let isUniformA = isAffineA .&&. regFile.scalarA.val.stride .==. 0
+        let isUniformB = isAffineB .&&. regFile.scalarB.val.stride .==. 0
+        let allUniform = (usesA .==>. isUniformA) .&&. (usesB .==>. isUniformB)
+        let allAffine = (usesA .==>. isAffineA) .&&. (usesB .==>. isAffineB)
+        let oneUniform = allAffine .&&.
+              ((usesA .==>. isUniformA) .||. (usesB .==>. isUniformB))
+        let areOperandsScalar =
+              case c.scalarUnitAffineAdder of
+                Nothing -> allUniform
+                Just addOp -> 
+                  if Map.findWithDefault false addOp tagMap4
+                    then oneUniform
+                    else allUniform
+        let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op tagMap4
               | op <- c.scalarUnitAllowList ]
         instrScalarisable5 <== andList
           [ loadDelay (activeMask4.val .==. ones)
-          , isFieldInUse "rs1" fieldMap4 ? (isUniform regFile.scalarA, true)
-          , isFieldInUse "rs2" fieldMap4 ? (isUniform regFile.scalarB, true)
-          , isOpScalarisable
+          , isOpcodeScalarisable
+          , areOperandsScalar
           ]
 
     -- Stages 5: Execute
@@ -964,9 +980,9 @@ makeSIMTPipeline c inputs =
     scalarIsSusp5 :: Reg (Bit 1) <- makeReg dontCare
 
     -- Instruciton operand registers
-    scalarOpA4 :: Reg (Bit 32) <- makeReg dontCare
-    scalarOpB4 :: Reg (Bit 32) <- makeReg dontCare
-    scalarOpBOrImm4 :: Reg (Bit 32) <- makeReg dontCare
+    scalarOpA4 :: Reg (ScalarVal 32) <- makeReg dontCare
+    scalarOpB4 :: Reg (ScalarVal 32) <- makeReg dontCare
+    scalarOpBOrImm4 :: Reg (ScalarVal 32) <- makeReg dontCare
 
     -- Abort scalar pipeline if instruction turns out not to be scalarisable
     scalarAbort4 :: Reg (Bit 1) <- makeReg dontCare
@@ -1034,44 +1050,52 @@ makeSIMTPipeline c inputs =
       -- Stage 3: Operand Latch
       -- ======================
 
-
       -- Decode instruction
       let (scalarTagMap3, scalarFieldMap3) =
             matchMap False c.scalarUnitDecodeStage scalarInstr3.val
 
       -- Use "imm" field if valid, otherwise use register b
-      -- XXX: affine vectors not yet allowed in scalar pipeline
       let bOrImm = if Map.member "imm" scalarFieldMap3
                      then let imm = getBitField scalarFieldMap3 "imm"
-                          in imm.valid ? (imm.val, regFile.scalarD.val.val)
-                     else regFile.scalarD.val.val
+                          in imm.valid ?
+                               ( ScalarVal { val = imm.val, stride = 0 }
+                               , regFile.scalarD.val )
+                     else regFile.scalarD.val
 
       always do
         -- Trigger next stage
         scalarGo4 <== scalarGo3.val
         -- Latch operands
-        scalarOpA4 <== regFile.scalarC.val.val  -- XXX: assume uniform
-        scalarOpB4 <== regFile.scalarD.val.val  -- XXX: assume uniform
+        scalarOpA4 <== regFile.scalarC.val
+        scalarOpB4 <== regFile.scalarD.val
         scalarOpBOrImm4 <== bOrImm
         scalarWarpId4 <== scalarWarpId3.val
         scalarState4 <== scalarState3.val
         scalarInstr4 <== scalarInstr3.val
         scalarIsSusp4 <== scalarIsSusp3.val
-        -- Is instruction in the allow list for the scalar unit?
-        let isOpScalarisable = orList
+        -- Check that instruction can indeed run on scalar unit
+        let usesA = isFieldInUse "rs1" scalarFieldMap3
+        let usesB = isFieldInUse "rs2" scalarFieldMap3
+        let isAffineA = regFile.scalarC.valid
+        let isAffineB = regFile.scalarD.valid
+        let isUniformA = isAffineA .&&. regFile.scalarC.val.stride .==. 0
+        let isUniformB = isAffineB .&&. regFile.scalarD.val.stride .==. 0
+        let allUniform = (usesA .==>. isUniformA) .&&. (usesB .==>. isUniformB)
+        let allAffine = (usesA .==>. isAffineA) .&&. (usesB .==>. isAffineB)
+        let oneUniform = allAffine .&&.
+              ((usesA .==>. isUniformA) .||. (usesB .==>. isUniformB))
+        let areOperandsScalar =
+              case c.scalarUnitAffineAdder of
+                Nothing -> allUniform
+                Just addOp ->
+                  if Map.findWithDefault false addOp scalarTagMap3
+                    then oneUniform
+                    else allUniform
+        let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op scalarTagMap3
               | op <- c.scalarUnitAllowList ]
-        -- Abort if any used operand is a vector
-        -- XXX: affine vectors not yet allowed in scalar pipeline
-        scalarAbort4 <== orList
-              [ isFieldInUse "rs1" scalarFieldMap3 .&&.
-                  (inv regFile.scalarC.valid .||.
-                     regFile.scalarC.val.stride .!=. 0)
-              , isFieldInUse "rs2" scalarFieldMap3 .&&.
-                  (inv regFile.scalarD.valid .||.
-                     regFile.scalarD.val.stride .!=. 0)
-              , inv isOpScalarisable ]
-
+        scalarAbort4 <== inv areOperandsScalar .||. inv isOpcodeScalarisable
+       
       -- Stage 4: Execute & Suspend
       -- ==========================
 
@@ -1079,6 +1103,8 @@ makeSIMTPipeline c inputs =
       scalarPCNextWire :: Wire (Bit 32) <-
         makeWire (scalarState4.val.simtPC + 4)
       scalarResultWire :: Wire (Bit 32) <- makeWire dontCare
+      scalarResultStrideWire :: Wire (Bit SIMTAffineScalarisationBits) <-
+        makeWire 0
 
       let scalarTagMap4 = Map.map old scalarTagMap3
 
@@ -1097,9 +1123,9 @@ makeSIMTPipeline c inputs =
       execStage <- c.scalarUnitExecuteStage
         State {
           instr = scalarInstr4.val
-        , opA = scalarOpA4.val
-        , opB = scalarOpB4.val
-        , opBorImm = scalarOpBOrImm4.val
+        , opA = scalarOpA4.val.val
+        , opB = scalarOpB4.val.val
+        , opBorImm = scalarOpBOrImm4.val.val
         , opAIndex = srcA scalarInstr4.val
         , opBIndex = srcB scalarInstr4.val
         , resultIndex = dst scalarInstr4.val
@@ -1110,7 +1136,12 @@ makeSIMTPipeline c inputs =
                        scalarResultWire <== x
         , suspend = do scalarSuspend5 <== true
         , retry = do scalarRetry5 <== true
-        , opcode = packTagMap scalarTagMap4
+        , opcode =
+            -- Filter out add instruction if using built-in affine adder
+            packTagMap $
+              case c.scalarUnitAffineAdder of
+                Nothing -> scalarTagMap4
+                Just addOp -> Map.insert addOp false scalarTagMap4
         , trap = \code -> do
             display "Scalar unit trap: code=" code
                     " pc=0x" (formatHex 8 scalarState4.val.simtPC)
@@ -1127,6 +1158,17 @@ makeSIMTPipeline c inputs =
                 inv scalarAbort4.val) do
           execStage.execute
           incScalarInstrCount <== true
+
+          -- Built-in affine adder
+          case c.scalarUnitAffineAdder of
+            Nothing -> return ()
+            Just addOp -> do
+              when (Map.findWithDefault false addOp scalarTagMap4) do
+                when (dst scalarInstr4.val .!=. 0) do
+                  scalarResultWire <==
+                    scalarOpA4.val.val + scalarOpBOrImm4.val.val
+                  scalarResultStrideWire <==
+                    scalarOpA4.val.stride + scalarOpBOrImm4.val.stride
 
         -- Lookup scalar prediction table
         scalarTableB.load (toInstrAddr scalarPCNextWire.val)
@@ -1186,9 +1228,9 @@ makeSIMTPipeline c inputs =
         if delay false scalarResultWire.active
           then do
             let dest = (scalarWarpId5.val, dst scalarInstr5.val)
-            -- XXX: affine vectors not yet allowed in scalar pipeline
             regFile.storeScalar dest
-              ScalarVal { val = old scalarResultWire.val, stride = 0 }
+              ScalarVal { val = old scalarResultWire.val
+                        , stride = old scalarResultStrideWire.val }
           else do
             let resumeReqs = inputs.simtScalarResumeReqs
             when resumeReqs.canPeek do
@@ -1197,7 +1239,7 @@ makeSIMTPipeline c inputs =
               let (info, req) = resumeReqs.peek
               let dest = (info.warpId, info.destReg)
               when (info.destReg .!=. 0) do
-                -- XXX: affine vectors not yet allowed in scalar pipeline
+                -- Affine vectors not yet allowed on resume path
                 regFile.storeScalar dest
                   ScalarVal { val = req.resumeReqData, stride = 0 }
               -- Trigger warp resumption
