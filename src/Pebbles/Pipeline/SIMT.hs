@@ -325,9 +325,19 @@ makeSIMTPipeline c inputs =
     -- disabled) or scalarised instructions (if scalar unit enabled)
     scalarisableInstrCount :: Reg (Bit 32) <- makeReg 0
 
+    -- Count pipeline bubbles for perforance stats
+    retryCount :: Reg (Bit 32) <- makeReg 0
+    suspCount :: Reg (Bit 32)<- makeReg 0
+    scalarSuspCount :: Reg (Bit 32) <- makeReg 0
+    scalarAbortCount :: Reg (Bit 32) <- makeReg 0
+
     -- Triggers from each execute unit to increment instruction count
-    incInstrCountRegs :: [Reg (Bit 1)] <- replicateM SIMTLanes (makeDReg 0)
-    incScalarInstrCount :: Reg (Bit 1) <- makeDReg 0
+    incInstrCountRegs <- replicateM SIMTLanes (makeDReg false)
+    incScalarInstrCount <- makeDReg false
+    incRetryCount <- makeDReg false
+    incSuspCount <- makeDReg false
+    incScalarSuspCount <- makeDReg false
+    incScalarAbortCount <- makeDReg false
 
     -- Indicates that current instruction is scalarisable
     instrScalarisable5 <- makeReg false
@@ -414,35 +424,44 @@ makeSIMTPipeline c inputs =
         cycleCount <== 0
         instrCount <== 0
         scalarisableInstrCount <== 0
+        retryCount <== 0
+        suspCount <== 0
+        scalarSuspCount <== 0
+        scalarAbortCount <== 0
 
     -- Stat counters
     -- =============
 
-    if c.enableStatCounters
-      then
-        always do
-          when (pipelineActive.val) do
-            -- Increment cycle count
-            cycleCount <== cycleCount.val + 1
+    when c.enableStatCounters do
+      always do
+        when (pipelineActive.val) do
+          -- Increment cycle count
+          cycleCount <== cycleCount.val + 1
 
-            -- Increment instruction count
-            let instrIncs :: [Bit 32] =
-                  map zeroExtend (map (.val) incInstrCountRegs)
-            let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
-            let scalarInstrInc =
-                  incScalarInstrCount.val ? (SIMTLanes, 0)
-            if c.useScalarUnit
-              then do
-                instrCount <== instrCount.val + instrInc + scalarInstrInc
-                scalarisableInstrCount <==
-                  scalarisableInstrCount.val + scalarInstrInc
-              else do
-                instrCount <== instrCount.val + instrInc
-                scalarisableInstrCount <== scalarisableInstrCount.val +
-                  (if delay false instrScalarisable5.val then instrInc else 0)
+          -- Increment instruction count
+          let instrIncs :: [Bit 32] =
+                map zeroExtend (map (.val) incInstrCountRegs)
+          let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
+          let scalarInstrInc =
+                incScalarInstrCount.val ? (SIMTLanes, 0)
+          if c.useScalarUnit
+            then do
+              instrCount <== instrCount.val + instrInc + scalarInstrInc
+              scalarisableInstrCount <==
+                scalarisableInstrCount.val + scalarInstrInc
+            else do
+              instrCount <== instrCount.val + instrInc
+              scalarisableInstrCount <== scalarisableInstrCount.val +
+                (if delay false instrScalarisable5.val then instrInc else 0)
 
-      else
-        return ()
+          -- Pipeline bubbles
+          when incRetryCount.val do retryCount <== retryCount.val + 1
+          when incSuspCount.val do suspCount <== suspCount.val + 1
+          when c.useScalarUnit do
+            when incScalarSuspCount.val do
+              scalarSuspCount <== scalarSuspCount.val + 1
+            when incScalarAbortCount.val do
+              scalarAbortCount <== scalarAbortCount.val + 1
 
     -- ===============
     -- Vector Pipeline
@@ -682,6 +701,9 @@ makeSIMTPipeline c inputs =
       scalarTableA.load (toInstrAddr (state5.simtPC + 4))
 
       when go5 do
+        -- Update stat counters
+        when isSusp5 do incSuspCount <== true
+
         -- Update scalar prediction table
         when (inv isSusp5) do
           scalarTableA.store (toInstrAddr state5.simtPC)
@@ -803,6 +825,9 @@ makeSIMTPipeline c inputs =
           always do
             -- Did PC change?
             pcChange <== pcNextWire.active
+
+            -- Update stat counters
+            when retryWire.val do incRetryCount <== true
 
             -- Execute stage
             when (go5 .&&. threadActive .&&.
@@ -1153,22 +1178,30 @@ makeSIMTPipeline c inputs =
         }
 
       always do
-        -- Invoke execute stage
-        when (scalarGo4.val .&&. inv scalarIsSusp4.val .&&.
-                inv scalarAbort4.val) do
-          execStage.execute
-          incScalarInstrCount <== true
+        when scalarGo4.val do
+          -- Update stats
+          if scalarIsSusp4.val
+            then do incScalarSuspCount <== true
+            else do
+              when scalarAbort4.val do
+                incScalarAbortCount <== true
 
-          -- Built-in affine adder
-          case c.scalarUnitAffineAdder of
-            Nothing -> return ()
-            Just addOp -> do
-              when (Map.findWithDefault false addOp scalarTagMap4) do
-                when (dst scalarInstr4.val .!=. 0) do
-                  scalarResultWire <==
-                    scalarOpA4.val.val + scalarOpBOrImm4.val.val
-                  scalarResultStrideWire <==
-                    scalarOpA4.val.stride + scalarOpBOrImm4.val.stride
+          -- Invoke execute stage
+          when (inv scalarIsSusp4.val .&&.
+                  inv scalarAbort4.val) do
+            execStage.execute
+            incScalarInstrCount <== true
+
+            -- Built-in affine adder
+            case c.scalarUnitAffineAdder of
+              Nothing -> return ()
+              Just addOp -> do
+                when (Map.findWithDefault false addOp scalarTagMap4) do
+                  when (dst scalarInstr4.val .!=. 0) do
+                    scalarResultWire <==
+                      scalarOpA4.val.val + scalarOpBOrImm4.val.val
+                    scalarResultStrideWire <==
+                      scalarOpA4.val.stride + scalarOpBOrImm4.val.stride
 
         -- Lookup scalar prediction table
         scalarTableB.load (toInstrAddr scalarPCNextWire.val)
@@ -1312,14 +1345,20 @@ makeSIMTPipeline c inputs =
           let statId = unpack (truncate req.simtReqAddr)
           when (inv pipelineActive.val .&&. kernelRespQueue.notFull) do
             let resp = select
-                  [ statId .==. simtStat_Cycles  --> cycleCount.val
-                  , statId .==. simtStat_Instrs  --> instrCount.val
+                  [ statId .==. simtStat_Cycles --> cycleCount.val
+                  , statId .==. simtStat_Instrs --> instrCount.val
                   , statId .==. simtStat_VecRegs -->
                       zeroExtend regFile.maxVecRegs
                   , statId .==. simtStat_CapVecRegs -->
                       zeroExtend capRegFile.maxVecRegs
                   , statId .==. simtStat_ScalarisableInstrs -->
                       scalarisableInstrCount.val
+                  , statId .==. simtStat_Retries --> retryCount.val
+                  , statId .==. simtStat_SuspBubbles --> suspCount.val
+                  , statId .==. simtStat_ScalarSuspBubbles -->
+                      scalarSuspCount.val
+                  , statId .==. simtStat_ScalarAborts -->
+                      scalarAbortCount.val
                   ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)
