@@ -824,7 +824,7 @@ makeSIMTPipeline c inputs =
 
           always do
             -- Did PC change?
-            pcChange <== pcNextWire.active
+            pcChange <== pcNextWire.active .||. retryWire.val
 
             -- Update stat counters
             when retryWire.val do incRetryCount <== true
@@ -955,6 +955,7 @@ makeSIMTPipeline c inputs =
                   , scalarTableA.out
                   , inv $ orList $ map (.val) pcChangeRegs6
                   , toScalarQueue.notFull
+                  , inv (old isSusp5)
                   ]
                 else false
         if putInScalarQueue .&&. toScalarQueue.notFull
@@ -1238,7 +1239,9 @@ makeSIMTPipeline c inputs =
               | stateMem <- stateMemsB ]
 
           -- Reschedule warp
-          if scalarAbort5.val .||. inv scalarTableB.out
+          if scalarAbort5.val .||. (inv scalarIsSusp5.val .&&.
+                                    inv scalarRetry5.val .&&.
+                                    inv scalarTableB.out)
             then do
               -- If instr was not scalarisable
               -- or next instr is not predicted scalarisable,
