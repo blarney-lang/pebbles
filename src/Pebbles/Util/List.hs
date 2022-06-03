@@ -73,3 +73,14 @@ encodeList ins = enc paddedIns
 allEqual :: Cmp a => [a] -> Bit 1
 allEqual [] = true
 allEqual (x:xs) = andList (zipWith (.==.) (x:xs) xs)
+
+-- | Count number of ones, saturating at two
+countSatTwo :: [Bit 1] -> Bit 2
+countSatTwo bs = tree1 add (map zeroExtend bs)
+  where
+    add a b = (at @1 a .|. at @1 b .|. (at @0 a .&. at @0 b)) #
+              (at @0 a .^. at @0 b)
+
+-- | Is the number of ones more than one?
+moreThanOne :: [Bit 1] -> Bit 1
+moreThanOne bs = at @1 (countSatTwo bs)
