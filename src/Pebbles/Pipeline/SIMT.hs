@@ -1024,8 +1024,9 @@ makeSIMTPipeline c inputs =
       scalarQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
 
       -- Merge scalar pipeline warp queues
-      scalarWarps <- makeFairMerger
-        [toStream scalarQueue, toStream toScalarQueue]
+      --scalarWarps <- makeFairMerger
+      --  [toStream scalarQueue, toStream toScalarQueue]
+      let scalarWarps = toStream scalarQueue `mergeTwo` toStream toScalarQueue
 
       -- Stage 0: Warp Scheduling
       -- ========================
