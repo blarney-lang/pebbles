@@ -22,7 +22,7 @@ simtCmd_SetWarpsPerBlock = SIMTCmd 2
 simtCmd_AskStats = SIMTCmd 3
 
 -- | Id of a performance stat counter
-data SIMTStatId = SIMTStatId (Bit 3)
+data SIMTStatId = SIMTStatId (Bit 4)
   deriving (Generic, Interface, Bits, Cmp)
 
 -- | Cycle count
@@ -37,8 +37,21 @@ simtStat_VecRegs = SIMTStatId 2
 -- | Capability vector register count
 simtStat_CapVecRegs = SIMTStatId 3
 
--- | Count if scalarisable instructions executed
+-- | Count scalarisable instructions (when scalar unit disabled)
+-- and scalarised instructions (when scalar unit enabled)
 simtStat_ScalarisableInstrs = SIMTStatId 4
+
+-- | Vector pipeline retry bubbles
+simtStat_Retries = SIMTStatId 5
+
+-- | Vector pipeline suspension bubbles
+simtStat_SuspBubbles = SIMTStatId 6
+
+-- | Scalar pipeline suspension bubbles
+simtStat_ScalarSuspBubbles = SIMTStatId 7
+
+-- | Scalar pipeline abort bubbles
+simtStat_ScalarAborts = SIMTStatId 8
 
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
