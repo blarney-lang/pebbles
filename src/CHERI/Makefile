@@ -1,7 +1,7 @@
 CapLibBase.hs:
 	make -C cheri-cap-lib
 	cd cheri-cap-lib && \
-    CHERICapWrapBlarney.py CHERI.CapLibBase > ../CapLibBase.hs
+    ./CHERICapWrapBlarney.py CHERI.CapLibBase > ../CapLibBase.hs
 	mkdir -p Verilog
 	cp cheri-cap-lib/*.v Verilog
 

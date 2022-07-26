@@ -416,6 +416,11 @@ makeScalarPipeline c pipeIns =
         when (inv retryWire.val) do
           instr4 <== instr3.val
 
+        -- Check that instruction is recognised
+        let known = orList [valid | (_, valid) <- Map.toList tagMap3]
+        when (inv known) do
+          display "Instruction not recognised @ PC=" (formatHex 8 pc3.val)
+
       -- Common trap-handling code
       when (trapReg .||. pcc3_exc.val) do
         c.trapCSRs.csr_mepc <== if trapReg then old pc3.val else pc3.val

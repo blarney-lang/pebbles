@@ -103,8 +103,8 @@ decodeCapPipe c =
   }
   where
     info = getBoundsInfo c
-    len = CHERI.CapLibBase.length info
-    base = CHERI.CapLibBase.base info
+    len  = info.length
+    base = info.base
 
 -- | Partially decode given capability
 decodeCapMem :: CapMem -> Cap

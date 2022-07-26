@@ -66,6 +66,8 @@ data Mnemonic =
   | CSpecialRW
   | CSealEntry
   | AUIPCC
+  | CRRL
+  | CRAM
 
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE

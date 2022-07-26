@@ -1,3 +1,4 @@
+{-# LANGUAGE NoFieldSelectors #-}
 module CHERI.CapLibBase where
 
 import Blarney
@@ -22,6 +23,14 @@ data Exact t =
   Exact {
     exact :: Bit 1
   , value :: t
+  } deriving (Generic, Interface, Bits)
+
+data SetBoundsReturn t n  =
+  SetBoundsReturn {
+    cap :: t
+  , exact :: Bit 1
+  , length :: Bit n
+  , mask :: Bit n
   } deriving (Generic, Interface, Bits)
 
 data HardPerms =
@@ -329,6 +338,16 @@ setBounds cap length =
     [] False False Nothing) 
       [toBV $ pack cap, toBV $ pack length]
       [Just "wrap64_setBounds"]
+
+setBoundsCombined :: Bit 91 -> Bit 32 -> SetBoundsReturn (Bit 91) 32 
+setBoundsCombined cap length = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setBoundsCombined"
+    [("wrap64_setBoundsCombined_cap", 91), ("wrap64_setBoundsCombined_length", 32)]
+    [("wrap64_setBoundsCombined", 156)]
+    [] False False Nothing) 
+      [toBV $ pack cap, toBV $ pack length]
+      [Just "wrap64_setBoundsCombined"]
 
 nullWithAddr :: Bit 32 -> Bit 91
 nullWithAddr addr = 

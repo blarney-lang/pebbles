@@ -46,6 +46,8 @@ decodeCHERI =
   , "0000001 scr<5> rs1<5> 000 rd<5> 1011011" --> CSpecialRW
   , "1111111 10001  rs1<5> 000 rd<5> 1011011" --> CSealEntry
   , "imm[31:12] rd<5> 0010111"                --> AUIPCC
+  , "1111111 01000  rs1<5> 000 rd<5> 1011011" --> CRRL
+  , "1111111 01001  rs1<5> 000 rd<5> 1011011" --> CRAM
   , "1111111 01100  rs1<5> 000 rd<5> 1011011" --> CJALR
   , "imm[11:0] rs1<5> ul<1> aw<2> rd<5> 0000011" --> LOAD
   , "imm[11:5] rs2<5> rs1<5> 0 aw<2> imm[4:0] 0100011" --> STORE
@@ -131,7 +133,7 @@ executeCHERI csrUnit memReqs s = do
   -- ---------------------------
 
   when (s.opcode `is` [CSetBounds, CSetBoundsExact]) do
-    let newCap = setBounds cA (s.opBorImm)
+    let newCap = setBounds cA s.opBorImm
     let needExact = s.opcode `is` [CSetBoundsExact]
 
     -- Exception path
@@ -148,6 +150,10 @@ executeCHERI csrUnit memReqs s = do
 
     -- Result path
     s.resultCap <== newCap.value
+
+  when (s.opcode `is` [CRRL, CRAM]) do
+    let result = setBoundsCombined nullCapPipe s.opA
+    s.result <== s.opcode `is` [CRRL] ? (result.length, result.mask)
 
   -- Other capability modification instructions
   -- ------------------------------------------

@@ -709,6 +709,12 @@ makeSIMTPipeline c inputs =
           scalarTableA.store (toInstrAddr state5.simtPC)
                              instrScalarisable5.val
 
+        -- Check that instruction is recognised
+        let known = orList [valid | (_, valid) <- Map.toList tagMap5]
+        when (inv known) do
+          display "Instruction not recognised @ PC="
+            (formatHex 8 state5.simtPC)
+
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
         if isSusp5 .||.
@@ -1193,6 +1199,12 @@ makeSIMTPipeline c inputs =
                   inv scalarAbort4.val) do
             execStage.execute
             incScalarInstrCount <== true
+
+            -- Check that instruction is recognised
+            let known = orList [valid | (_, valid) <- Map.toList scalarTagMap4]
+            when (inv known) do
+              display "Instruction not recognised @ PC="
+                (formatHex 8 scalarState4.val.simtPC)
 
             -- Built-in affine adder
             case c.scalarUnitAffineAdder of
