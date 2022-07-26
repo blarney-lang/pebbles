@@ -234,6 +234,11 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
   -- Count number of vectors in use
   vecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
 
+  -- Pulse wires to incr/decr vecCount
+  vecCountIncr <- makePulseWire
+  vecCountDecr1 <- makePulseWire
+  vecCountDecr2 <- makePulseWire
+
   -- Track max vector count
   maxVecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
 
@@ -270,6 +275,15 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
     when (inv initInProgress.val) do
       maxVecCount <== vecCount.val .>. maxVecCount.val ?
                         (vecCount.val, maxVecCount.val)
+
+  -- Vector count
+  -- ============
+
+  always do
+    when (vecCountIncr.val .||. vecCountDecr1.val .||. vecCountDecr2.val) do
+      vecCount <== vecCount.val + zeroExtend vecCountIncr.val
+                                - zeroExtend vecCountDecr1.val
+                                - zeroExtend vecCountDecr2.val
 
   -- Load path
   -- =========
@@ -389,7 +403,7 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
             dynamicAssert freeSlots.canPeek
               "Scalarising reg file: out of free space"
             freeSlots.consume
-            vecCount <== vecCount.val + 1
+            vecCountIncr.pulse
             -- Tell scalar reg file about new vector
             let newScalarRegEntry = tag #vector freeSlots.peek
             scalarRegFileA.store storeIdx2.val newScalarRegEntry
@@ -414,7 +428,7 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
             dynamicAssert freeSlots1.notFull
               "Scalarising reg file: free slot overflow"
             freeSlots1.push (untag #vector storeScalarEntry2.val)
-            vecCount <== vecCount.val - 1
+            vecCountDecr1.pulse
           -- Write to scalar reg file
           let scalarVal =
                 ScalarVal {
@@ -447,6 +461,7 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
           dynamicAssert freeSlots2.notFull
             "Scalarising reg file: freeSlots2 overflow"
           freeSlots2.push (untag #vector scalarRegFileF.out)
+          vecCountDecr2.pulse
 
   -- Expand scalar register to vector
   let expandScalar scalarReg offsets = 
