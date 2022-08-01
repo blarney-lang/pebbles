@@ -196,10 +196,6 @@ makeSIMTPipeline c inputs =
     -- Queue of active warps for vector pipeline
     warpQueue :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
 
-    -- Queue of warps moving from vector pipeline to scalar pipeline
-    toScalarQueue :: Queue (Bit SIMTLogWarps) <-
-      makeSizedQueue SIMTLogWarps
-
     -- Track number of warps in scalar pipeline
     -- (Max val set to half num warps for load balancing)
     scalarUnitWarpCount :: Counter SIMTLogWarps <-
@@ -338,6 +334,9 @@ makeSIMTPipeline c inputs =
 
     -- Indicates that current instruction is scalarisable
     instrScalarisable5 <- makeReg false
+
+    -- Scalar unit warp queue
+    scalarQueue :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
 
     -- Function to convert from 32-bit PC to instruction address
     let toInstrAddr :: Bit 32 -> Bit t_logInstrs =
@@ -976,14 +975,12 @@ makeSIMTPipeline c inputs =
                   [ old activeMask5 .==. ones
                   , scalarTableA.out
                   , inv $ orList $ map (.val) pcChangeRegs6
-                  , toScalarQueue.notFull
                   , inv (old isSusp5)
                   ]
                 else false
-        if putInScalarQueue .&&. toScalarQueue.notFull
-                            .&&. inv scalarUnitWarpCount.isFull
+        if putInScalarQueue .&&. inv scalarUnitWarpCount.isFull
           then do
-            toScalarQueue.enq warpId6
+            (scalarQueue!warpId6) <== true
             scalarUnitWarpCount.incrBy 1
           else do
             (warpQueue!warpId6) <== true
@@ -997,6 +994,7 @@ makeSIMTPipeline c inputs =
       "CHERI is not yet supported in the SIMT scalar pipeline"
 
     -- Scalar pipeline stage trigger signals
+    scalarGo0 :: Reg (Bit 1) <- makeDReg false
     scalarGo1 :: Reg (Bit 1) <- makeDReg false
     scalarGo2 :: Reg (Bit 1) <- makeDReg false
     scalarGo3 :: Reg (Bit 1) <- makeDReg false
@@ -1041,27 +1039,46 @@ makeSIMTPipeline c inputs =
 
     when c.useScalarUnit do
 
-      -- Scalar warp queue
-      scalarQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
+      -- Scheduler history
+      scalarSchedHistory :: Reg (Bit SIMTWarps) <- makeReg 0
 
-      -- Merge scalar pipeline warp queues
-      --scalarWarps <- makeFairMerger
-      --  [toStream scalarQueue, toStream toScalarQueue]
-      let scalarWarps = toStream scalarQueue `mergeTwo` toStream toScalarQueue
+      -- Warp chosen by scheduler
+      scalarChosenWarp :: Reg (Bit SIMTWarps) <- makeReg dontCare
 
       -- Stage 0: Warp Scheduling
       -- ========================
 
+      -- Scheduler: 1st substage
       always do
-        -- Next warp
-        let warpId = scalarWarps.peek
+        -- Bit mask of available warps
+        let avail :: Bit SIMTWarps =
+              fromBitList [ r.val .&. inv s.val
+                          | (r, s) <- zip scalarQueue warpSuspMask ]
+
+        -- Fair scheduler
+        let (newSchedHistory, chosen) =
+              fairScheduler (scalarSchedHistory.val, avail)
+        scalarChosenWarp <== chosen
+
+        -- Update scalar queue
+        sequence_
+          [ when c do r <== false
+          | (r, c) <- zip scalarQueue (toBitList chosen) ]
+
+        -- Trigger next stage
+        when (avail .!=. 0) do
+          scalarSchedHistory <== newSchedHistory
+          scalarGo0 <== true
+
+      -- Scheduler: 2nd substage
+      always do
+        let warpId = binaryEncode scalarChosenWarp.val
 
         -- Lookup warp's PC
         (head stateMemsB).load warpId
 
-        when scalarWarps.canPeek do
-          scalarWarps.consume
-          -- Trigger stage 1
+        -- Trigger stage 1
+        when scalarGo0.val do
           scalarGo1 <== true
           scalarWarpId1 <== warpId
 
@@ -1278,9 +1295,7 @@ makeSIMTPipeline c inputs =
               scalarUnitWarpCount.decrBy 1
             else do
               -- Otherwise, keep warp in scalar pipeline
-              dynamicAssert scalarQueue.notFull
-                            "SIMT scalar pipeline: scalarQueue overflow"
-              scalarQueue.enq scalarWarpId5.val
+              (scalarQueue!scalarWarpId5.val) <== true
 
           -- Suspend warp
           when scalarSuspend5.val do
