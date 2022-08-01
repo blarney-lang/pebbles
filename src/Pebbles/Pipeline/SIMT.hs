@@ -194,7 +194,7 @@ makeSIMTPipeline c inputs =
     let dst  :: Instr -> RegId = getBitFieldSel selMap "rd"
 
     -- Queue of active warps for vector pipeline
-    warpQueue :: Queue (Bit SIMTLogWarps) <- makeSizedQueue SIMTLogWarps
+    warpQueue :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
 
     -- Queue of warps moving from vector pipeline to scalar pipeline
     toScalarQueue :: Queue (Bit SIMTLogWarps) <-
@@ -204,10 +204,6 @@ makeSIMTPipeline c inputs =
     -- (Max val set to half num warps for load balancing)
     scalarUnitWarpCount :: Counter SIMTLogWarps <-
       makeCounter (fromInteger (SIMTWarps `div` 2))
-
-    -- Queue of warps moving from scalar pipeline to vector pipeline
-    toVectorQueue :: Queue (Bit SIMTLogWarps) <-
-      makeSizedQueue SIMTLogWarps
 
     -- One block RAM of thread states per lane
     (stateMemsA, stateMemsB) :: ([RAM (Bit SIMTLogWarps) SIMTThreadState],
@@ -269,6 +265,7 @@ makeSIMTPipeline c inputs =
     barrierCount :: Counter SIMTLogWarps <- makeCounter dontCare
 
     -- Trigger for each stage
+    go0 :: Reg (Bit 1) <- makeDReg false
     go1 :: Reg (Bit 1) <- makeDReg false
     go3 :: Reg (Bit 1) <- makeDReg false
     go4 :: Reg (Bit 1) <- makeDReg false
@@ -373,7 +370,7 @@ makeSIMTPipeline c inputs =
               , simtRetry = false
               }
 
-        -- Initialise PCC per lane
+        -- Initialise per-warp state
         sequence_
           [ do stateMem.store (warpIdCounter.val) initState
                if enableCHERI
@@ -396,11 +393,7 @@ makeSIMTPipeline c inputs =
           sequence_ [e <== false | e <- excLocals]
           setCount barrierCount 0
           sequence_ [r <== false | r <- barrierBits]
-
-        -- Insert into warp queue
-        dynamicAssert (warpQueue.notFull)
-          "SIMT warp queue overflow during initialisation"
-        enq warpQueue (warpIdCounter.val)
+          sequence_ [r <== true | r <- warpQueue]
 
         -- Finish initialisation and activate pipeline
         if warpIdCounter.val .==. ones
@@ -470,37 +463,60 @@ makeSIMTPipeline c inputs =
     -- Stage 0: Warp Scheduling
     -- ========================
 
-    -- Queue of warps that have left a barrier (half throughput)
-    releaseQueue :: Queue (Bit SIMTLogWarps) <-
-      makeSizedQueueConfig
-        SizedQueueConfig {
-          sizedQueueLogSize = SIMTLogWarps
-        , sizedQueueBuffer = makeShiftQueue 1
-        }
+    -- Scheduler history
+    schedHistory :: Reg (Bit SIMTWarps) <- makeReg 0
 
-    -- Stream of warps to schedule next
-    warpStream <- makeFairMerger $
-         [toStream releaseQueue, toStream warpQueue]
-      ++ [toStream toVectorQueue | c.useScalarUnit]
+    -- Which warps contain at least one suspended thread?
+    warpSuspMask :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
 
+    -- Warp chosen by scheduler
+    chosenWarp :: Reg (Bit SIMTWarps) <- makeReg dontCare
+
+    -- Scheduler: 1st substage
     always do
-      -- Load state for next warp on each lane
-      forM_ stateMemsA \stateMem -> do
-        stateMem.load (warpStream.peek)
+      -- Calculate which warps contain a suspended thread
+      sequence_
+        [ b <== orList (map (.val) bs)
+        | (b, bs) <- zip warpSuspMask (transpose suspBits) ]
 
-      -- Load PCC for next warp on each lane
-      if enableCHERI && not (c.useSharedPCC)
-        then do
-          forM_ pccMems \pccMem -> do
-            pccMem.load (warpStream.peek)
-        else return ()
+      -- Bit mask of available warps
+      let avail :: Bit SIMTWarps =
+            fromBitList [ r.val .&. inv s.val
+                        | (r, s) <- zip warpQueue warpSuspMask ]
 
-      -- Buffer warp id for stage 1
-      warpId1 <== warpStream.peek
+      -- Fair scheduler
+      let (newSchedHistory, chosen) = fairScheduler (schedHistory.val, avail)
+      chosenWarp <== chosen
 
       -- Trigger stage 1
-      when (warpStream.canPeek .&&. pipelineActive.val) do
-        warpStream.consume
+      when (pipelineActive.val) do
+        sequence_
+          [ when c do r <== false
+          | (r, c) <- zip warpQueue (toBitList chosen) ]
+        when (avail .!=. 0) do
+          schedHistory <== newSchedHistory
+          go0 <== true
+
+    -- Scheduler: 2nd substage
+    always do
+      when go0.val do
+        let warpId = binaryEncode chosenWarp.val
+
+        -- Load state for next warp on each lane
+        forM_ stateMemsA \stateMem -> do
+          stateMem.load warpId
+
+        -- Load PCC for next warp on each lane
+        if enableCHERI && not (c.useSharedPCC)
+          then do
+            forM_ pccMems \pccMem -> do
+              pccMem.load warpId
+          else return ()
+
+        -- Buffer warp id for stage 1
+        warpId1 <== warpId
+
+        -- Trigger stage 1
         go1 <== true
 
     -- Stage 1: Active Thread Selection
@@ -970,8 +986,7 @@ makeSIMTPipeline c inputs =
             toScalarQueue.enq warpId6
             scalarUnitWarpCount.incrBy 1
           else do
-            dynamicAssert (warpQueue.notFull) "SIMT warp queue overflow"
-            warpQueue.enq warpId6
+            (warpQueue!warpId6) <== true
 
     -- ===============
     -- Scalar Pipeline
@@ -1259,9 +1274,7 @@ makeSIMTPipeline c inputs =
               -- If instr was not scalarisable
               -- or next instr is not predicted scalarisable,
               -- then move warp to vector pipeline
-              dynamicAssert toVectorQueue.notFull
-                            "SIMT scalar pipeline: toVectorQueue overflow"
-              toVectorQueue.enq scalarWarpId5.val
+              (warpQueue!scalarWarpId5.val) <== true
               scalarUnitWarpCount.decrBy 1
             else do
               -- Otherwise, keep warp in scalar pipeline
@@ -1320,9 +1333,7 @@ makeSIMTPipeline c inputs =
             barrierBits!warpId <== false
             decrBy barrierCount 1
             -- Insert back into warp queue
-            dynamicAssert (releaseQueue.notFull)
-              "SIMT release queue overflow"
-            enq releaseQueue warpId
+            (warpQueue!warpId) <== true
       }
 
     -- Handle management requests
