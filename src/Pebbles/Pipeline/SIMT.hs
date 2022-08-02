@@ -1043,7 +1043,7 @@ makeSIMTPipeline c inputs =
       scalarSchedHistory :: Reg (Bit SIMTWarps) <- makeReg 0
 
       -- Warp chosen by scheduler
-      scalarChosenWarp :: Reg (Bit SIMTWarps) <- makeReg dontCare
+      scalarChosenWarp :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
 
       -- Stage 0: Warp Scheduling
       -- ========================
@@ -1058,7 +1058,7 @@ makeSIMTPipeline c inputs =
         -- Fair scheduler
         let (newSchedHistory, chosen) =
               fairScheduler (scalarSchedHistory.val, avail)
-        scalarChosenWarp <== chosen
+        scalarChosenWarp <== binaryEncode chosen
 
         -- Update scalar queue
         sequence_
@@ -1072,7 +1072,7 @@ makeSIMTPipeline c inputs =
 
       -- Scheduler: 2nd substage
       always do
-        let warpId = binaryEncode scalarChosenWarp.val
+        let warpId = scalarChosenWarp.val
 
         -- Lookup warp's PC
         (head stateMemsB).load warpId
