@@ -47,7 +47,7 @@ makeTagController reqs dramResps = mdo
 
   -- Response queue for data
   dataRespQueue :: Queue (DRAMResp t_id) <-
-    makeSizedQueue DRAMLogMaxInFlight
+    makeSizedQueueCore DRAMLogMaxInFlight
 
   -- In-flight data request counter
   inFlightCount :: Counter (DRAMLogMaxInFlight+1) <-
@@ -62,7 +62,9 @@ makeTagController reqs dramResps = mdo
   let modifyRespId f = fmap (\resp -> resp { dramRespId = f resp.dramRespId })
 
   -- Tag cache
-  (tagResps, dramReqs0) <- makeBoundary "TagCache" makeTagCache
+  let tagCacheConf =
+        StreamCacheConfig { useZeroTable = TagCacheHierarchical /= 0 }
+  (tagResps, dramReqs0) <- makeBoundary "TagCache" (makeTagCache tagCacheConf)
     (toStream tagReqQueue) dramResps0'
 
   -- Data requests
@@ -98,7 +100,7 @@ makeTagController reqs dramResps = mdo
             StreamCacheReq {
               streamCacheReqId = ()
             , streamCacheReqIsStore = req.dramReqIsStore
-            , streamCacheReqAddr = zeroExtend tagsBase
+            , streamCacheReqAddr = tagsBase
             , streamCacheReqOffset = tagsOffset
             , streamCacheReqData = req.dramReqDataTagBits
             , streamCacheReqWriteEn =

@@ -16,8 +16,8 @@ data SearchQueue a =
   }
 
 -- | Create searchable queue of the given size
-makeSearchQueue :: (Bits a, Cmp a) => Int -> Module (SearchQueue a)
-makeSearchQueue size = do
+makeSearchQueue :: (Bits a, Cmp a) => Bool -> Int -> Module (SearchQueue a)
+makeSearchQueue forward size = do
   -- Queue elements
   elems <- replicateM size (makeReg dontCare)
 
@@ -48,4 +48,7 @@ makeSearchQueue size = do
     , member = \a ->
         orList [ valid.val .&&. a .==. elem.val
                | (valid, elem) <- zip valids elems ]
+          .||. (if forward
+                  then insertWire.active .&&. insertWire.val .==. a
+                  else false)
     }

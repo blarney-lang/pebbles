@@ -3,6 +3,7 @@ module Pebbles.Memory.TagCache
   , StreamCacheReqId
   , StreamCacheReq(..)
   , StreamCacheResp(..)
+  , StreamCacheConfig(..)
   ) where
 
 -- SoC config
@@ -15,6 +16,7 @@ module Pebbles.Memory.TagCache
 #define StreamCacheLogSets            TagCacheLogSets
 #define StreamCacheLogMaxInflight     TagCacheLogMaxInflight
 #define StreamCachePendingReqsPerWay  TagCachePendingReqsPerWay
+#define StreamCacheAddrWidth          (DRAMAddrWidth-5)
 #define makeStreamCache               makeTagCache
 
 -- Cache code

@@ -9,6 +9,7 @@
 -- | StreamCacheLogSets           | Number of sets                          |
 -- | StreamCacheLogMaxInflight    | Max number of inflight memory requests  |
 -- | StreamCachePendingReqsPerWay | Max number of pending requests per way  |
+-- | StreamCacheAddrWidth         | Width of beat address in bits           |
 -- +------------------------------+-----------------------------------------+
 
 -- SoC parameters
@@ -26,6 +27,9 @@ import Pebbles.Util.Counter
 import Pebbles.Util.SearchQueue
 import Pebbles.Memory.DRAM.Interface
 
+-- Haskell imports
+import Data.List (zip4)
+
 -- Types
 -- =====
 
@@ -36,6 +40,9 @@ type StreamCacheDataWidth =
 -- | Data item
 type StreamCacheData = Bit StreamCacheDataWidth
 
+-- | Address
+type StreamCacheAddr = Bit StreamCacheAddrWidth
+
 -- | Stream cache request
 data StreamCacheReq t_id =
   StreamCacheReq {
@@ -43,7 +50,7 @@ data StreamCacheReq t_id =
     -- ^ Request id
   , streamCacheReqIsStore :: Bit 1
     -- ^ Is it a load or store?
-  , streamCacheReqAddr :: DRAMAddr
+  , streamCacheReqAddr :: StreamCacheAddr
     -- ^ Beat address
   , streamCacheReqOffset :: Bit StreamCacheLogItemsPerBeat
     -- ^ Offset of item within beat
@@ -64,9 +71,16 @@ data StreamCacheResp t_id =
   }
   deriving (Generic, Interface, Bits)
 
--- | DRAM request ids from the cache; contains the address in the
--- cache's data memory where the beat is to be stored
-type StreamCacheReqId = BeatIndex
+-- | DRAM request ids from the cache
+data StreamCacheReqId =
+  StreamCacheReqId {
+    beatIndex     :: BeatIndex
+    -- ^ Contains the address in the  cache's data memory
+    -- where the beat is to be stored
+  , beatKnownZero :: Bit 1
+    -- ^ Is data being fetched known to be zero
+  }
+  deriving (Generic, Interface, Bits)
 
 -- | Index for a set in the cache's tag memories
 type SetIndex = Bit StreamCacheLogSets
@@ -79,7 +93,7 @@ type BeatIndexWidth = StreamCacheLogNumWays +
 type BeatIndex = Bit BeatIndexWidth
 
 -- | A tag holds the upper bits of a beat address
-type Tag = Bit (DRAMAddrWidth -
+type Tag = Bit (StreamCacheAddrWidth -
                   (StreamCacheLogSets +
                     StreamCacheLogBeatsPerLine))
 
@@ -90,7 +104,7 @@ type BeatId = Bit StreamCacheLogBeatsPerLine
 type WayId = Bit StreamCacheLogNumWays
 
 -- | Address of a cache line
-type LineAddr = Bit (DRAMAddrWidth - StreamCacheLogBeatsPerLine)
+type LineAddr = Bit (StreamCacheAddrWidth - StreamCacheLogBeatsPerLine)
 
 -- | Cache line state
 data LineState =
@@ -111,8 +125,10 @@ data InflightInfo t_id =
     -- ^ Original request
   , inflightWay :: WayId
     -- ^ Chosen set-associative way for this request
-  , inflightHit :: Bit 1
-    -- ^ Is it a cache hit?
+  , inflightReplace :: Bit 1
+    -- ^ Does a line need to be replaced?
+  , inflightZero :: Bit 1
+    -- ^ Is cache line being accessed known to be zero?
   }
   deriving (Generic, Bits)
 
@@ -127,47 +143,56 @@ data MissInfo =
     -- ^ State of line before eviction
   , missNewTag :: Tag
     -- ^ Upper address bits of new line being fetched
+  , missZero :: Bit 1
+    -- ^ Is cache line being accessed known to be zero?
   }
   deriving (Generic, Bits)
+
+-- | Stream cache config options
+data StreamCacheConfig =
+  StreamCacheConfig {
+    useZeroTable :: Bool
+    -- ^ Track cache lines known to be zero.  Initialises memory to
+    -- zero and improves hit rate when memory fetched is often zero.
+  }
 
 -- Helper functions
 -- ================
 
 -- | Determine cache line address
-lineAddr :: DRAMAddr -> LineAddr
-lineAddr = slice @(DRAMAddrWidth-1) @StreamCacheLogBeatsPerLine
+lineAddr :: StreamCacheAddr -> LineAddr
+lineAddr = slice @(StreamCacheAddrWidth-1) @StreamCacheLogBeatsPerLine
 
 -- | Determine the set index given the thread id and address
-setIndex :: DRAMAddr -> SetIndex
+setIndex :: StreamCacheAddr -> SetIndex
 setIndex addr = truncate (lineAddr addr)
 
 -- | Determine the bits that make up a tag
-getTag :: DRAMAddr -> Tag
+getTag :: StreamCacheAddr -> Tag
 getTag = upper
 
 -- Implementation
 -- ==============
 
--- | Non-blocking set-associative write-back cache.  Optimised
--- for throughput over latency.  Capable of a large number of inflight
--- requests (StreamCacheLogMaxInflight). Capable of 100% throughput,
--- except when consuective requests access the same set (where a
--- pipeline bubble is inserted to avoid reading stale data); this
--- includes burst stores (a special case that could be optimised in
--- future).  Uses write-allocate policy, which means that DRAM
--- bandwidth can be wasted in the case where the fetch is
--- unneccessary.
+-- | Non-blocking set-associative write-back cache.  Optimised for
+-- throughput over latency.  Capable of a large number of inflight
+-- requests (StreamCacheLogMaxInflight).  Supports an optional
+-- initialise-to-zero feature for backing memory, along with an
+-- optimisation to track cache lines known to be zero without
+-- accessing backing memory.
 makeStreamCache :: forall t_id. Bits t_id =>
-     Stream (StreamCacheReq t_id)
+     StreamCacheConfig
+     -- ^ Config options
+  -> Stream (StreamCacheReq t_id)
      -- ^ Cache requests
   -> Stream (DRAMResp StreamCacheReqId)
      -- ^ DRAM responses
   -> Module (Stream (StreamCacheResp t_id), Stream (DRAMReq StreamCacheReqId))
      -- ^ Cache responses, DRAM requests
-makeStreamCache reqs dramResps = do
+makeStreamCache config reqs dramResps = do
   -- Tag memories
   tagMems :: [RAM SetIndex LineState] <-
-    replicateM (2^StreamCacheLogNumWays) makeDualRAM
+    replicateM (2^StreamCacheLogNumWays) makeDualRAMForward
 
   -- Data memory
   (dataMemA :: RAMBE BeatIndexWidth DRAMBeatBytes,
@@ -178,28 +203,61 @@ makeStreamCache reqs dramResps = do
   -- (until they are used)
   reservedQueues :: [SearchQueue SetIndex] <-
     replicateM (2^StreamCacheLogNumWays)
-               (makeSearchQueue StreamCachePendingReqsPerWay)
+               (makeSearchQueue True StreamCachePendingReqsPerWay)
 
   -- Inflight requests
   inflightQueue :: Queue (InflightInfo t_id) <-
-    makeSizedQueue StreamCacheLogMaxInflight
+    makeSizedQueueCore StreamCacheLogMaxInflight
 
   -- Miss queue
   missQueue :: Queue MissInfo <-
-    makeSizedQueue StreamCacheLogMaxInflight
+    makeSizedQueueCore StreamCacheLogMaxInflight
 
   -- DRAM requests
   dramReqQueue :: Queue (DRAMReq StreamCacheReqId) <- makeQueue
 
   -- Cache responses
-  respQueue :: Queue (StreamCacheResp t_id) <- makeQueue
+  respQueue :: Queue (StreamCacheResp t_id) <-
+    makeSizedQueue StreamCacheLogMaxInflight
+
+  -- Which cache lines are known zero? (Active low)
+  zeroTable :: RAM LineAddr (Bit 1) <-
+    if config.useZeroTable
+      then makeDualRAMForward
+      else return (nullRAM { out = true })
 
   -- Tag lookup and update
   -- =====================
   --
-  -- Two stage pipeline
+  -- Three stage pipeline
   -- Stage 1: tag lookup
-  -- Stage 2: tag update
+  -- Stage 2: latch
+  -- Stage 3: tag update
+
+  -- Pipeline triggers
+  go2 :: Reg (Bit 1) <- makeDReg false
+  go3 :: Reg (Bit 1) <- makeDReg false
+
+  -- Request register (per stage)
+  reqReg2 :: Reg (StreamCacheReq t_id) <- makeReg dontCare
+  reqReg3 :: Reg (StreamCacheReq t_id) <- makeReg dontCare
+
+  -- Latch register for zero table lookup
+  isZero3 :: Reg (Bit 1) <- makeReg dontCare
+
+  -- Latch registers for tag mem lookup
+  tagRegs3 :: [Reg LineState] <-
+    replicateM (2^StreamCacheLogNumWays) (makeReg dontCare)
+
+  -- Tag write wire, per tag mem, for pipeline forwarding
+  tagWrites :: [Wire LineState] <-
+    replicateM (2^StreamCacheLogNumWays) (makeWire dontCare)
+
+  -- Zero table write wire, for pipeline forwarding
+  zeroWrite :: Wire (Bit 1) <- makeWire false
+
+  -- Pipeline stall wire
+  stallWire :: Wire (Bit 1) <- makeWire false
 
   -- Way counter for eviction
   evictWay :: Reg WayId <- makeReg 0
@@ -208,59 +266,92 @@ makeStreamCache reqs dramResps = do
   busyRegs :: [Reg (Bit 1)] <-
     replicateM (2^StreamCacheLogNumWays) (makeReg dontCare)
 
-  -- Pipeline trigger (for second stage)
-  go2 :: Reg (Bit 1) <- makeDReg false
-
-  -- Request register (for second stage)
-  reqReg :: Reg (StreamCacheReq t_id) <- makeReg dontCare
-
-  -- Pipeline stall wire
-  -- (Both first and second stages are stalled)
-  stallWire :: Wire (Bit 1) <- makeWire false
-
-  -- Insert pipeline bubble
-  -- (Only first stage is stalled, and only for one cycle)
-  -- (Used when consecutive requests access same state)
-  bubbleWire :: Wire (Bit 1) <- makeWire false
+  -- These signals become active if writeback detects a zeroed cache line
+  let useZeroTableBit = if config.useZeroTable then true else false
+  lineZeroedQueue :: Queue LineAddr <- makeQueue
+  lineZeroed2 :: Reg (Bit 1) <- makeReg dontCare
+  lineZeroed3 :: Reg (Bit 1) <- makeReg dontCare
 
   always do
+    -- On stall, replay active stages and preserve RAM outputs
+    when stallWire.val do
+      go2 <== go2.val
+      go3 <== go3.val
+      sequence_ [tagMem.preserveOut | tagMem <- tagMems]
+      zeroTable.preserveOut
+
     -- Load tags
     sequence
       [ load tagMem (setIndex reqs.peek.streamCacheReqAddr)
       | tagMem <- tagMems ]
 
+    -- Lookup zero table
+    load zeroTable (upper reqs.peek.streamCacheReqAddr)
+
     -- See if line is currently busy
-    -- On a stall, we need to look at request from stage 2 rather than stage 1
     sequence
-      [ busy <== member reservedQueue (stallWire.val ?
-          (setIndex reqReg.val.streamCacheReqAddr,
-           setIndex reqs.peek.streamCacheReqAddr))
-      | (busy, reservedQueue) <- zip busyRegs reservedQueues ]
+      [ busyReg <== reservedQueue.member
+                      (stallWire.val ?
+                        ( setIndex reqReg3.val.streamCacheReqAddr
+                        , setIndex reqReg2.val.streamCacheReqAddr ))
+      | (busyReg, reservedQueue) <- zip busyRegs reservedQueues ]
 
     -- Stage 1: tag lookup
-    when (reqs.canPeek .&&. inv bubbleWire.val .&&. inv stallWire.val) do
-      let req = reqs.peek
+    when ((reqs.canPeek .||. lineZeroedQueue.canDeq)
+             .&&. inv stallWire.val) do
+      if lineZeroedQueue.canDeq .&&. useZeroTableBit
+        then do
+          lineZeroedQueue.deq
+          reqReg2 <== dontCare
+                        { streamCacheReqAddr = lineZeroedQueue.first # 0 }
+          lineZeroed2 <== true
+        else do
+          reqs.consume
+          reqReg2 <== reqs.peek
+          lineZeroed2 <== false
       -- Trigger next stage
       go2 <== true
-      reqReg <== req
-      reqs.consume
 
-    -- Stage 2: tag update
-    when (go2.val) do
-      let req = reqReg.val
+    -- Stage 2: latch
+    when (go2.val .&&. inv stallWire.val) do
+      -- Latch RAM outputs, with pipeline forwarding
+      sequence
+        [ tagReg <== 
+            (tagWrite.active .&&.
+              setIndex reqReg2.val.streamCacheReqAddr .==.
+              setIndex reqReg3.val.streamCacheReqAddr) ?
+                (tagWrite.val, tagMem.out)
+        | (tagReg, tagWrite, tagMem) <- zip3 tagRegs3 tagWrites tagMems ]
+      isZero3 <==
+        if config.useZeroTable
+          then (zeroWrite.active .&&.
+                  lineAddr reqReg2.val.streamCacheReqAddr .==.
+                  lineAddr reqReg3.val.streamCacheReqAddr) ?
+                    (zeroWrite.val, inv zeroTable.out)
+          else false
+      -- Trigger next stage
+      go3 <== true
+      reqReg3 <== reqReg2.val
+      lineZeroed3 <== lineZeroed2.val
+
+    -- Stage 3: tag update
+    when go3.val do
+      let req = reqReg3.val
       let setId = setIndex req.streamCacheReqAddr
       -- Look for a set-associative match
       let matches =
-            [ let s = tagMem.out in
-                lineValid s .&&. lineTag s .==. getTag req.streamCacheReqAddr
-            | tagMem <- tagMems ]
+            [ let s = tagReg.val in
+                s.lineValid .&&. s.lineTag .==. getTag req.streamCacheReqAddr
+            | tagReg <- tagRegs3 ]
       -- Cache hit?
       let isHit = orList matches
       let matchingWay = select $ zip matches (map fromInteger [0..])
       let chosenWay = isHit ? (matchingWay, evictWay.val)
+      let replace = inv isHit .&&.
+            (if isZero3.val then req.streamCacheReqIsStore else true)
       -- Stall condition
-      let stall = -- It's a miss and line is busy
-                  inv isHit .&&. (map val busyRegs ! evictWay.val)
+      let stall = -- We need to replace and line is busy
+                  replace .&&. (map val busyRegs ! evictWay.val)
              .||. -- The queue of inflight requests is full
                   inv inflightQueue.notFull
              .||. -- The miss queue is full
@@ -269,53 +360,66 @@ makeStreamCache reqs dramResps = do
                   inv (map canInsert reservedQueues ! chosenWay)
       -- Evict a different way next time
       evictWay <== evictWay.val + 1
-      -- Try to consume request
-      if stall
+      -- Are we marking a line as zero or processing a request?
+      if lineZeroed3.val .&&. useZeroTableBit
         then do
-          -- Stall pipeline
-          go2 <== true
-          stallWire <== true
-          sequence_ [tagMem.preserveOut | tagMem <- tagMems]
+          zeroWrite <== true
+          zeroTable.store (lineAddr req.streamCacheReqAddr) false
         else do
-          -- Update line state
-          sequence
-            [ when (way .==. chosenWay) do
-                -- Don't update tag on load hit
-                when (inv (isHit .&&. inv req.streamCacheReqIsStore)) do
-                  store tagMem setId
-                    LineState {
-                      lineTag = getTag req.streamCacheReqAddr
-                    , lineValid = true
-                    , lineDirty = req.streamCacheReqIsStore
+          -- Try to consume request
+          if stall
+            then stallWire <== true
+            else do
+              -- Ignores stores of zero when line already known to be zero
+              when (inv (isZero3.val .&&.
+                           req.streamCacheReqIsStore .&&.
+                             req.streamCacheReqData .==. 0)) do
+                -- Update line state
+                sequence
+                  [ when (way .==. chosenWay) do
+                      -- Update tag memory?
+                      let doUpdate = replace
+                                .||. req.streamCacheReqIsStore .&&.
+                                       inv tagReg.val.lineDirty
+                      when doUpdate do
+                        let newTag =
+                              LineState {
+                                lineTag = getTag req.streamCacheReqAddr
+                              , lineValid = true
+                              , lineDirty = req.streamCacheReqIsStore
+                              }
+                        tagWrite <== newTag
+                        tagMem.store setId newTag
+                  | (tagMem, tagReg, tagWrite, way) <-
+                      zip4 tagMems tagRegs3 tagWrites (map fromInteger [0..]) ]
+                -- Reserve line
+                sequence
+                  [ when (way .==. chosenWay) do
+                      insert reservedQueue setId
+                  | (reservedQueue, way) <-
+                      zip reservedQueues (map fromInteger [0..]) ]
+                -- Insert request into inflight queue
+                enq inflightQueue 
+                  InflightInfo {
+                    inflightReq = req
+                  , inflightWay = chosenWay
+                  , inflightReplace = replace
+                  , inflightZero = isZero3.val
+                  }
+                -- Insert miss info into miss queue
+                when replace do
+                  enq missQueue
+                    MissInfo {
+                      missSetId = setId
+                    , missWay = evictWay.val
+                    , missLine = map (.val) tagRegs3 ! evictWay.val
+                    , missNewTag = getTag req.streamCacheReqAddr
+                    , missZero = isZero3.val
                     }
-            | (tagMem, way) <- zip tagMems (map fromInteger [0..]) ]
-          -- Reserve line
-          sequence
-            [ when (way .==. chosenWay) do
-                insert reservedQueue setId
-            | (reservedQueue, way) <-
-                zip reservedQueues (map fromInteger [0..]) ]
-          -- Insert request into inflight queue
-          enq inflightQueue 
-            InflightInfo {
-              inflightReq = req
-            , inflightWay = chosenWay
-            , inflightHit = isHit
-            }
-          -- Insert miss info into miss queue
-          when (inv isHit) do
-            enq missQueue
-              MissInfo {
-                missSetId = setId
-              , missWay = evictWay.val
-              , missLine = map out tagMems ! evictWay.val
-              , missNewTag = getTag req.streamCacheReqAddr
-              }
-          -- Insert pipeline bubble when consecutive requests access same line
-          when (reqs.canPeek .&&.
-                  setIndex reqs.peek.streamCacheReqAddr .==.
-                  setIndex req.streamCacheReqAddr) do
-            bubbleWire <== true
+                -- Update zero table
+                when (isZero3.val .&&. req.streamCacheReqIsStore) do
+                  zeroWrite <== false
+                  zeroTable.store (lineAddr req.streamCacheReqAddr) true
 
   -- Miss handler
   -- ============
@@ -338,6 +442,9 @@ makeStreamCache reqs dramResps = do
   -- (Priority given to memory response)
   dramRespInProgress :: Wire (Bit 1) <- makeWire false
 
+  -- Detect if we are writing back a zeroed cache line
+  writebackZero :: Reg (Bit 1) <- makeReg true
+
   always do
     when (missQueue.canDeq) do
       let miss = missQueue.first
@@ -354,10 +461,14 @@ makeStreamCache reqs dramResps = do
             let dramReq =
                   DRAMReq {
                     dramReqId =
-                      miss.missWay # miss.missSetId # (0 :: BeatId)
+                      StreamCacheReqId {
+                        beatIndex =
+                          miss.missWay # miss.missSetId # (0 :: BeatId)
+                      , beatKnownZero = miss.missZero
+                      }
                   , dramReqIsStore = false
-                  , dramReqAddr =
-                      miss.missNewTag # miss.missSetId # (0 :: BeatId)
+                  , dramReqAddr = zeroExtend
+                      (miss.missNewTag # miss.missSetId # (0 :: BeatId))
                   , dramReqData = dontCare
                   , dramReqDataTagBits = dontCare
                   , dramReqByteEn = 0
@@ -391,25 +502,33 @@ makeStreamCache reqs dramResps = do
             let writebackFinished = writebackCount.val .==.
                  fromInteger (2^StreamCacheLogBeatsPerLine)
             -- Prepare writeback request
+            let addr = zeroExtend
+                  (miss.missLine.lineTag # miss.missSetId # (0 :: BeatId))
             let dramReq =
                   DRAMReq {
                     dramReqId = dontCare
                   , dramReqIsStore = true
-                  , dramReqAddr =
-                      miss.missLine.lineTag # miss.missSetId # (0 :: BeatId)
+                  , dramReqAddr = addr
                   , dramReqData = dataMemA.outBE
                   , dramReqDataTagBits = dontCare
                   , dramReqByteEn = ones
                   , dramReqBurst = fromInteger (2^StreamCacheLogBeatsPerLine)
                   , dramReqIsFinal = writebackFinished
                   }
+            let newWritebackZero = writebackZero.val .&&. dataMemA.outBE .==. 0
             -- Try to submit DRAM request
-            if dramReqQueue.notFull
+            if dramReqQueue.notFull .&&. lineZeroedQueue.notFull
               then do
                 enq dramReqQueue dramReq
                 -- Move to fetch state
-                when writebackFinished do
-                  missState <== 1
+                if writebackFinished
+                  then do
+                    missState <== 1
+                    writebackZero <== true
+                    when (useZeroTableBit .&&. newWritebackZero) do
+                      lineZeroedQueue.enq (upper addr)
+                  else do
+                    writebackZero <== newWritebackZero
               else do
                 -- Retry on next cycle
                 writebackStall <== true
@@ -433,8 +552,10 @@ makeStreamCache reqs dramResps = do
       -- Take control over data mem port A
       dramRespInProgress <== true
       -- Write beat to data memory
-      storeBE dataMemA (resp.dramRespId + zeroExtend dramRespBeatCount.val)
-        ones (dramResps.peek.dramRespData)
+      storeBE dataMemA (resp.dramRespId.beatIndex +
+                          zeroExtend dramRespBeatCount.val) ones
+        (if resp.dramRespId.beatKnownZero
+           then zero else dramResps.peek.dramRespData)
       -- Consume response
       dramResps.consume
       dramRespBeatCount <== dramRespBeatCount.val + 1
@@ -452,7 +573,8 @@ makeStreamCache reqs dramResps = do
   respConsumeWire :: Wire (Bit 1) <- makeWire false
 
   -- Track current size of respQueue
-  respCount :: Counter 2 <- makeCounter 2
+  respCount :: Counter (StreamCacheLogMaxInflight+1) <-
+    makeCounter (fromInteger (2^StreamCacheLogMaxInflight))
 
   -- Trigger for second pipeline stage
   issueResp :: Reg (Bit 1) <- makeDReg false
@@ -468,6 +590,9 @@ makeStreamCache reqs dramResps = do
   -- Beat offset for second pipeline stage
   respBeatOffset :: Reg (Bit StreamCacheLogItemsPerBeat) <- makeReg dontCare
 
+  -- Respond with zero
+  respZero :: Reg (Bit 1) <- makeReg dontCare
+
   -- Stage 1: access data memory
   always do
     let inflight = inflightQueue.first
@@ -479,8 +604,8 @@ makeStreamCache reqs dramResps = do
     when (respState.val .==. 0) do
       when (inflightQueue.canDeq) do
         -- Stall condition
-        let stall = -- Miss has not yet been resolved
-                    inv inflight.inflightHit .&&.
+        let stall = -- Line has not yet been replaced
+                    inflight.inflightReplace .&&.
                       fetchDoneCount.getCount .==. 0
                .||. -- Response buffer is full
                     respCount.isFull .&&. inv respConsumeWire.val
@@ -502,8 +627,9 @@ makeStreamCache reqs dramResps = do
               issueResp <== true
               respIdReg <== req.streamCacheReqId
               respBeatOffset <== req.streamCacheReqOffset
-          -- Decrement fetch count on miss
-          when (inv inflight.inflightHit) do
+              respZero <== inflight.inflightZero
+          -- Decrement fetch count on replacement
+          when (inflight.inflightReplace) do
             decrBy fetchDoneCount 1
           -- Release line
           sequence_
@@ -556,7 +682,7 @@ makeStreamCache reqs dramResps = do
         StreamCacheResp {
           streamCacheRespId = respIdReg.val
         , streamCacheRespData =
-            dataItems ! respBeatOffset.val
+            respZero.val ? (zero, dataItems ! respBeatOffset.val)
         }
 
   return
