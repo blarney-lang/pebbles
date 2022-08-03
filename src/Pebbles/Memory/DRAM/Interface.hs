@@ -49,6 +49,15 @@ data DRAMResp id =
     -- ^ Data tag bit per word (see note [Density of tag bits])
   } deriving (Generic, FShow, Bits, Interface)
 
+-- | For accumulating DRAM stats
+data DRAMStatSigs =
+  DRAMStatSigs {
+    dramLoadSig :: DRAMBurst
+    -- ^ Non-zero when a DRAM load request is submitted
+  , dramStoreSig :: DRAMBurst
+    -- ^ Non-zero when a DRAM store request is submitted
+  } deriving (Generic, Bits, Interface)
+
 -- Avalon DRAM interface
 -- =====================
 

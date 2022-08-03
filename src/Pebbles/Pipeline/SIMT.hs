@@ -67,6 +67,7 @@ import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Pipeline.SIMT.RegFile
+import Pebbles.Memory.DRAM.Interface
 import Pebbles.CSRs.TrapCodes
 import Pebbles.CSRs.Custom.SIMTDevice
 
@@ -137,6 +138,8 @@ data SIMTPipelineIns =
       -- ^ Resume requests for multi-cycle instructions (vector pipeline)
     , simtScalarResumeReqs :: Stream (SIMTPipelineInstrInfo, ResumeReq)
       -- ^ Resume requests for multi-cycle instructions (scalar pipeline)
+    , simtDRAMStatSigs :: DRAMStatSigs
+      -- ^ For DRAM stat counters
   }
 
 -- | SIMT pipeline outputs
@@ -324,6 +327,9 @@ makeSIMTPipeline c inputs =
     scalarSuspCount :: Reg (Bit 32) <- makeReg 0
     scalarAbortCount :: Reg (Bit 32) <- makeReg 0
 
+    -- Count DRAM accesses for performance stats
+    dramAccessCount :: Reg (Bit 32) <- makeReg 0
+
     -- Triggers from each execute unit to increment instruction count
     incInstrCountRegs <- replicateM SIMTLanes (makeDReg false)
     incScalarInstrCount <- makeDReg false
@@ -420,6 +426,7 @@ makeSIMTPipeline c inputs =
         suspCount <== 0
         scalarSuspCount <== 0
         scalarAbortCount <== 0
+        dramAccessCount <== 0
 
     -- Stat counters
     -- =============
@@ -454,6 +461,12 @@ makeSIMTPipeline c inputs =
               scalarSuspCount <== scalarSuspCount.val + 1
             when incScalarAbortCount.val do
               scalarAbortCount <== scalarAbortCount.val + 1
+
+          -- DRAM accesses
+          dramAccessCount <==
+            dramAccessCount.val +
+               zeroExtend inputs.simtDRAMStatSigs.dramLoadSig +
+                 zeroExtend inputs.simtDRAMStatSigs.dramStoreSig
 
     -- ===============
     -- Vector Pipeline
@@ -1401,6 +1414,8 @@ makeSIMTPipeline c inputs =
                       scalarSuspCount.val
                   , statId .==. simtStat_ScalarAborts -->
                       scalarAbortCount.val
+                  , statId .==. simtStat_DRAMAccesses -->
+                      dramAccessCount.val
                   ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)

@@ -53,6 +53,9 @@ simtStat_ScalarSuspBubbles = SIMTStatId 7
 -- | Scalar pipeline abort bubbles
 simtStat_ScalarAborts = SIMTStatId 8
 
+-- | DRAM accesses (loads and stores)
+simtStat_DRAMAccesses = SIMTStatId 9
+
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
   SIMTReq {

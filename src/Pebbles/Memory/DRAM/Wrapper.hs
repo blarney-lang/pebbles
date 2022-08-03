@@ -37,7 +37,7 @@ makeDRAMCore :: Bits t_id =>
      -- Avalon DRAM input signals
   -> AvalonDRAMIns
      -- DRAM responses produced, and Avalon DRAM output signals
-  -> Module (Stream (DRAMResp t_id), AvalonDRAMOuts)
+  -> Module (Stream (DRAMResp t_id), AvalonDRAMOuts, DRAMStatSigs)
 makeDRAMCore makeRespQueue reqs avlIns =
   do -- Queue of in-flight requests
      inFlight :: Queue (DRAMInFlightReq t_id) <-
@@ -81,10 +81,12 @@ makeDRAMCore makeRespQueue reqs avlIns =
          doRead <== 0
          doWrite <== 0
 
+     -- Next request
+     let req :: DRAMReq t_id = reqs.peek
+
      -- Process DRAM requests
      always do
        when (reqs.canPeek .&. inv waitRequest) do
-         let req :: DRAMReq t_id = reqs.peek
          -- Check burst size
          dynamicAssert (req.dramReqBurst .<=. maxBurst)
            "DRAM: max burst size exceeded"
@@ -146,7 +148,14 @@ makeDRAMCore makeRespQueue reqs avlIns =
            , avl_dram_burstcount = zeroExtend (burstReg.val)
            }
 
-     return (respsOut, avlOuts)
+     -- Stats interface
+     let stats =
+           DRAMStatSigs {
+             dramLoadSig  = putLoad.val ? (req.dramReqBurst, 0)
+           , dramStoreSig = zeroExtend putStore.val
+           }
+
+     return (respsOut, avlOuts, stats)
 
 -- DRAM wrapper supporting backpressure on responses
 -- =================================================
@@ -158,7 +167,7 @@ makeDRAM :: Bits t_id =>
      -- | Avalon DRAM input signals
   -> AvalonDRAMIns
      -- | DRAM responses produced, and Avalon DRAM output signals
-  -> Module (Stream (DRAMResp t_id), AvalonDRAMOuts)
+  -> Module (Stream (DRAMResp t_id), AvalonDRAMOuts, DRAMStatSigs)
 makeDRAM reqs avlIns =
   -- Use a response queue big enough to guarantee no overflow
   makeDRAMCore (makeSizedQueue DRAMLogMaxInFlight) reqs avlIns
@@ -174,7 +183,7 @@ makeDRAMUnstoppable :: Bits t_id =>
      -- | Avalon DRAM input signals
   -> AvalonDRAMIns
      -- | DRAM responses produced, and Avalon DRAM output signals
-  -> Module (Stream (DRAMResp t_id), AvalonDRAMOuts)
+  -> Module (Stream (DRAMResp t_id), AvalonDRAMOuts, DRAMStatSigs)
 makeDRAMUnstoppable reqs avlIns =
   -- Use a small response queue which may overflow if
   -- responses are not consumed fast enough

@@ -24,6 +24,7 @@
 #define STAT_SIMT_SUSP_BUBBLES 6
 #define STAT_SIMT_SCALAR_SUSP_BUBBLES 7
 #define STAT_SIMT_SCALAR_ABORTS 8
+#define STAT_SIMT_DRAM_ACCESSES 9
 
 // Can issue command to SIMT core?
 INLINE int pebblesSIMTCanPut()
