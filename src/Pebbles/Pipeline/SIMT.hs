@@ -953,14 +953,21 @@ makeSIMTPipeline c inputs =
       let writeVec = handleExecute ? (executeVec resultWires, resumeVecInt)
       let writeCapVec = handleExecute ? (executeVec resultCapWires,
                                            resumeVecCap)
+      -- Only resumptions need to check the 'canStore' condition to
+      -- avoid potential hazards in the RF implementation; normal
+      -- writebacks to the same register are too infrequent to cause
+      -- a hazard.
+      let handleResume = inputs.simtResumeReqs.canPeek .&&.
+                           regFile.canStore writeIdx .&&.
+                             capRegFile.canStore writeIdx
 
       -- Write to register file
-      when (handleExecute .||. inputs.simtResumeReqs.canPeek) do
+      when (handleExecute .||. handleResume) do
         regFile.store writeIdx writeVec
         when enableCHERI do
           capRegFile.store writeIdx writeCapVec
       -- Handle thread resumption
-      when (inv handleExecute .&&. inputs.simtResumeReqs.canPeek) do
+      when (inv handleExecute .&&. handleResume) do
         inputs.simtResumeReqs.consume
 
       -- Clear suspension bit after write latency elapses
@@ -972,7 +979,7 @@ makeSIMTPipeline c inputs =
             (toList $ executeVec resultWires) (toList resumeVec)
       let warpId = iterateN latency (delay dontCare) writeIdx.fst
       let doClear = iterateN latency (delay false)
-            (handleExecute .||. inputs.simtResumeReqs.canPeek)
+            (handleExecute .||. handleResume)
       when doClear do
         sequence_
           [ when valid do suspMask!warpId <== false

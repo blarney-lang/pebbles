@@ -63,6 +63,8 @@ data SIMTRegFile regWidth =
           -> Vec SIMTLanes (Option (Bit regWidth))
           -> Action ()
     -- ^ Write register
+  , canStore :: SIMTRegFileIdx -> Bit 1
+    -- ^ Backpressure on stores to a given register
   , storeScalar :: SIMTRegFileIdx
                 -> ScalarVal regWidth
                 -> Action ()
@@ -97,6 +99,7 @@ makeNullSIMTRegFile = do
     , scalarC = none
     , scalarD = none
     , store = \_ _ -> return ()
+    , canStore = \_ -> true
     , storeScalar = \_ _ -> return ()
     , storeLatency = 0
     , init = return ()
@@ -159,6 +162,7 @@ makeSIMTRegFile loadLatency m_initVal = do
         sequence_
           [ when item.valid do bank.store idx item.val
           | (item, bank) <- zip (toList vec) banksA ]
+    , canStore = \_ -> true
     , storeScalar = error "makeSIMTRegFile: storeScalar unavailable"
     , storeLatency = 0
     , init =
@@ -523,6 +527,11 @@ makeSIMTScalarisingRegFile useAffine useScalarUnit initVal = do
             if v0.valid .&&. v1.valid .&&. (diff .&. inv mask .==. 0)
               then truncateCast diff
               else 0
+    , canStore = \idx ->
+        inv $ orList [
+                store1.val .&&. storeIdx1.val .==. idx
+              , store2.val .&&. storeIdx2.val .==. idx
+              ]
     , storeScalar = \idx x -> do
         scalarRegFileF.load idx
         storeScalarGo <== true
