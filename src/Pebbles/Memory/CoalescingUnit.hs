@@ -20,6 +20,7 @@ import qualified Blarney.Vector as V
 import Pebbles.Util.List
 import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
+import Pebbles.Pipeline.SIMT.RegFile
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
 import Pebbles.Memory.DRAM.Interface
@@ -89,8 +90,9 @@ data CoalescingInfo t_id =
 makeCoalescingUnit :: Bits t_id =>
      (MemReq -> Bit 1)
      -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
-  -> Stream (t_id, V.Vec SIMTLanes (Option MemReq))
-     -- ^ Stream of memory requests vectors
+  -> Stream (t_id, V.Vec SIMTLanes (Option MemReq), Option (ScalarVal 33))
+     -- ^ Stream of memory requests vectors, plus a compressed write
+     -- vector (if data being written is scalarisable)
   -> Stream (DRAMResp DRAMReqId)
      -- ^ Responses from DRAM
   -> Stream (t_id, V.Vec SIMTLanes (Option MemResp))
@@ -184,7 +186,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
       "Coalescing Unit: feedback and stall both high"
 
     -- Memory requests to consume
-    let memReqs = V.toList (memReqsStream.peek.snd)
+    let memReqs = V.toList (memReqsStream.peek._1)
 
     -- Is this the final flit of a multi-flit transaction?
     let isFinal = orList [ r.valid .&&. r.val.memReqIsFinal
@@ -208,7 +210,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
         pending1 <== fromBitList [r.valid | r <- memReqs]
         -- Trigger pipeline
         go1 <== true
-        reqId1 <== memReqsStream.peek.fst
+        reqId1 <== memReqsStream.peek._0
         incrBy inflightCount 1
         partialInsert <== inv isFinal
 

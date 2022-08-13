@@ -14,16 +14,16 @@ import Blarney.Vector (Vec, fromList, toList)
 -- | Convert a sink of request vectors to a vector of request sinks.
 -- The request id is sampled at the point at which requests are
 -- submitted to one or more sinks.
-makeSinkVectoriser :: forall n t_id req.
-     (KnownNat n, Bits t_id, Bits req)
+makeSinkVectoriser :: forall n t_put req.
+     (KnownNat n, Bits t_put, Bits req)
      -- ^ Constraints
-  => t_id
-     -- ^ Request identifier
-  -> Sink (t_id, Vec n (Option req))
+  => (Vec n (Option req) -> t_put)
+     -- ^ Convert request vector to value to be put to sink
+  -> Sink t_put
      -- ^ Sinks after vectorisation
   -> Module (Vec n (Sink req))
      -- ^ Sinks before vectorisation
-makeSinkVectoriser reqId sink = do
+makeSinkVectoriser f sink = do
   let vecSize = valueOf @n
 
   -- Wires indicating if each lane putting or not 
@@ -32,7 +32,7 @@ makeSinkVectoriser reqId sink = do
   always do
     let anyPut = orList $ map (.active) putWires
     let vec = fromList [Option w.active w.val | w <- putWires]
-    when anyPut do sink.put (reqId, vec)
+    when anyPut do sink.put (f vec)
 
   return $ fromList
     [ Sink {
