@@ -65,9 +65,15 @@ makeCapMemReqSerialiser memReqSink = do
                     memReqIsFinal = inv r.capMemReqIsCapAccess
                   }
               | Option valid r <- toList reqs ]
-        let stdScal = fmap (\s -> ScalarVal { val = zeroExtend s.val
-                                            , stride = s.stride } )
-                        scal.scalarisedVal
+        -- FIXME: unsatisfying to set tag bit of lower word of
+        -- scalarised cap vector like this
+        let scalTagBit = orList
+              [ r.valid ? (r.val.capMemReqIsCapAccess, false)
+              | r <- toList reqs ]
+        let stdScal = fmap (\s ->
+                        ScalarVal { val = scalTagBit # s.val
+                                  , stride = s.stride })
+                          scal.scalarisedVal
         memReqSink.put (id, fromList stdReqs, stdScal)
     }
 

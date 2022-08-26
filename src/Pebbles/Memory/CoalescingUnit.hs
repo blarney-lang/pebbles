@@ -2,6 +2,7 @@
 
 module Pebbles.Memory.CoalescingUnit 
   ( makeCoalescingUnit
+  , CoalUnitOptions(..)
   ) where
 
 -- SoC parameters
@@ -30,8 +31,8 @@ import Data.List
 import Data.Proxy
 import Control.Monad (forM_)
 
--- Types
--- =====
+-- Coalescing Unit Types
+-- =====================
 
 -- | DRAM request ids from the coalescing unit are unused
 type DRAMReqId = ()
@@ -55,7 +56,20 @@ data CoalescingInfo t_id =
     -- ^ Burst length
   , coalInfoIsFinal :: Bit 1
     -- ^ Final request in transaction?
+  , coalInfoStoreBufferHit :: Option (ScalarVal 33)
+    -- ^ Is it a load hit in the store buffer?
   } deriving (Generic, Bits)
+
+-- | Coalescing unit parameters/options
+data CoalUnitOptions =
+  CoalUnitOptions {
+    enableStoreBuffer :: Bool
+    -- ^ Enable scalarised vector store buffer?
+  , isSRAMAccess :: MemReq -> Bit 1
+    -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
+  , canBuffer :: MemReq -> Bit 1
+    -- ^ If DRAM, are we allowed to buffer the given request?
+  }
 
 -- Implementation
 -- ==============
@@ -76,6 +90,15 @@ data CoalescingInfo t_id =
 --   5. Issue DRAM/SRAM requests
 --   6. Consume DRAM/SRAM responses and issue load responses
 --
+-- Optionally, an *experimental* scalarised vector store buffer can be
+-- enabled, which reduces DRAM overhead for register spills.
+-- Currently, the store buffer only buffers compressed uniform
+-- vectors. Futhermore, it deatomises multi-flit transactions: when
+-- CHERI is enabled, buffered capability stores are non-atomic.
+-- However, the kind of stores that can be buffered is parameterised,
+-- allowing loss of atomicity to be restricted to regions of memory
+-- that are not shared, such as stacks.
+--
 -- Notes:
 --   * The number of SIMT lanes is assumed to be equal to the
 --     number of half-words in a DRAM Beat.
@@ -87,9 +110,10 @@ data CoalescingInfo t_id =
 --     have reached DRAM).
 --   * For capability accesses, the SameBlock strategy is currently
 --     only effective when accessing the SIMT stacks.
+--   * A global fence does not currently flush the store buffer.
 makeCoalescingUnit :: Bits t_id =>
-     (MemReq -> Bit 1)
-     -- ^ Predicate to determine if request is for SRAM (true) or DRAM (false)
+     CoalUnitOptions
+     -- ^ Coalescing unit options/parameters
   -> Stream (t_id, V.Vec SIMTLanes (Option MemReq), Option (ScalarVal 33))
      -- ^ Stream of memory requests vectors, plus a compressed write
      -- vector (if data being written is scalarisable)
@@ -108,7 +132,7 @@ makeCoalescingUnit :: Bits t_id =>
      --     (2) SRAM requests per lane/bank, plus leader request,
      --         valid when all requests access same address;
      --     (3) DRAM requests
-makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
+makeCoalescingUnit opts memReqsStream dramResps sramResps = do
   -- Assumptions
   staticAssert (SIMTLanes == DRAMBeatHalfs)
     ("Coalescing Unit: number of SIMT lanes must equal " ++
@@ -134,6 +158,12 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
   reqId3 :: Reg t_id <- makeReg dontCare
   reqId4 :: Reg t_id <- makeReg dontCare
   reqId5 :: Reg t_id <- makeReg dontCare
+
+  -- Scalarised write vector for each pipeline stage
+  scalarVal1 :: Reg (Option (ScalarVal 33)) <- makeReg dontCare
+  scalarVal2 :: Reg (Option (ScalarVal 33)) <- makeReg dontCare
+  scalarVal3 :: Reg (Option (ScalarVal 33)) <- makeReg dontCare
+  scalarVal4 :: Reg (Option (ScalarVal 33)) <- makeReg dontCare
 
   -- Pending request mask for each pipeline stage
   pending1 :: Reg (Bit SIMTLanes) <- makeReg dontCare
@@ -161,6 +191,15 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
   -- DRAM response queue
   dramRespQueue :: Queue (t_id, V.Vec SIMTLanes (Option MemResp)) <-
     makeShiftQueue 1
+
+  -- Scalarised vector store buffer (SVSB)
+  storeBuffer :: (RAM SVSBIndex SVSBEntry) <-
+    if opts.enableStoreBuffer
+      then makeDualRAMForward
+      else return nullRAM
+
+  -- Enable store buffer?
+  let enStoreBuffer = if opts.enableStoreBuffer then true else false
 
   -- Stage 0: consume requests and feed pipeline
   -- ===========================================
@@ -211,6 +250,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
         -- Trigger pipeline
         go1 <== true
         reqId1 <== memReqsStream.peek._0
+        scalarVal1 <== memReqsStream.peek._2
         incrBy inflightCount 1
         partialInsert <== inv isFinal
 
@@ -234,6 +274,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
           zipWithM_ (<==) memReqs2 (map (.val) memReqs1)
           pending2 <== pending1.val
           reqId2 <== reqId1.val
+          scalarVal2 <== scalarVal1.val
 
   -- Stage 2: Select leader's request
   -- ================================
@@ -248,24 +289,29 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
           dynamicAssert (leader2.val .!=. 0)
             "Coalescing Unit (Stage 2): no leader found"
           -- Mux to select leader's request
-          leaderReq3 <== select (zip (toBitList leader2.val)
-                                     (map (.val) memReqs2))
+          let leaderReq = select (zip (toBitList leader2.val)
+                                      (map (.val) memReqs2))
+          leaderReq3 <== leaderReq
           -- Trigger stage 3
           go3 <== true
           zipWithM_ (<==) memReqs3 (map (.val) memReqs2)
           pending3 <== pending2.val
           reqId3 <== reqId2.val
+          scalarVal3 <== scalarVal2.val
           leader3 <== leader2.val
 
   -- Stage 3: Evaluate coalescing strategies
   -- =======================================
 
   -- Outcome of stage 3
-  sameBlockMode4 :: Reg (Bit 2) <- makeReg dontCare
-  sameBlockMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
-  sameAddrMask4  :: Reg (Bit SIMTLanes) <- makeReg dontCare
-  sramMask4      :: Reg (Bit SIMTLanes) <- makeReg dontCare
-  isSRAMAccess4  :: Reg (Bit 1) <- makeReg dontCare
+  sameBlockMode4  :: Reg (Bit 2) <- makeReg dontCare
+  sameBlockMask4  :: Reg (Bit SIMTLanes) <- makeReg dontCare
+  sameAddrMask4   :: Reg (Bit SIMTLanes) <- makeReg dontCare
+  sramMask4       :: Reg (Bit SIMTLanes) <- makeReg dontCare
+  isSRAMAccess4   :: Reg (Bit 1) <- makeReg dontCare
+  bufferable4     :: Reg (Bit 1) <- makeReg dontCare
+  canBuffer4      :: Reg (Bit 1) <- makeReg dontCare
+  storeBufferIdx4 :: Reg SVSBIndex <- makeReg dontCare
 
   always do
     -- We assume that inputs to the coalescing unit have passed
@@ -328,8 +374,14 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
 
     -- Requests destined for banked SRAMs
     let sramMask = 
-          [ p .&. isSRAMAccess r
+          [ p .&. opts.isSRAMAccess r
           | (p, r) <- zip (toBitList pending3.val) (map (.val) memReqs3) ]
+
+    -- Lookup store buffer
+    let storeBufferAddr :: DRAMVecAddr =
+          stallWire.val ? ( upper leaderReq4.val.memReqAddr
+                          , upper leaderReq3.val.memReqAddr )
+    storeBuffer.load (lower storeBufferAddr)
 
     -- State update
     when (go3.val .&. inv stallWire.val) do
@@ -356,13 +408,36 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
               sameBlockMode4 <== 0
               sameBlockMask4 <== byteModeMask
       -- Is leader accessing banked SRAMs?
-      isSRAMAccess4 <== isSRAMAccess leaderReq3.val
+      isSRAMAccess4 <== opts.isSRAMAccess leaderReq3.val
       sramMask4 <== fromBitList sramMask
+      -- Can we insert into store buffer?
+      let canBuffer = opts.canBuffer leaderReq3.val
+      bufferable4 <== andList
+        [ -- Store buffer is enabled
+          enStoreBuffer
+          -- It's a store
+        , leaderReq3.val.memReqOp .==. memStoreOp
+          -- Write vector is scalarisable
+        , scalarVal3.val.valid
+          -- Write vector is uniform
+        , scalarVal3.val.val.stride .==. 0
+          -- Is the access bufferable?
+        , canBuffer
+          -- SameBlock strategy, with all lanes active
+        , wordModeMask .==. ones
+          -- SameBlock WordMode is in operation
+        , useWordMode
+          -- Access width is 4 bytes
+        , isWordAccess leaderReq3.val.memReqAccessWidth
+        ]
+      canBuffer4 <== canBuffer
+      storeBufferIdx4 <== lower storeBufferAddr
       -- Trigger stage 4
       go4 <== true
       zipWithM_ (<==) memReqs4 (map (.val) memReqs3)
       pending4 <== pending3.val
       reqId4 <== reqId3.val
+      scalarVal4 <== scalarVal3.val
       leader4 <== leader3.val
       leaderReq4 <== leaderReq3.val
 
@@ -378,13 +453,16 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
   -- Which lanes are participating in the strategy
   coalMask :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
-  -- Final request of DRAM transaction?
-  isFinalDRAM :: Reg (Bit 1) <- makeReg dontCare
-
   -- Requests to banked SRAMs
   sramReqs :: Queue ( t_id
                     , V.Vec SIMTLanes (Option MemReq)
                     , Option MemReq ) <- makeShiftQueue 2
+
+  -- Store buffer load hit?
+  coalStoreBufferLoadHit :: Reg (Option (ScalarVal 33)) <- makeReg dontCare
+
+  -- Wire goes high when store buffer eviction is required
+  storeBufferEvict :: Wire (Bit 1) <- makeWire false
 
   always do
     -- Use SameBlock strategy if it satisfies leader's request and at
@@ -421,31 +499,115 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
               let leader = Option useSameAddr (leaderReq4.val)
               enq sramReqs (reqId4.val, reqs, leader)
             else do
-              go5 <== true
-              coalSameBlockStrategy <== useSameBlock
-              coalSameBlockMode <== sameBlockMode4.val
-              coalMask <== mask
-              leaderReq5 <== leaderReq4.val
-              reqId5 <== reqId4.val
-              isFinalDRAM <== leaderReq4.val.memReqIsFinal
-              forM_ (zip memReqs4 memReqs5) \(r4, r5) -> do
-                r5 <== r4.val
               -- Check that atomics are not in use
               dynamicAssert (leaderReq4.val.memReqOp .!=. memAtomicOp)
                 "Atomics not yet supported on DRAM path"
-          -- Determine any remaining pending requests
-          let remaining = pending4.val .&. inv mask
-          -- If there are any, feed them back
-          if remaining .==. 0
-            then do
-              decrBy inflightCount 1
-            else do
-              go1 <== true
-              feedbackWire <== true
-              partialFeedback <== inv leaderReq4.val.memReqIsFinal
-              zipWithM_ (<==) memReqs1 (map (.val) memReqs4)
-              pending1 <== remaining
-              reqId1 <== reqId4.val
+              -- Check for a store buffer hit
+              let isStoreBufferHit = andList
+                    [ -- Store buffer is enabled
+                      enStoreBuffer
+                      -- Store buffer entry is valid
+                    , storeBuffer.out.valid
+                      -- It's a hit
+                    , storeBuffer.out.tag .==. upper leaderReq4.val.memReqAddr
+                    ]
+              -- Check for store buffer load hit
+              let isStoreBufferLoadHit = isStoreBufferHit .&&.
+                    leaderReq4.val.memReqOp .==. memLoadOp
+              coalStoreBufferLoadHit <==
+                Option isStoreBufferLoadHit storeBuffer.out.scalarVal
+              -- Check store buffer
+              when (leaderReq4.val.memReqOp .==. memStoreOp) do
+                if isStoreBufferHit
+                  then do
+                    when (inv bufferable4.val) do
+                      -- Evict old store buffer entry
+                      storeBufferEvict <== true
+                      -- Stall for eviction
+                      stallWire <== true
+                      -- Invalidate store buffer entry
+                      storeBuffer.store storeBufferIdx4.val
+                        SBEntry {
+                          valid = false
+                        , tag = dontCare
+                        , scalarVal = dontCare
+                        }
+                  else do
+                    when bufferable4.val do
+                      -- Evict old store buffer entry if it's valid
+                      when storeBuffer.out.valid do
+                        storeBufferEvict <== true
+              -- Overwrite store buffer entry
+              when bufferable4.val do
+                storeBuffer.store storeBufferIdx4.val
+                  SBEntry {
+                    valid = true
+                  , tag = upper leaderReq4.val.memReqAddr
+                  , scalarVal = scalarVal4.val.val
+                  }
+              -- Trigger next stage
+              -- (unless it's non-evicting store)
+              let nonEvictingStore =
+                    leaderReq4.val.memReqOp .==. memStoreOp .&&.
+                      bufferable4.val .&&.
+                        inv storeBufferEvict.val
+              when (inv enStoreBuffer .||. inv nonEvictingStore) do
+                go5 <== true
+              -- Evict store buffer, or pass request through
+              if storeBufferEvict.val
+                then do
+                  coalSameBlockStrategy <== true
+                  coalSameBlockMode <== 2
+                  coalMask <== ones
+                  let evictReq = MemReq {
+                          memReqAccessWidth = 2   -- 2^2=4 bytes
+                        , memReqOp = memStoreOp
+                        , memReqAMOInfo = dontCare
+                        , memReqAddr = storeBuffer.out.tag #
+                            storeBufferIdx4.val # 0
+                        , memReqData =
+                            lower storeBuffer.out.scalarVal.val
+                        , memReqDataTagBit =
+                            upper storeBuffer.out.scalarVal.val
+                        , memReqDataTagBitMask = dontCare
+                        , memReqIsUnsigned = dontCare
+                        , memReqIsFinal = true
+                        } 
+                  leaderReq5 <== evictReq
+                  reqId5 <== dontCare
+                  forM_ memReqs5 \r5 -> do
+                    r5 <== evictReq
+                else do
+                  coalSameBlockStrategy <== useSameBlock
+                  coalSameBlockMode <== sameBlockMode4.val
+                  coalMask <== mask
+                  reqId5 <== reqId4.val
+                  -- Deatomise/split multi-flit transactions?
+                  let split = enStoreBuffer .&&. canBuffer4.val .&&.
+                        leaderReq4.val.memReqOp .==. memStoreOp
+                  leaderReq5 <== split ?
+                    ( leaderReq4.val { memReqIsFinal = true }
+                    , leaderReq4.val )
+                  forM_ (zip memReqs4 memReqs5) \(r4, r5) -> do
+                    r5 <== split ?
+                      ( r4.val { memReqIsFinal = true }
+                      , r4.val )
+
+          -- Deal with remaining pending requests (if there are any)
+          when (inv stallWire.val) do
+            -- Determine any remaining pending requests
+            let remaining = pending4.val .&. inv mask
+            -- If there are any, feed them back
+            if remaining .==. 0
+              then do
+                decrBy inflightCount 1
+              else do
+                go1 <== true
+                feedbackWire <== true
+                partialFeedback <== inv leaderReq4.val.memReqIsFinal
+                zipWithM_ (<==) memReqs1 (map (.val) memReqs4)
+                pending1 <== remaining
+                reqId1 <== reqId4.val
 
   -- Stage 5 (DRAM): Issue DRAM requests
   -- ===================================
@@ -555,14 +717,16 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
           , dramReqByteEn = useSameBlock ? (sameBlockBE, sameAddrBE)
           , dramReqBurst = burstLen
           , dramReqIsFinal =
-              isStore ? (isFinalStore .&&. isFinalDRAM.val, isFinalDRAM.val)
+              isStore ? ( isFinalStore .&&. leaderReq5.val.memReqIsFinal
+                        , leaderReq5.val.memReqIsFinal )
           }
     -- Try to issue DRAM request
     when (go5.val) do
       -- Check that we can make a DRAM request
       when (inflightQueue.notFull .&. dramReqQueue.notFull) do
-        -- Issue DRAM request
-        enq dramReqQueue dramReq
+        -- Issue DRAM request (unless store buffer hit)
+        when (inv coalStoreBufferLoadHit.val.valid) do
+          enq dramReqQueue dramReq
         -- Info needed to process response
         let info =
               CoalescingInfo {
@@ -575,6 +739,7 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
               , coalInfoAddr = truncate leaderReq5.val.memReqAddr
               , coalInfoBurstLen = burstLen - 1
               , coalInfoIsFinal = leaderReq5.val.memReqIsFinal
+              , coalInfoStoreBufferHit = coalStoreBufferLoadHit.val
               }
         -- Handle load & fence: insert info into inflight queue
         let hasResp = leaderReq5.val.memReqOp .==. memLoadOp
@@ -670,56 +835,76 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
           , sameBlockHalfTagBits
           , resp.dramRespDataTagBits # resp.dramRespDataTagBits
           ] ! sameBlockMode
-
-    -- State machine
-    if state6.val .==. s_Respond6
+    -- Handle store buffer hit, or DRAM response?
+    let hit = inflightQueue.first.coalInfoStoreBufferHit
+    if inflightQueue.canDeq .&&. hit.valid
       then do
-        when dramRespQueue.notFull do
-          -- Enqueue responses
-          let vec = V.fromList
-                [ Option valid resp.val
-                | (valid, resp) <- zip (toBitList dramRespsAccumValid.val)
-                                       dramRespsAccum ]
-          dramRespQueue.enq (dramRespId.val, vec)
-          dramRespsAccumValid <== 0
-          state6 <== s_Accum6
-       else do
-         -- Condition for consuming DRAM response
-         let consumeResp = dramResps.canPeek .&.
-                           inflightQueue.canDeq
-         -- Consume DRAM response
-         when consumeResp do
-           -- Accumulate responses
-           dramResps.consume
-           if loadCount.val .==. info.coalInfoBurstLen
-             then do
-               inflightQueue.deq
-               loadCount <== 0
-               state6 <== s_Respond6
-             else do
-               loadCount <== loadCount.val + 1
+        when opts.enableStoreBuffer do
+          -- Note: store buffer currently restricted to uniform vectors
+          when dramRespQueue.notFull do
+            let vec = V.fromList
+                        [ Option valid
+                            MemResp {
+                              memRespData = lower hit.val.val
+                            , memRespDataTagBit =
+                                tMask .&&. upper hit.val.val
+                            , memRespIsFinal = info.coalInfoIsFinal
+                            }
+                        | (valid, tMask) <-
+                            zip (toBitList mask)
+                                (toBitList info.coalInfoTagBitMask) ]
+            dramRespQueue.enq (info.coalInfoReqId, vec)
+            inflightQueue.deq
+      else do
+        -- State machine (accumulate DRAM responses and respond)
+        if state6.val .==. s_Respond6
+          then do
+            when dramRespQueue.notFull do
+              -- Enqueue responses
+              let vec = V.fromList
+                    [ Option valid resp.val
+                    | (valid, resp) <- zip (toBitList dramRespsAccumValid.val)
+                                           dramRespsAccum ]
+              dramRespQueue.enq (dramRespId.val, vec)
+              dramRespsAccumValid <== 0
+              inflightQueue.deq
+              state6 <== s_Accum6
+           else do
+             -- Condition for consuming DRAM response
+             let consumeResp = dramResps.canPeek .&.
+                               inflightQueue.canDeq
+             -- Consume DRAM response
+             when consumeResp do
+               -- Accumulate responses
+               dramResps.consume
+               if loadCount.val .==. info.coalInfoBurstLen
+                 then do
+                   loadCount <== 0
+                   state6 <== s_Respond6
+                 else do
+                   loadCount <== loadCount.val + 1
 
-           sequence_
-             [ when newValid do
-                 dynamicAssert (inv oldValid)
-                   "Coalescing unit: loosing DRAM resp (should be impossible)"
-                 accum <==
-                   MemResp {
-                     memRespData = useSameBlock ? (d, sameAddrData)
-                   , memRespDataTagBit = tMask .&&.
-                       (useSameBlock ? (t, sameAddrTagBit))
-                   , memRespIsFinal = info.coalInfoIsFinal
-                   }
-             | (newValid, oldValid, accum, d, t, tMask) <-
-                 zip6 activeAny
-                      (toBitList dramRespsAccumValid.val)
-                      dramRespsAccum
-                      (V.toList sameBlockData)
-                      (toBitList sameBlockTagBits)
-                      (toBitList info.coalInfoTagBitMask) ]
-           dramRespsAccumValid <== dramRespsAccumValid.val .|.
-                                     fromBitList activeAny
-           dramRespId <== info.coalInfoReqId
+               sequence_
+                 [ when newValid do
+                     dynamicAssert (inv oldValid)
+                       "Coalescing unit: loosing DRAM resp"
+                     accum <==
+                       MemResp {
+                         memRespData = useSameBlock ? (d, sameAddrData)
+                       , memRespDataTagBit = tMask .&&.
+                           (useSameBlock ? (t, sameAddrTagBit))
+                       , memRespIsFinal = info.coalInfoIsFinal
+                       }
+                 | (newValid, oldValid, accum, d, t, tMask) <-
+                     zip6 activeAny
+                          (toBitList dramRespsAccumValid.val)
+                          dramRespsAccum
+                          (V.toList sameBlockData)
+                          (toBitList sameBlockTagBits)
+                          (toBitList info.coalInfoTagBitMask) ]
+               dramRespsAccumValid <== dramRespsAccumValid.val .|.
+                                         fromBitList activeAny
+               dramRespId <== info.coalInfoReqId
 
   -- Stage 6 (SRAM): Handle responses
   -- ================================
@@ -735,3 +920,35 @@ makeCoalescingUnit isSRAMAccess memReqsStream dramResps sramResps = do
                   (toStream dramRespQueue, sramResps)
 
   return (finalResps, toStream sramReqs, toStream dramReqQueue)
+
+-- Scalarised Vector Store Buffer (SVSB) Types
+-- ===========================================
+
+-- The direct-mapped store buffer holds scalarised vectors and is
+-- intended to reduce the cost of stack spills.
+
+-- | Number of beats per vector
+type DRAMLogBeatsPerVec = SIMTLogLanes + 2 - DRAMBeatLogBytes
+
+-- | Width of an address of a vector in DRAM
+type DRAMVecAddrWidth = DRAMAddrWidth - DRAMLogBeatsPerVec
+
+-- | Address of a vector in DRAM
+type DRAMVecAddr = Bit DRAMVecAddrWidth
+
+-- | Index into store buffer
+type SVSBIndex = Bit SIMTSVStoreBufferLogSize
+
+-- | Upper bits of a vec address for entries in the direct-mapped store buffer
+type SVSBTag = Bit (DRAMVecAddrWidth - SIMTSVStoreBufferLogSize)
+
+-- | Store buffer entry
+data SVSBEntry =
+  SBEntry {
+    valid :: Bit 1
+    -- ^ Is this entry valid?
+  , tag :: SVSBTag
+    -- ^ Upper bits of address
+  , scalarVal :: ScalarVal 33
+    -- ^ Scalarised vector
+  } deriving (Generic, Bits)
