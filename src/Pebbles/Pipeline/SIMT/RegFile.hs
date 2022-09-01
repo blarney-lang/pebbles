@@ -21,6 +21,9 @@ import Blarney.Vector (Vec, fromList, toList)
 import Pebbles.Util.List
 import Pebbles.Pipeline.Interface
 
+-- CHERI imports
+import CHERI.CapLib
+
 -- | Per-warp register file index
 type SIMTRegFileIdx = (Bit SIMTLogWarps, RegId)
 type SIMTRegFileAddr = Bit (SIMTLogWarps + 5)
@@ -34,7 +37,14 @@ data ScalarVal n =
     -- ^ Stride between values of an affine vector;
     -- if stride is 0 then the vector is uniform
   }
-  deriving (Generic, Bits)
+  deriving (Generic, Interface, Bits)
+
+-- | Scalarised instruction operand
+data ScalarisedOperand =
+  ScalarisedOperand {
+    scalarisedVal :: Option (ScalarVal 32)
+  , scalarisedCapVal :: Option (ScalarVal CapMemMetaWidth)
+  } deriving (Generic, Interface, Bits)
 
 -- | Vector register file
 data SIMTRegFile regWidth =

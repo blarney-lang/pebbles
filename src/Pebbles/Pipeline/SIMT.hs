@@ -5,7 +5,7 @@ module Pebbles.Pipeline.SIMT
   , SIMTPipelineIns(..)
   , SIMTPipelineOuts(..)
     -- Instruction info for multi-cycle instructions
-  , SIMTPipelineInstrInfo
+  , SIMTPipelineInstrInfo(..)
     -- Pipeline module
   , makeSIMTPipeline
   ) where
@@ -155,6 +155,9 @@ data SIMTPipelineOuts =
       -- ^ Info for instruction currently in execute stage (vector pipeline)
     , simtScalarInstrInfo :: SIMTPipelineInstrInfo
       -- ^ Info for instruction currently in execute stage (scalar pipeline)
+    , simtScalarisedOpB :: ScalarisedOperand
+      -- ^ Scalarised operand B of instruction currently in vector
+      -- pipeline's execute stage
   }
 
 -- | Per-thread state
@@ -660,6 +663,13 @@ makeSIMTPipeline c inputs =
           old $ decodeCapMem (capReg # intReg)
     let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
     let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
+
+    -- Stage 5 scalarised operands
+    let scalarisedOperandB5 =
+          ScalarisedOperand {
+            scalarisedVal = old regFile.scalarB
+          , scalarisedCapVal = old capRegFile.scalarB
+          }
 
     -- Stage 5 register B or immediate
     let getRegBorImm reg = old $
@@ -1444,6 +1454,7 @@ makeSIMTPipeline c inputs =
             destReg = dst scalarInstr4.val
           , warpId = scalarWarpId4.val
           }
+      , simtScalarisedOpB = scalarisedOperandB5
       }
 
 -- Barrier release unit
