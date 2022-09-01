@@ -5,7 +5,7 @@ module Pebbles.Pipeline.SIMT
   , SIMTPipelineIns(..)
   , SIMTPipelineOuts(..)
     -- Instruction info for multi-cycle instructions
-  , SIMTPipelineInstrInfo
+  , SIMTPipelineInstrInfo(..)
     -- Pipeline module
   , makeSIMTPipeline
   ) where
