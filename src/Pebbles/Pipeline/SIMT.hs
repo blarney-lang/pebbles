@@ -238,8 +238,16 @@ makeSIMTPipeline c inputs =
     regFile :: SIMTRegFile 32 <-
       if c.useRegFileScalarisation
         then makeSIMTScalarisingRegFile
-               c.useAffineScalarisation c.useScalarUnit 0
-        else makeSIMTRegFile loadLatency Nothing
+               SIMTScalarisingRegFileConfig {
+                 useAffine = c.useAffineScalarisation
+               , useScalarUnit = c.useScalarUnit
+               , regInitVal = 0
+               }
+        else makeSIMTRegFile
+               SIMTRegFileConfig {
+                 loadLatency = loadLatency
+               , regInitVal = Nothing
+               }
 
     -- Capability register file (meta-data only)
     capRegFile :: SIMTRegFile CapMemMetaWidth <-
@@ -247,8 +255,16 @@ makeSIMTPipeline c inputs =
         then
           if c.useCapRegFileScalarisation
             then makeSIMTScalarisingRegFile
-                   False False nullCapMemMetaVal
-            else makeSIMTRegFile loadLatency (Just nullCapMemMetaVal)
+                   SIMTScalarisingRegFileConfig {
+                     useAffine = False
+                   , useScalarUnit = False
+                   , regInitVal = nullCapMemMetaVal
+                   }
+            else makeSIMTRegFile
+                   SIMTRegFileConfig {
+                     loadLatency = loadLatency
+                   , regInitVal = Just nullCapMemMetaVal
+                   }
         else makeNullSIMTRegFile
 
     -- Scalar prediction table: for each instruction in the
