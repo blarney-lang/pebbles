@@ -541,9 +541,6 @@ makeSIMTPipeline c inputs =
     -- Which warps contain at least one suspended thread?
     warpSuspMask :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
 
-    -- Number of warps containing at least one suspended thread
-    numSuspWarps :: Reg (Bit (SIMTLogWarps+1)) <- makeReg dontCare
-
     -- Warp chosen by scheduler
     chosenWarp :: Reg (Bit SIMTWarps) <- makeReg dontCare
 
@@ -573,18 +570,10 @@ makeSIMTPipeline c inputs =
         [ b <== orList (map (.val) bs)
         | (b, bs) <- zip warpSuspMask (transpose suspBits) ]
 
-      -- Track number of suspended warps
-      -- (delayed by two cycles)
-      numSuspWarps <== sumList [zeroExtend r.val | r <- warpSuspMask]
-
       -- Enable register spill mode when required
       when enableSpill do
-        let pipelineStages = 8 + loadLatency
         let needSpill :: forall n. SIMTRegFile n -> Bit 1
-            needSpill rf =
-              rf.numVecRegsUnused .<.
-                zeroExtend numSuspWarps.val +
-                  fromIntegral (pipelineStages + rf.storeLatency + 2)
+            needSpill rf = rf.numVecRegsUnused .<. SIMTWarps
         let needRegSpill =
               if enableRegSpill then needSpill regFile else false
         let needCapSpill =
