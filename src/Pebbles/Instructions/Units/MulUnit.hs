@@ -90,6 +90,7 @@ makeHalfVecMulUnit = do
                     ResumeReq {
                       resumeReqData = req.val.mulReqLower ?
                         (lower result, upper result)
+                    , resumeReqDataTagBit = 0
                     , resumeReqCap = none
                     }
                 | (req, result) <- zip (map (.val) reqRegs)
@@ -216,6 +217,7 @@ makeFullVecMulUnit = do
                     ResumeReq {
                       resumeReqData = req.val.mulReqLower ?
                         (lower sum.val, upper sum.val)
+                    , resumeReqDataTagBit = 0
                     , resumeReqCap = none
                     }
                 | (valid, req, sum) <-

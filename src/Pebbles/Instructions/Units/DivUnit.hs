@@ -176,6 +176,7 @@ makeSeqVecDivUnit = do
                 [ Option valid
                     ResumeReq {
                       resumeReqData = s.output.val
+                    , resumeReqDataTagBit = 0
                     , resumeReqCap  = none
                     }
                 | (s, valid) <- zip laneStates (toBitList active.val) ] )
@@ -286,6 +287,7 @@ makeFullVecDivUnit latency
                 , fromList [ fmap (\d -> ResumeReq {
                                            resumeReqCap = none
                                          , resumeReqData = d
+                                         , resumeReqDataTagBit = 0
                                          } ) res
                            | res <- toList resultQueue.first ] )
             , consume = do
