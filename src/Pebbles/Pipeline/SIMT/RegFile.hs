@@ -245,7 +245,7 @@ data SIMTScalarisingRegFileConfig regWidth =
     -- ^ Provide extra ports for scalar unit accesses?
   , regInitVal :: Bit regWidth
     -- ^ Initial register value
-  , logSize :: Int
+  , size :: Int
     -- ^ Size of vector scratchpad (in vectors)
   , useVecTracker :: Bool
     -- ^ For each warp, maintain a 32-bit mask indicating which
@@ -257,11 +257,11 @@ makeSIMTScalarisingRegFile :: forall regWidth. KnownNat regWidth =>
      SIMTScalarisingRegFileConfig regWidth
      -- ^ Config options
   -> Module (SIMTRegFile regWidth)
-makeSIMTScalarisingRegFile opts =
- liftNat opts.logSize \(_ :: Proxy t_logSize) -> do
+makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
+ liftNat logSize \(_ :: Proxy t_logSize) -> do
 
   -- Check size is not larger than maximum
-  staticAssert (opts.logSize <= SIMTWarps + 5)
+  staticAssert (opts.size <= SIMTWarps * 32)
     "ScalarisingRegFile: requested size is larger than maximum!"
 
   -- Scalar register file (6 read ports, 2 write ports)
@@ -285,8 +285,8 @@ makeSIMTScalarisingRegFile opts =
        unzip <$> replicateM SIMTLanes makeQuadRAM
 
   -- Stack of free space in vector scratchpad
-  freeSlots1 :: Stack (Bit t_logSize) <- makeSizedStack opts.logSize
-  freeSlots2 :: Stack (Bit t_logSize) <- makeSizedStack opts.logSize
+  freeSlots1 :: Stack (Bit t_logSize) <- makeSizedStack logSize
+  freeSlots2 :: Stack (Bit t_logSize) <- makeSizedStack logSize
   let freeSlots =
         if opts.useScalarUnit
           then toStream freeSlots1 `mergeTwo` toStream freeSlots2
@@ -329,7 +329,7 @@ makeSIMTScalarisingRegFile opts =
       scalarRegFileB.store idx initScalarReg
       scalarRegFileD.store idx initScalarReg
       scalarRegFileF.store idx initScalarReg
-      when (initIdx.val .<=. fromInteger (2^opts.logSize - 1)) do
+      when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
         freeSlots1.push (truncateCast initIdx.val)
       when opts.useVecTracker do
         sequence_ [ sequence_ [ b <== false | b <- toList mask ]
@@ -638,7 +638,7 @@ makeSIMTScalarisingRegFile opts =
         when opts.useScalarUnit do freeSlots2.clear
     , initInProgress = initInProgress.val
     , maxVecRegs = maxVecCount.val
-    , numVecRegsUnused = fromInteger (2^opts.logSize) - vecCount.val
+    , numVecRegsUnused = fromIntegral opts.size - vecCount.val
     , getVecMasks = 
         V.map (\mask -> pack (V.map (.val) mask)) vecMasks
     }

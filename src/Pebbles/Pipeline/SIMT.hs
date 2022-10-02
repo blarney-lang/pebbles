@@ -201,8 +201,8 @@ makeSIMTPipeline c inputs =
 
     -- Is dynamic register file spilling logic enabled?
     -- See Note [Dynamic register spilling]
-    let enableRegSpill = SIMTLogRegFileSize < SIMTLogWarps+5
-    let enableCapSpill = enableCHERI && SIMTLogCapRegFileSize < SIMTLogWarps+5
+    let enableRegSpill = SIMTRegFileSize < SIMTWarps*32
+    let enableCapSpill = enableCHERI && SIMTCapRegFileSize < SIMTWarps*32
     let enableSpill = enableRegSpill || enableCapSpill
 
     -- Compute field selector functions from decode table
@@ -256,9 +256,9 @@ makeSIMTPipeline c inputs =
                  useAffine = c.useAffineScalarisation
                , useScalarUnit = c.useScalarUnit
                , regInitVal = 0
-               , logSize = SIMTLogRegFileSize
+               , size = SIMTRegFileSize
                , useVecTracker =
-                   SIMTLogRegFileSize < (SIMTLogWarps + 5)
+                   SIMTRegFileSize < SIMTWarps * 32
                }
         else makeSIMTRegFile
                SIMTRegFileConfig {
@@ -276,9 +276,9 @@ makeSIMTPipeline c inputs =
                      useAffine = False
                    , useScalarUnit = False
                    , regInitVal = nullCapMemMetaVal
-                   , logSize = SIMTLogCapRegFileSize
+                   , size = SIMTCapRegFileSize
                    , useVecTracker =
-                       SIMTLogCapRegFileSize < (SIMTLogWarps + 5)
+                       SIMTCapRegFileSize < SIMTWarps * 32
                    }
             else makeSIMTRegFile
                    SIMTRegFileConfig {
