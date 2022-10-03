@@ -68,6 +68,10 @@ data SIMTRegFile regWidth =
     -- ^ Port A vector register eviction status (valid when 'outA' is valid)
   , evictedB :: Bit 1
     -- ^ Port B vector register eviction status (valid when 'outB' is valid)
+  , loadEvictedStatus :: SIMTRegFileIdx -> Action ()
+    -- ^ Issue load of evicted status of given register
+  , evictedStatus :: Bit 1
+    -- ^ Vector register eviction status
   , scalarA :: Option (ScalarVal regWidth)
     -- ^ Port A scalar (valid when 'outA' is valid)
   , scalarB :: Option (ScalarVal regWidth)
@@ -119,6 +123,8 @@ makeNullSIMTRegFile = do
     , outB = dontCare
     , evictedA = false
     , evictedB = false
+    , loadEvictedStatus = \_ -> return ()
+    , evictedStatus = false
     , scalarA = none
     , scalarB = none
     , scalarC = none
@@ -191,6 +197,8 @@ makeSIMTRegFile opts = do
                       | bank <- banksB ]
     , evictedA = false
     , evictedB = false
+    , loadEvictedStatus = \_ -> return ()
+    , evictedStatus = false
     , scalarA = none
     , scalarB = none
     , scalarC = none
@@ -247,9 +255,9 @@ data SIMTScalarisingRegFileConfig regWidth =
     -- ^ Initial register value
   , size :: Int
     -- ^ Size of vector scratchpad (in vectors)
-  , useVecTracker :: Bool
-    -- ^ For each warp, maintain a 32-bit mask indicating which
-    -- registers are vectors
+  , useDynRegSpill :: Bool
+    -- ^ Enable features to support dynamic register spilling
+    -- e.g. track which registers are vectors and which are evicted
   }
 
 -- | Scalarising implementation
@@ -297,6 +305,10 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
   vecMasks :: Vec SIMTWarps (Vec 32 (Reg (Bit 1))) <-
     V.replicateM (V.replicateM (makeReg dontCare))
 
+  -- Eviction status of each register
+  evictStatus :: RAM SIMTRegFileIdx (Bit 1) <-
+    if opts.useDynRegSpill then makeDualRAM else return nullRAM
+
   -- Count number of vectors in use
   vecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
 
@@ -331,7 +343,7 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
       scalarRegFileF.store idx initScalarReg
       when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
         freeSlots1.push (truncateCast initIdx.val)
-      when opts.useVecTracker do
+      when opts.useDynRegSpill do
         sequence_ [ sequence_ [ b <== false | b <- toList mask ]
                   | mask <- toList vecMasks ]
       initIdx <== initIdx.val - 1
@@ -486,6 +498,7 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
             scalarRegFileA.store storeIdx2.val newScalarRegEntry
             scalarRegFileC.store storeIdx2.val newScalarRegEntry
             scalarRegFileE.store storeIdx2.val newScalarRegEntry
+            evictStatus.store storeIdx2.val false
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
                 ( truncateCast (untag #vector storeScalarEntry2.val)
@@ -519,9 +532,10 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
           scalarRegFileA.store storeIdx2.val writeVal
           scalarRegFileC.store storeIdx2.val writeVal
           scalarRegFileE.store storeIdx2.val writeVal
+          evictStatus.store storeIdx2.val storeEvict2.val
 
       -- Track vectors
-      when opts.useVecTracker do
+      when opts.useDynRegSpill do
         let (warpId, regId) = storeIdx2.val
         let isVec = isVector .&&. inv storeEvict2.val
         ((vecMasks ! warpId) ! regId) <== isVec
@@ -550,7 +564,7 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
           freeSlots2.push (truncateCast (untag #vector scalarRegFileF.out))
           vecCountDecr2.pulse
         -- Track vector registers
-        when opts.useVecTracker do
+        when opts.useDynRegSpill do
           let (warpId, regId) = storeScalarIdx.val
           ((vecMasks ! warpId) ! regId) <== false
 
@@ -587,6 +601,8 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
                            affineOffsetsB )
     , evictedA = iterateN 2 (delay false) (scalarRegFileA.out `is` #evicted)
     , evictedB = iterateN 2 (delay false) (scalarRegFileB.out `is` #evicted)
+    , loadEvictedStatus = \idx -> evictStatus.load idx
+    , evictedStatus = iterateN 2 (delay false) evictStatus.out
     , scalarA =
         let isScalar = delay false (scalarRegFileA.out `is` #scalar)
             scalar = old (untag #scalar scalarRegFileA.out)

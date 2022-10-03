@@ -257,7 +257,7 @@ makeSIMTPipeline c inputs =
                , useScalarUnit = c.useScalarUnit
                , regInitVal = 0
                , size = SIMTRegFileSize
-               , useVecTracker =
+               , useDynRegSpill =
                    SIMTRegFileSize < SIMTWarps * 32
                }
         else makeSIMTRegFile
@@ -277,7 +277,7 @@ makeSIMTPipeline c inputs =
                    , useScalarUnit = False
                    , regInitVal = nullCapMemMetaVal
                    , size = SIMTCapRegFileSize
-                   , useVecTracker =
+                   , useDynRegSpill =
                        SIMTCapRegFileSize < SIMTWarps * 32
                    }
             else makeSIMTRegFile
@@ -753,8 +753,10 @@ makeSIMTPipeline c inputs =
       -- First source reg depends on whether we're spilling a reg or not
       let srcRegA = srcA instrMemA.out
       let srcRegB = srcB instrMemA.out
+      let dstReg = dst instrMemA.out
       let spillMaskA = vecMask3.val .&.
-                         inv (binaryDecode srcRegA .|. binaryDecode srcRegB)
+                         inv (binaryDecode srcRegA .|. binaryDecode srcRegB
+                                .|. binaryDecode dstReg)
       let spillA = binaryEncode (firstHot spillMaskA)
       let fetchA =
             if enableSpill 
@@ -770,6 +772,11 @@ makeSIMTPipeline c inputs =
       -- Fetch capability meta-data from register file
       capRegFile.loadA (warpId3.val, fetchA)
       capRegFile.loadB (warpId3.val, srcRegB)
+
+      -- Load eviction status of destination register
+      when enableSpill do
+        regFile.loadEvictedStatus (warpId3.val, dst instrMemA.out)
+        capRegFile.loadEvictedStatus (warpId3.val, dst instrMemA.out)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
@@ -829,21 +836,29 @@ makeSIMTPipeline c inputs =
             Just opt -> opt.valid
     let usesA = isFieldInUse "rs1" fieldMap4
     let usesB = isFieldInUse "rs2" fieldMap4
+    let usesDest = isFieldInUse "rd" fieldMap4
 
     -- Register unspilling (fetching)
+    let needsDest4 = usesDest .&&. loadDelay (activeMask4.val .!=. ones)
     let unspill4 = if not enableSpill then false else orList [
             usesA .&&. regFile.evictedA
           , usesA .&&. capRegFile.evictedA
           , usesB .&&. regFile.evictedB
-          , usesB .&&. capRegFile.evictedB ]
+          , usesB .&&. capRegFile.evictedB
+          , needsDest4 .&&. regFile.evictedStatus
+          , needsDest4 .&&. capRegFile.evictedStatus ]
     let unspillTo4 = orList [
             usesA .&&. capRegFile.evictedA
-          , usesB .&&. capRegFile.evictedB ]
+          , usesB .&&. capRegFile.evictedB
+          , needsDest4 .&&. capRegFile.evictedStatus ]
     let srcA4 = srcA delayedInstr4
     let srcB4 = srcB delayedInstr4
+    let dest4 = dst delayedInstr4
     let unspillReg4 = if unspillTo4
-          then (usesA .&&. capRegFile.evictedA) ? (srcA4, srcB4)
-          else (usesA .&&. regFile.evictedA) ? (srcA4, srcB4)
+          then (usesA .&&. capRegFile.evictedA) ? (srcA4,
+                  (usesB .&&. capRegFile.evictedB) ? (srcB4, dest4))
+          else (usesA .&&. regFile.evictedA) ? (srcA4,
+                  (usesB .&&. regFile.evictedB) ? (srcB4, dest4))
     let unspillTo5 = old unspillTo4
     let unspillReg5 = old unspillReg4
     let unspill4_5 = unspill4 .&&. loadDelay (go4.val .&&. inv spill4.val)
@@ -1849,7 +1864,7 @@ makeBarrierReleaseUnit ins = do
 --
 -- Operand Fetch: In this stage, we decide which register to evict.
 -- Various policies are possible here; we leave it abstract for the
--- purpose of this summary. However, there is one crucial condition on
+-- purpose of this summary. However, there is one key condition on
 -- the register chosen for eviction: it must not be needed by the next
 -- instruction to be executed by the current warp. This guarantees
 -- forward progress, avoiding the livelock case where a register is
