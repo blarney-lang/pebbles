@@ -305,20 +305,17 @@ makeSIMTPipeline c inputs =
     -- Trigger for each stage
     go0 :: Reg (Bit 1) <- makeDReg false
     go1 :: Reg (Bit 1) <- makeDReg false
-    go3 :: Reg (Bit 1) <- makeDReg false
     go4 :: Reg (Bit 1) <- makeDReg false
 
     -- Warp id register, for each stage
     warpId1 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
-    warpId3 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
     warpId4 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
 
     -- Thread state, for each stage
-    state3 :: Reg SIMTThreadState <- makeReg dontCare
     state4 :: Reg SIMTThreadState <- makeReg dontCare
 
     -- Active thread mask
-    activeMask3 :: Reg (Bit SIMTLanes) <- makeReg dontCare
+    activeMask2b :: Reg (Bit SIMTLanes) <- makeReg dontCare
     activeMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
     -- Instruction register for each stage
@@ -350,7 +347,6 @@ makeSIMTPipeline c inputs =
 
     -- Program counter capability registers
     pccShared :: Reg CapPipe <- makeReg dontCare
-    pcc3 :: Reg Cap <- makeReg dontCare
 
     -- Basic stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
@@ -390,13 +386,11 @@ makeSIMTPipeline c inputs =
     -- For each pipeline stage, is it spilling a register for dynamic spilling?
     spill0 :: Reg (Bit 1) <- makeDReg false
     spill1 :: Reg (Bit 1) <- makeDReg false
-    spill3 :: Reg (Bit 1) <- makeDReg false
     spill4 :: Reg (Bit 1) <- makeDReg false
 
     -- For each pipeline stage, is it spilling from int or cap reg file
     spillFrom0 :: Reg (Bit 1) <- makeReg dontCare
     spillFrom1 :: Reg (Bit 1) <- makeReg dontCare
-    spillFrom3 :: Reg (Bit 1) <- makeReg dontCare
     spillFrom4 :: Reg (Bit 1) <- makeReg dontCare
 
     -- Register to spill
@@ -406,7 +400,7 @@ makeSIMTPipeline c inputs =
     spillSuccess6 :: Reg (Bit 1) <- makeDReg false
 
     -- Vector register mask (for dynamic spilling)
-    vecMask3 :: Reg (Bit 32) <- makeReg dontCare
+    vecMask2b :: Reg (Bit 32) <- makeReg dontCare
 
     -- Pipeline Initialisation
     -- =======================
@@ -708,8 +702,8 @@ makeSIMTPipeline c inputs =
             | (s, pcc) <- zip stateMemOuts2 pccs2]
       let activeMask :: Bit SIMTLanes = fromBitList activeList
       if enableSpill
-        then activeMask3 <== spill2 ? (ones, activeMask)
-        else activeMask3 <== activeMask
+        then activeMask2b <== spill2 ? (ones, activeMask)
+        else activeMask2b <== activeMask
 
       -- Assert that at least one thread in the warp must be active
       when go2 do
@@ -730,58 +724,80 @@ makeSIMTPipeline c inputs =
                 (True , True)  -> spillFrom2 ? (c, i)
         let vecMasks = V.zipWith chooseRF
                          regFile.getVecMasks capRegFile.getVecMasks
-        vecMask3 <== vecMasks ! warpId2
+        vecMask2b <== vecMasks ! warpId2
 
-      -- Trigger stage 3
-      warpId3 <== warpId2
-      state3 <== state2
-      pcc3 <==
-        let pccToUse = if c.useSharedPCC then pccShared.val
-                                         else fromMem (unpack pcc2)
-            cap = setAddr pccToUse pc
-         in decodeCapPipe (cap.value)
-      spill3 <== spill2
-      spillFrom3 <== spillFrom2
-      go3 <== go2
+    -- Second instruction fetch stage
+    ---------------------------------
+
+    -- Only used when dynamic reg spilling enabled
+    -- Used to determine which register to spill
+
+    -- Outputs from second fetch stage
+    fetchA3Reg :: Reg RegId <- makeReg dontCare
+    spillFail3Reg :: Reg (Bit 1) <- makeReg dontCare
+    spillA3Reg :: Reg RegId <- makeReg dontCare
+
+    always do
+      when enableSpill do
+        -- First source reg depends on whether we're spilling a reg or not
+        let srcRegA = srcA instrMemA.out
+        let srcRegB = srcB instrMemA.out
+        let dstReg = dst instrMemA.out
+        let spillMaskA = vecMask2b.val .&.
+                           inv (binaryDecode srcRegA
+                                  .|. binaryDecode srcRegB
+                                  .|. binaryDecode dstReg)
+        let spillA = binaryEncode (firstHot spillMaskA)
+        spillA3Reg <== spillA
+        let spill2b = delay false spill2
+        fetchA3Reg <== spill2b ? (spillA, srcRegA)
+        spillFail3Reg <== if enableSpill
+          then (spill2b .&&. spillMaskA .==. 0) else false
+
+    -- State for stage 3
+    let stage2Delay :: forall a. Bits a => a -> a
+        stage2Delay x = if enableSpill then delay zero (delay zero x)
+                                       else delay zero x
+    let warpId3 = stage2Delay warpId2
+    let state3 = stage2Delay state2
+    let pcc3 = stage2Delay
+          (let pccToUse = if c.useSharedPCC then pccShared.val
+                                            else fromMem (unpack pcc2)
+               cap = setAddr pccToUse state2.simtPC
+            in decodeCapPipe cap.value)
+    let spill3 = stage2Delay spill2
+    let spillFrom3 = stage2Delay spillFrom2
+    let spillFail3 = if enableSpill then spillFail3Reg.val else false
+    let fetchA3 = if enableSpill then fetchA3Reg.val
+                                 else srcA instrMemA.out
+    let instr3 = if enableSpill then old instrMemA.out else instrMemA.out
+    let activeMask3 =
+          if enableSpill then old activeMask2b.val else activeMask2b.val
+    let go3 = stage2Delay go2
 
     -- Stage 3: Operand Fetch
     -- ======================
 
-    let pcc4 = delay dontCare (pcc3.val)
+    let pcc4 = delay dontCare pcc3
 
     always do
-      -- First source reg depends on whether we're spilling a reg or not
-      let srcRegA = srcA instrMemA.out
-      let srcRegB = srcB instrMemA.out
-      let dstReg = dst instrMemA.out
-      let spillMaskA = vecMask3.val .&.
-                         inv (binaryDecode srcRegA .|. binaryDecode srcRegB
-                                .|. binaryDecode dstReg)
-      let spillA = binaryEncode (firstHot spillMaskA)
-      let fetchA =
-            if enableSpill 
-              then spill3.val ? (spillA, srcRegA)
-              else srcRegA
-      let spillFail = if enableSpill
-            then (spill3.val .&&. spillMaskA .==. 0) else false
-
       -- Fetch operands from register file
-      regFile.loadA (warpId3.val, fetchA)
-      regFile.loadB (warpId3.val, srcRegB)
+      regFile.loadA (warpId3, fetchA3)
+      regFile.loadB (warpId3, srcB instr3)
 
       -- Fetch capability meta-data from register file
-      capRegFile.loadA (warpId3.val, fetchA)
-      capRegFile.loadB (warpId3.val, srcRegB)
+      capRegFile.loadA (warpId3, fetchA3)
+      capRegFile.loadB (warpId3, srcB instr3)
 
       -- Load eviction status of destination register
       when enableSpill do
-        regFile.loadEvictedStatus (warpId3.val, dst instrMemA.out)
-        capRegFile.loadEvictedStatus (warpId3.val, dst instrMemA.out)
+        regFile.loadEvictedStatus (warpId3, dst instr3)
+        capRegFile.loadEvictedStatus (warpId3, dst instr3)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
-      let isSusp3 = orList [map (.val) regs ! warpId3.val | regs <- suspBits]
-      isSusp4 <== isSusp3 .||. spillFail
+      let isSusp3 = orList [map (.val) regs ! warpId3 | regs <- suspBits]
+      isSusp4 <== isSusp3 .||. spillFail3
 
       -- Check PCC
       case c.checkPCCFunc of
@@ -789,23 +805,23 @@ makeSIMTPipeline c inputs =
         Nothing -> return ()
         -- Check PCC
         Just checkPCC -> do
-          let table = checkPCC (pcc3.val)
+          let table = checkPCC pcc3
           let exception = orList [cond | (cond, _) <- table]
-          when (go3.val) do
+          when go3 do
             when exception do
               head excLocals <== true
               let trapCode = priorityIf table (excCapCode 0)
               display "SIMT pipeline: PCC exception: code=" trapCode
 
       -- Trigger stage 4
-      warpId4 <== warpId3.val
-      activeMask4 <== activeMask3.val
-      instr4 <== instrMemA.out
-      state4 <== state3.val
-      spill4 <== spill3.val
-      spillFrom4 <== spillFrom3.val
-      spillReg4 <== spillA
-      go4 <== go3.val
+      warpId4 <== warpId3
+      activeMask4 <== activeMask3
+      instr4 <== instr3
+      state4 <== state3
+      spill4 <== spill3
+      spillFrom4 <== spillFrom3
+      spillReg4 <== spillA3Reg.val
+      go4 <== go3
 
     -- Stage 4: Operand Latch
     -- ======================
