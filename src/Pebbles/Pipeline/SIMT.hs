@@ -129,6 +129,7 @@ data SIMTPipelineConfig tag =
     -- ^ Execute stage for scalar unit
   , regSpillBaseAddr :: Integer
     -- ^ Base address of register spill region in DRAM
+  , useRoundRobinSpill :: Bool
   }
 
 -- | SIMT pipeline inputs
@@ -401,6 +402,10 @@ makeSIMTPipeline c inputs =
 
     -- Vector register mask (for dynamic spilling)
     vecMask2b :: Reg (Bit 32) <- makeReg dontCare
+
+    -- Last register to have been spilled per warp
+    spillHistory :: Vec SIMTWarps (Reg RegId) <- V.replicateM (makeReg 0)
+    lastSpillMask :: Reg (Bit 32) <- makeReg dontCare
 
     -- Pipeline Initialisation
     -- =======================
@@ -725,6 +730,10 @@ makeSIMTPipeline c inputs =
         let vecMasks = V.zipWith chooseRF
                          regFile.getVecMasks capRegFile.getVecMasks
         vecMask2b <== vecMasks ! warpId2
+        when c.useRoundRobinSpill do
+          let last = V.map (.val) spillHistory ! warpId2
+          let oneHotLast = 1 .<<. last
+          lastSpillMask <== oneHotLast .|. (oneHotLast - 1)
 
     -- Second instruction fetch stage
     ---------------------------------
@@ -743,16 +752,26 @@ makeSIMTPipeline c inputs =
         let srcRegA = srcA instrMemA.out
         let srcRegB = srcB instrMemA.out
         let dstReg = dst instrMemA.out
-        let spillMaskA = vecMask2b.val .&.
-                           inv (binaryDecode srcRegA
-                                  .|. binaryDecode srcRegB
-                                  .|. binaryDecode dstReg)
+        let spillMaskA0 = vecMask2b.val .&.
+                            inv (binaryDecode srcRegA
+                                   .|. binaryDecode srcRegB
+                                   .|. binaryDecode dstReg)
+        let spillMaskA1 = spillMaskA0 .&. inv lastSpillMask.val
+        let spillMaskA =
+              if c.useRoundRobinSpill
+                then (spillMaskA1 .==. 0) ? (spillMaskA0, spillMaskA1)
+                else spillMaskA0
         let spillA = binaryEncode (firstHot spillMaskA)
         spillA3Reg <== spillA
         let spill2b = delay false spill2
         fetchA3Reg <== spill2b ? (spillA, srcRegA)
         spillFail3Reg <== if enableSpill
           then (spill2b .&&. spillMaskA .==. 0) else false
+
+        -- Record last register spilt for current warp
+        when c.useRoundRobinSpill do
+          when (delay false (delay false spill2)) do
+            (spillHistory ! old (old warpId2)) <== spillA3Reg.val
 
     -- State for stage 3
     let stage2Delay :: forall a. Bits a => a -> a
