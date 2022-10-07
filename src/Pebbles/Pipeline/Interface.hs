@@ -28,6 +28,8 @@ data ResumeReq =
   ResumeReq {
     resumeReqData :: Bit 32
     -- ^ Data representing the result of the suspended operation
+  , resumeReqDataTagBit :: Bit 1
+    -- ^ Tag bit associated with data
   , resumeReqCap :: Option CapMemMeta
     -- ^ Capability meta-data for the result of the suspended operation
   } deriving (Generic, Interface, Bits)
@@ -93,6 +95,12 @@ data State =
     -- not write 'result' *and* 'resultCap' in the same clock cycle.
 
   } deriving (Generic, Interface)
+
+-- | Register file id
+type RegFileId = Bit 2
+regFileIntCap :: RegFileId = 0
+regFileInt :: RegFileId = 1
+regFileCapMeta :: RegFileId = 2
 
 -- | Upper bound on number of instruction mnemonics used by the decoder
 type MaxMnemonics = 64

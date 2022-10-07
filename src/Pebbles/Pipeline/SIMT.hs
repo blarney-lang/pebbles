@@ -48,6 +48,7 @@ import Blarney.Option
 import Blarney.Stream
 import Blarney.BitScan
 import Blarney.PulseWire
+import Blarney.SourceSink
 import Blarney.TaggedUnion
 import Blarney.QuadPortRAM
 import Blarney.Interconnect
@@ -67,6 +68,7 @@ import Pebbles.Util.Counter
 import Pebbles.Pipeline.Interface
 import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Pipeline.SIMT.RegFile
+import Pebbles.Memory.Interface
 import Pebbles.Memory.DRAM.Interface
 import Pebbles.CSRs.TrapCodes
 import Pebbles.CSRs.Custom.SIMTDevice
@@ -81,6 +83,8 @@ data SIMTPipelineInstrInfo =
     -- ^ Destination register
   , warpId :: Bit SIMTLogWarps
     -- ^ Warp that issued the instruction
+  , regFileId :: RegFileId
+    -- ^ Destination register file
   }
   deriving (Generic, Interface, Bits)
 
@@ -123,6 +127,9 @@ data SIMTPipelineConfig tag =
     -- ^ Decode table for scalar unit
   , scalarUnitExecuteStage :: State -> Module ExecuteStage
     -- ^ Execute stage for scalar unit
+  , regSpillBaseAddr :: Integer
+    -- ^ Base address of register spill region in DRAM
+  , useRoundRobinSpill :: Bool
   }
 
 -- | SIMT pipeline inputs
@@ -140,6 +147,8 @@ data SIMTPipelineIns =
       -- ^ Resume requests for multi-cycle instructions (scalar pipeline)
     , simtDRAMStatSigs :: DRAMStatSigs
       -- ^ For DRAM stat counters
+    , simtMemReqs :: Vec SIMTLanes (Sink MemReq)
+      -- ^ Memory request path
   }
 
 -- | SIMT pipeline outputs
@@ -191,6 +200,12 @@ makeSIMTPipeline c inputs =
     -- Is CHERI enabled?
     let enableCHERI = isJust c.checkPCCFunc
 
+    -- Is dynamic register file spilling logic enabled?
+    -- See Note [Dynamic register spilling]
+    let enableRegSpill = SIMTRegFileSize < SIMTWarps*32
+    let enableCapSpill = enableCHERI && SIMTCapRegFileSize < SIMTWarps*32
+    let enableSpill = enableRegSpill || enableCapSpill
+
     -- Compute field selector functions from decode table
     let selMap = matchSel (c.decodeStage)
 
@@ -238,8 +253,19 @@ makeSIMTPipeline c inputs =
     regFile :: SIMTRegFile 32 <-
       if c.useRegFileScalarisation
         then makeSIMTScalarisingRegFile
-               c.useAffineScalarisation c.useScalarUnit 0
-        else makeSIMTRegFile loadLatency Nothing
+               SIMTScalarisingRegFileConfig {
+                 useAffine = c.useAffineScalarisation
+               , useScalarUnit = c.useScalarUnit
+               , regInitVal = 0
+               , size = SIMTRegFileSize
+               , useDynRegSpill =
+                   SIMTRegFileSize < SIMTWarps * 32
+               }
+        else makeSIMTRegFile
+               SIMTRegFileConfig {
+                 loadLatency = loadLatency
+               , regInitVal = Nothing
+               }
 
     -- Capability register file (meta-data only)
     capRegFile :: SIMTRegFile CapMemMetaWidth <-
@@ -247,8 +273,19 @@ makeSIMTPipeline c inputs =
         then
           if c.useCapRegFileScalarisation
             then makeSIMTScalarisingRegFile
-                   False False nullCapMemMetaVal
-            else makeSIMTRegFile loadLatency (Just nullCapMemMetaVal)
+                   SIMTScalarisingRegFileConfig {
+                     useAffine = False
+                   , useScalarUnit = False
+                   , regInitVal = nullCapMemMetaVal
+                   , size = SIMTCapRegFileSize
+                   , useDynRegSpill =
+                       SIMTCapRegFileSize < SIMTWarps * 32
+                   }
+            else makeSIMTRegFile
+                   SIMTRegFileConfig {
+                     loadLatency = loadLatency
+                   , regInitVal = Just nullCapMemMetaVal
+                   }
         else makeNullSIMTRegFile
 
     -- Scalar prediction table: for each instruction in the
@@ -269,20 +306,17 @@ makeSIMTPipeline c inputs =
     -- Trigger for each stage
     go0 :: Reg (Bit 1) <- makeDReg false
     go1 :: Reg (Bit 1) <- makeDReg false
-    go3 :: Reg (Bit 1) <- makeDReg false
     go4 :: Reg (Bit 1) <- makeDReg false
 
     -- Warp id register, for each stage
     warpId1 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
-    warpId3 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
     warpId4 :: Reg (Bit SIMTLogWarps) <- makeReg dontCare
 
     -- Thread state, for each stage
-    state3 :: Reg SIMTThreadState <- makeReg dontCare
     state4 :: Reg SIMTThreadState <- makeReg dontCare
 
     -- Active thread mask
-    activeMask3 :: Reg (Bit SIMTLanes) <- makeReg dontCare
+    activeMask2b :: Reg (Bit SIMTLanes) <- makeReg dontCare
     activeMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
 
     -- Instruction register for each stage
@@ -314,7 +348,6 @@ makeSIMTPipeline c inputs =
 
     -- Program counter capability registers
     pccShared :: Reg CapPipe <- makeReg dontCare
-    pcc3 :: Reg Cap <- makeReg dontCare
 
     -- Basic stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
@@ -350,6 +383,29 @@ makeSIMTPipeline c inputs =
     -- Function to convert from 32-bit PC to instruction address
     let toInstrAddr :: Bit 32 -> Bit t_logInstrs =
           \pc -> truncateCast (slice @31 @2 pc)
+
+    -- For each pipeline stage, is it spilling a register for dynamic spilling?
+    spill0 :: Reg (Bit 1) <- makeDReg false
+    spill1 :: Reg (Bit 1) <- makeDReg false
+    spill4 :: Reg (Bit 1) <- makeDReg false
+
+    -- For each pipeline stage, is it spilling from int or cap reg file
+    spillFrom0 :: Reg (Bit 1) <- makeReg dontCare
+    spillFrom1 :: Reg (Bit 1) <- makeReg dontCare
+    spillFrom4 :: Reg (Bit 1) <- makeReg dontCare
+
+    -- Register to spill
+    spillReg4 :: Reg (Bit 5) <- makeReg dontCare
+
+    -- Spill successful?
+    spillSuccess6 :: Reg (Bit 1) <- makeDReg false
+
+    -- Vector register mask (for dynamic spilling)
+    vecMask2b :: Reg (Bit 32) <- makeReg dontCare
+
+    -- Last register to have been spilled per warp
+    spillHistory :: Vec SIMTWarps (Reg RegId) <- V.replicateM (makeReg 0)
+    lastSpillMask :: Reg (Bit 32) <- makeReg dontCare
 
     -- Pipeline Initialisation
     -- =======================
@@ -487,35 +543,99 @@ makeSIMTPipeline c inputs =
     -- Warp chosen by scheduler
     chosenWarp :: Reg (Bit SIMTWarps) <- makeReg dontCare
 
-    -- Scheduler: 1st substage
+    -- For dynamic register spilling
+    --------------------------------
+    -- Regsiter spill mode
+    regSpillMode <- makeReg false
+
+    -- Spill from int reg file (otherwise spill from cap reg file)
+    regSpillModeIntOrCap <- makeReg 0
+
+    -- Warps currently in vector pipeline spilling a register
+    spillingWarps :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
+
+    -- Scheduler history for warps that are spilling a register
+    schedHistorySpill :: Reg (Bit SIMTWarps) <- makeReg 0
+
+    -- Warp chosen by scheduler to spill a register
+    chosenWarpSpill :: Reg (Bit SIMTWarps) <- makeReg dontCare
+    --------------------------------
+
+    -- Continous monitoring/buffering of signals needed by scheduler
     always do
       -- Calculate which warps contain a suspended thread
+      -- (delayed by one cycle)
       sequence_
         [ b <== orList (map (.val) bs)
         | (b, bs) <- zip warpSuspMask (transpose suspBits) ]
 
+      -- Enable register spill mode when required
+      when enableSpill do
+        let needSpill :: forall n. SIMTRegFile n -> Bit 1
+            needSpill rf = rf.numVecRegsUnused .<. SIMTWarps
+        let needRegSpill =
+              if enableRegSpill then needSpill regFile else false
+        let needCapSpill =
+              if enableCapSpill then needSpill capRegFile else false
+        regSpillMode <== needRegSpill .||. needCapSpill
+        regSpillModeIntOrCap <== if needRegSpill then 0 else 1
+
+    -- Scheduler: 1st substage
+    always do
       -- Bit mask of available warps
-      let avail :: Bit SIMTWarps =
-            fromBitList [ r.val .&. inv s.val
-                        | (r, s) <- zip warpQueue warpSuspMask ]
+      let avail :: Bit SIMTWarps = fromBitList
+            [ w.val .&&. inv s.val .&&.
+                (if enableSpill then inv e.val else true)
+            | (w, s, e) <- zip3 warpQueue warpSuspMask spillingWarps ]
 
       -- Fair scheduler
       let (newSchedHistory, chosen) = fairScheduler (schedHistory.val, avail)
       chosenWarp <== chosen
 
+      -- Dynamic register spilling: bit mask of available warps
+      let spillAvail :: Bit SIMTWarps = fromBitList
+            [ orList [w.val, s.val, b.val] .&&. inv e.val .&&. inv susp.val
+            | (w, s, b, e, susp) <-
+                zip5 warpQueue scalarQueue barrierBits
+                     spillingWarps warpSuspMask ]
+
+      -- Dynamic register spilling: fair scheduler
+      let (newSchedHistorySpill, chosenSpill) =
+            fairScheduler (schedHistorySpill.val, spillAvail)
+      when enableSpill do chosenWarpSpill <== chosenSpill
+
       -- Trigger stage 1
-      when (pipelineActive.val) do
-        sequence_
-          [ when c do r <== false
-          | (r, c) <- zip warpQueue (toBitList chosen) ]
-        when (avail .!=. 0) do
-          schedHistory <== newSchedHistory
-          go0 <== true
+      when pipelineActive.val do
+        -- Do we need to spill registers for dynamic register spilling?
+        let spillMode = if enableSpill then regSpillMode.val else false
+        -- Select warp for register spill, or normal operation?
+        if spillMode
+          then do
+            when enableSpill do
+              when (spillAvail .!=. 0) do
+                sequence_
+                  [ when c do r <== true
+                  | (r, c) <- zip spillingWarps (toBitList chosenSpill) ]
+                schedHistorySpill <== newSchedHistorySpill
+                spill0 <== true
+                spillFrom0 <== regSpillModeIntOrCap.val
+                go0 <== true
+          else do
+            sequence_
+              [ when c do r <== false
+              | (r, c) <- zip warpQueue (toBitList chosen) ]
+            when (avail .!=. 0) do
+              schedHistory <== newSchedHistory
+              go0 <== true
 
     -- Scheduler: 2nd substage
     always do
       when go0.val do
-        let warpId = binaryEncode chosenWarp.val
+        let warp =
+              if enableSpill
+                then spill0.val ? (chosenWarpSpill.val, chosenWarp.val)
+                else chosenWarp.val
+        let warpId = binaryEncode warp
 
         -- Load state for next warp on each lane
         forM_ stateMemsA \stateMem -> do
@@ -533,6 +653,8 @@ makeSIMTPipeline c inputs =
 
         -- Trigger stage 1
         go1 <== true
+        spill1 <== spill0.val
+        spillFrom1 <== spillFrom0.val
 
     -- Stage 1: Active Thread Selection
     -- ================================
@@ -567,8 +689,10 @@ makeSIMTPipeline c inputs =
     let pccs2 = map buffer pccs2_tmp
 
     -- Trigger stage 2
-    let warpId2 = iterateN stage1Substages buffer (warpId1.val)
-    let go2 = iterateN stage1Substages (delay 0) (go1.val)
+    let warpId2 = iterateN stage1Substages buffer warpId1.val
+    let spill2 = iterateN stage1Substages (delay 0) spill1.val
+    let spillFrom2 = iterateN stage1Substages (delay 0) spillFrom1.val
+    let go2 = iterateN stage1Substages (delay 0) go1.val
 
     -- Stage 2: Instruction Fetch
     -- ==========================
@@ -582,7 +706,9 @@ makeSIMTPipeline c inputs =
                   else true
             | (s, pcc) <- zip stateMemOuts2 pccs2]
       let activeMask :: Bit SIMTLanes = fromBitList activeList
-      activeMask3 <== activeMask
+      if enableSpill
+        then activeMask2b <== spill2 ? (ones, activeMask)
+        else activeMask2b <== activeMask
 
       -- Assert that at least one thread in the warp must be active
       when go2 do
@@ -593,34 +719,104 @@ makeSIMTPipeline c inputs =
       let pc = state2.simtPC
       instrMemA.load (toInstrAddr pc)
 
-      -- Trigger stage 3
-      warpId3 <== warpId2
-      state3 <== state2
-      pcc3 <==
-        let pccToUse = if c.useSharedPCC then pccShared.val
-                                         else fromMem (unpack pcc2)
-            cap = setAddr pccToUse pc
-         in decodeCapPipe (cap.value)
-      go3 <== go2
+      -- Get vector register mask for current warp
+      when enableSpill do
+        let chooseRF i c =
+              case (enableRegSpill, enableCapSpill) of
+                (False, False) -> dontCare
+                (True , False) -> i
+                (False, True)  -> c
+                (True , True)  -> spillFrom2 ? (c, i)
+        let vecMasks = V.zipWith chooseRF
+                         regFile.getVecMasks capRegFile.getVecMasks
+        vecMask2b <== vecMasks ! warpId2
+        when c.useRoundRobinSpill do
+          let last = V.map (.val) spillHistory ! warpId2
+          let oneHotLast = 1 .<<. last
+          lastSpillMask <== oneHotLast .|. (oneHotLast - 1)
+
+    -- Second instruction fetch stage
+    ---------------------------------
+
+    -- Only used when dynamic reg spilling enabled
+    -- Used to determine which register to spill
+
+    -- Outputs from second fetch stage
+    fetchA3Reg :: Reg RegId <- makeReg dontCare
+    spillFail3Reg :: Reg (Bit 1) <- makeReg dontCare
+    spillA3Reg :: Reg RegId <- makeReg dontCare
+
+    always do
+      when enableSpill do
+        -- First source reg depends on whether we're spilling a reg or not
+        let srcRegA = srcA instrMemA.out
+        let srcRegB = srcB instrMemA.out
+        let dstReg = dst instrMemA.out
+        let spillMaskA0 = vecMask2b.val .&.
+                            inv (binaryDecode srcRegA
+                                   .|. binaryDecode srcRegB
+                                   .|. binaryDecode dstReg)
+        let spillMaskA1 = spillMaskA0 .&. inv lastSpillMask.val
+        let spillMaskA =
+              if c.useRoundRobinSpill
+                then (spillMaskA1 .==. 0) ? (spillMaskA0, spillMaskA1)
+                else spillMaskA0
+        let spillA = binaryEncode (firstHot spillMaskA)
+        spillA3Reg <== spillA
+        let spill2b = delay false spill2
+        fetchA3Reg <== spill2b ? (spillA, srcRegA)
+        spillFail3Reg <== if enableSpill
+          then (spill2b .&&. spillMaskA .==. 0) else false
+
+        -- Record last register spilt for current warp
+        when c.useRoundRobinSpill do
+          when (delay false (delay false spill2)) do
+            (spillHistory ! old (old warpId2)) <== spillA3Reg.val
+
+    -- State for stage 3
+    let stage2Delay :: forall a. Bits a => a -> a
+        stage2Delay x = if enableSpill then delay zero (delay zero x)
+                                       else delay zero x
+    let warpId3 = stage2Delay warpId2
+    let state3 = stage2Delay state2
+    let pcc3 = stage2Delay
+          (let pccToUse = if c.useSharedPCC then pccShared.val
+                                            else fromMem (unpack pcc2)
+               cap = setAddr pccToUse state2.simtPC
+            in decodeCapPipe cap.value)
+    let spill3 = stage2Delay spill2
+    let spillFrom3 = stage2Delay spillFrom2
+    let spillFail3 = if enableSpill then spillFail3Reg.val else false
+    let fetchA3 = if enableSpill then fetchA3Reg.val
+                                 else srcA instrMemA.out
+    let instr3 = if enableSpill then old instrMemA.out else instrMemA.out
+    let activeMask3 =
+          if enableSpill then old activeMask2b.val else activeMask2b.val
+    let go3 = stage2Delay go2
 
     -- Stage 3: Operand Fetch
     -- ======================
 
-    let pcc4 = delay dontCare (pcc3.val)
+    let pcc4 = delay dontCare pcc3
 
     always do
       -- Fetch operands from register file
-      regFile.loadA (warpId3.val, srcA instrMemA.out)
-      regFile.loadB (warpId3.val, srcB instrMemA.out)
+      regFile.loadA (warpId3, fetchA3)
+      regFile.loadB (warpId3, srcB instr3)
 
       -- Fetch capability meta-data from register file
-      capRegFile.loadA (warpId3.val, srcA instrMemA.out)
-      capRegFile.loadB (warpId3.val, srcB instrMemA.out)
+      capRegFile.loadA (warpId3, fetchA3)
+      capRegFile.loadB (warpId3, srcB instr3)
+
+      -- Load eviction status of destination register
+      when enableSpill do
+        regFile.loadEvictedStatus (warpId3, dst instr3)
+        capRegFile.loadEvictedStatus (warpId3, dst instr3)
 
       -- Is any thread in warp suspended?
       -- (In future, consider only suspension bits of active threads)
-      let isSusp3 = orList [map (.val) regs ! warpId3.val | regs <- suspBits]
-      isSusp4 <== isSusp3
+      let isSusp3 = orList [map (.val) regs ! warpId3 | regs <- suspBits]
+      isSusp4 <== isSusp3 .||. spillFail3
 
       -- Check PCC
       case c.checkPCCFunc of
@@ -628,20 +824,23 @@ makeSIMTPipeline c inputs =
         Nothing -> return ()
         -- Check PCC
         Just checkPCC -> do
-          let table = checkPCC (pcc3.val)
+          let table = checkPCC pcc3
           let exception = orList [cond | (cond, _) <- table]
-          when (go3.val) do
+          when go3 do
             when exception do
               head excLocals <== true
               let trapCode = priorityIf table (excCapCode 0)
               display "SIMT pipeline: PCC exception: code=" trapCode
 
       -- Trigger stage 4
-      warpId4 <== warpId3.val
-      activeMask4 <== activeMask3.val
-      instr4 <== instrMemA.out
-      state4 <== state3.val
-      go4 <== go3.val
+      warpId4 <== warpId3
+      activeMask4 <== activeMask3
+      instr4 <== instr3
+      state4 <== state3
+      spill4 <== spill3
+      spillFrom4 <== spillFrom3
+      spillReg4 <== spillA3Reg.val
+      go4 <== go3
 
     -- Stage 4: Operand Latch
     -- ======================
@@ -651,8 +850,8 @@ makeSIMTPipeline c inputs =
         loadDelay inp = iterateN (loadLatency - 1) (delay zero) inp
 
     -- Decode instruction
-    let (tagMap4, fieldMap4) = matchMap False (c.decodeStage)
-                                 (loadDelay instr4.val)
+    let delayedInstr4 = loadDelay instr4.val
+    let (tagMap4, fieldMap4) = matchMap False (c.decodeStage) delayedInstr4
 
     -- Stage 5 register operands
     let vecRegA5 = old regFile.outA
@@ -663,6 +862,42 @@ makeSIMTPipeline c inputs =
           old $ decodeCapMem (capReg # intReg)
     let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
     let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
+    let vecRawCapMetaRegA5 = V.map old capRegFile.outA
+
+    -- Determine if field is available in current instruction
+    let isFieldInUse fld fldMap =
+          case Map.lookup fld fldMap of
+            Nothing -> false
+            Just opt -> opt.valid
+    let usesA = isFieldInUse "rs1" fieldMap4
+    let usesB = isFieldInUse "rs2" fieldMap4
+    let usesDest = isFieldInUse "rd" fieldMap4
+
+    -- Register unspilling (fetching)
+    let needsDest4 = usesDest .&&. loadDelay (activeMask4.val .!=. ones)
+    let unspill4 = if not enableSpill then false else orList [
+            usesA .&&. regFile.evictedA
+          , usesA .&&. capRegFile.evictedA
+          , usesB .&&. regFile.evictedB
+          , usesB .&&. capRegFile.evictedB
+          , needsDest4 .&&. regFile.evictedStatus
+          , needsDest4 .&&. capRegFile.evictedStatus ]
+    let unspillTo4 = orList [
+            usesA .&&. capRegFile.evictedA
+          , usesB .&&. capRegFile.evictedB
+          , needsDest4 .&&. capRegFile.evictedStatus ]
+    let srcA4 = srcA delayedInstr4
+    let srcB4 = srcB delayedInstr4
+    let dest4 = dst delayedInstr4
+    let unspillReg4 = if unspillTo4
+          then (usesA .&&. capRegFile.evictedA) ? (srcA4,
+                  (usesB .&&. capRegFile.evictedB) ? (srcB4, dest4))
+          else (usesA .&&. regFile.evictedA) ? (srcA4,
+                  (usesB .&&. regFile.evictedB) ? (srcB4, dest4))
+    let unspillTo5 = old unspillTo4
+    let unspillReg5 = old unspillReg4
+    let unspill4_5 = unspill4 .&&. loadDelay (go4.val .&&. inv spill4.val)
+    let unspill5 = delay false unspill4_5
 
     -- Stage 5 scalarised operands
     let scalarisedOperandB5 =
@@ -683,25 +918,22 @@ makeSIMTPipeline c inputs =
     let pcc5 = old (loadDelay pcc4)
     let isSusp5 = old (loadDelay isSusp4.val)
     let warpId5 = old (loadDelay warpId4.val)
-    let activeMask5 = old (loadDelay activeMask4.val)
+    let activeMask5 = old (if unspill4_5 then ones
+                             else loadDelay activeMask4.val)
     let instr5 = old (loadDelay instr4.val)
     let state5 = old (loadDelay state4.val)
-    let go5 = delay false (loadDelay go4.val)
+    let spill5 = delay false (loadDelay spill4.val)
+    let spillFrom5 = old (loadDelay spillFrom4.val)
+    let spillReg5 = old (loadDelay spillReg4.val)
+    let go5 = delay false (loadDelay (go4.val .&&. inv spill4.val)
+                             .&&. inv unspill4)
 
     -- Buffer the decode tables
     let tagMap5 = Map.map old tagMap4
 
-    -- Determine if field is available in current instruction
-    let isFieldInUse fld fldMap =
-          case Map.lookup fld fldMap of
-            Nothing -> false
-            Just opt -> opt.valid
-
     -- Determine if this instruction is scalarisable
     when c.useRegFileScalarisation do
       always do
-        let usesA = isFieldInUse "rs1" fieldMap4
-        let usesB = isFieldInUse "rs2" fieldMap4
         let isAffineA = regFile.scalarA.valid
         let isAffineB = regFile.scalarB.valid
         let isUniformA = isAffineA .&&. regFile.scalarA.val.stride .==. 0
@@ -927,11 +1159,87 @@ makeSIMTPipeline c inputs =
                <*> ZipList resultCapWires
                <*> ZipList pcChangeRegs6
 
+    -- Dynamic register spilling
+    when enableSpill do
+      always do
+        when spill5 do
+          if isSusp5
+            then do
+              -- Update stat counters
+              incSuspCount <== true
+            else do
+              -- Assumption: all lanes can request if first can
+              let canPutMemReq = (head $ toList inputs.simtMemReqs).canPut
+              -- Address of vector reg in DRAM
+              let addrLow :: Bit (SIMTLogLanes+2) = 0
+              let addr :: Bit 32 =
+                      fromInteger c.regSpillBaseAddr
+                    + zeroExtend (spillFrom5 # warpId5 # spillReg5 # addrLow)
+              -- Submit mem request for each lane
+              sequence_
+                [ when memReqs.canPut do
+                    memReqs.put
+                      MemReq {
+                        memReqAccessWidth = 2
+                      , memReqOp = memStoreOp
+                      , memReqAMOInfo = dontCare
+                      , memReqAddr = addr + fromInteger (4*laneId)
+                      , memReqData = spillFrom5 ? (lower capVal, val)
+                      , memReqDataTagBit = spillFrom5 ? (upper capVal, 0)
+                      , memReqDataTagBitMask = 0
+                      , memReqIsUnsigned = dontCare
+                      , memReqIsFinal = true
+                      }
+                | (memReqs, laneId, val, capVal) <-
+                    zip4 (toList inputs.simtMemReqs) [0..]
+                         (toList vecRegA5) (toList vecRawCapMetaRegA5) ]
+              when canPutMemReq do
+                spillSuccess6 <== true
+
+    -- Register unspilling (fetching)
+    when enableSpill do
+      always do
+        when unspill5 do
+          rescheduleWarp6 <== true
+          if isSusp5
+            then do
+              -- Update stat counters
+              incSuspCount <== true
+            else do
+              -- Assumption: all lanes can request if first can
+              let canPutMemReq = (head $ toList inputs.simtMemReqs).canPut
+              -- Address of vector reg in DRAM
+              let addrLow :: Bit (SIMTLogLanes+2) = 0
+              let addr :: Bit 32 =
+                      fromInteger c.regSpillBaseAddr
+                    + zeroExtend (unspillTo5 # warpId5 # unspillReg5 # addrLow)
+              -- Submit mem request for each lane
+              sequence_
+                [ when memReqs.canPut do
+                    memReqs.put
+                      MemReq {
+                        memReqAccessWidth = 2
+                      , memReqOp = memLoadOp
+                      , memReqAMOInfo = dontCare
+                      , memReqAddr = addr + fromInteger (4*laneId)
+                      , memReqData = dontCare
+                      , memReqDataTagBit = dontCare
+                      , memReqDataTagBitMask = 1
+                      , memReqIsUnsigned = 0
+                      , memReqIsFinal = true
+                      }
+                | (memReqs, laneId) <-
+                    zip (toList inputs.simtMemReqs) [0..] ]
+              -- Suspend the warp
+              when canPutMemReq do
+                sequence_ [(regs ! warpId5) <== true | regs <- suspBits]
+
     -- Stage 6: Writeback
     -- ==================
 
     always do
       let warpId6 = old warpId5
+      let isSusp6 = delay false isSusp5
       -- Process data from Execute stage
       let executeIdx = (warpId6, old (dst instr5))
       let executeVec :: Bits t => [Wire t] -> Vec SIMTLanes (Option t)
@@ -947,10 +1255,11 @@ makeSIMTPipeline c inputs =
                        inv excGlobal.val)
                      req.val.resumeReqData
             | req <- toList resumeVec ]
+      let resumeUnspill = resumeInfo.regFileId .!=. regFileIntCap
       let resumeVecCap = fromList
             [ Option (req.valid .&&. resumeInfo.destReg .!=. 0 .&&.
                        inv excGlobal.val)
-                     (if req.val.resumeReqCap.valid
+                     (if req.val.resumeReqCap.valid .||. resumeUnspill
                         then req.val.resumeReqCap.val
                         else nullCapMemMetaVal)
             | req <- toList resumeVec ]
@@ -969,12 +1278,20 @@ makeSIMTPipeline c inputs =
       -- a hazard.
       let handleResume = inputs.simtResumeReqs.canPeek .&&.
                            regFile.canStore writeIdx .&&.
-                             capRegFile.canStore writeIdx
+                             capRegFile.canStore writeIdx .&&.
+                               inv spillSuccess6.val
 
-      -- Write to register file
-      when (handleExecute .||. handleResume) do
+      -- Write to int reg file?
+      let writeInt = handleExecute .||. (handleResume .&&.
+                       resumeInfo.regFileId .!=. regFileCapMeta)
+      -- Write to cap meta reg file?
+      let writeCapMeta = handleExecute .||. (handleResume .&&.
+                           resumeInfo.regFileId .!=. regFileInt)
+      -- Write to register file(s)
+      when writeInt do
         regFile.store writeIdx writeVec
-        when enableCHERI do
+      when enableCHERI do
+        when writeCapMeta do
           capRegFile.store writeIdx writeCapVec
       -- Handle thread resumption
       when (inv handleExecute .&&. handleResume) do
@@ -1005,7 +1322,8 @@ makeSIMTPipeline c inputs =
                   [ old activeMask5 .==. ones
                   , scalarTableA.out
                   , inv $ orList $ map (.val) pcChangeRegs6
-                  , inv (old isSusp5)
+                  , inv isSusp6
+                  , inv (delay false unspill5)
                   ]
                 else false
         if putInScalarQueue .&&. inv scalarUnitWarpCount.isFull
@@ -1014,6 +1332,19 @@ makeSIMTPipeline c inputs =
             scalarUnitWarpCount.incrBy 1
           else do
             (warpQueue!warpId6) <== true
+
+      -- Dynamical spill: finish off register spill
+      when enableSpill do
+        let spill6 = delay false spill5
+        let spillFrom6 = delay 0 spillFrom5
+        let spillReg6 = delay 0 spillReg5
+        when (iterateN latency (delay false) spill6) do
+          let warpId = iterateN latency old warpId6
+          (spillingWarps!warpId) <== false
+        when spillSuccess6.val do
+          if spillFrom6
+            then capRegFile.evict (warpId6, spillReg6)
+            else regFile.evict (warpId6, spillReg6)
 
     -- ===============
     -- Scalar Pipeline
@@ -1082,8 +1413,10 @@ makeSIMTPipeline c inputs =
       always do
         -- Bit mask of available warps
         let avail :: Bit SIMTWarps =
-              fromBitList [ r.val .&. inv s.val
-                          | (r, s) <- zip scalarQueue warpSuspMask ]
+              fromBitList [ r.val .&&. inv s.val .&&.
+                              (if enableSpill then inv e.val else true)
+                          | (r, s, e) <- zip3 scalarQueue warpSuspMask
+                                              spillingWarps ]
 
         -- Fair scheduler
         let (newSchedHistory, chosen) =
@@ -1096,7 +1429,7 @@ makeSIMTPipeline c inputs =
           | (r, c) <- zip scalarQueue (toBitList chosen) ]
 
         -- Trigger next stage
-        when (avail .!=. 0) do
+        when (avail .!=. 0 .&&. inv regSpillMode.val) do
           scalarSchedHistory <== newSchedHistory
           scalarGo0 <== true
 
@@ -1379,6 +1712,7 @@ makeSIMTPipeline c inputs =
             decrBy barrierCount 1
             -- Insert back into warp queue
             (warpQueue!warpId) <== true
+      , relDisable = regSpillMode.val
       }
 
     -- Handle management requests
@@ -1446,13 +1780,18 @@ makeSIMTPipeline c inputs =
       , simtKernelAddr = kernelAddrReg.val
       , simtInstrInfo =
           SIMTPipelineInstrInfo {
-            destReg = dst instr5
+            destReg = if unspill5 then unspillReg5 else dst instr5
           , warpId = warpId5
+          , regFileId =
+              if unspill5
+                then unspillTo5 ? (regFileCapMeta, regFileInt)
+                else regFileIntCap
           }
       , simtScalarInstrInfo =
           SIMTPipelineInstrInfo {
             destReg = dst scalarInstr4.val
           , warpId = scalarWarpId4.val
+          , regFileId = regFileIntCap
           }
       , simtScalarisedOpB = scalarisedOperandB5
       }
@@ -1474,6 +1813,8 @@ data BarrierReleaseIns =
     -- ^ Bit vector denoting warps currently in barrier
   , relAction :: Bit SIMTLogWarps -> Action ()
     -- ^ Action to perform on a release
+  , relDisable :: Bit 1
+    -- ^ Signal to disable barrier release
   }
 
 -- | Barrier release unit
@@ -1519,7 +1860,7 @@ makeBarrierReleaseUnit ins = do
         else do releaseState <== 2
 
     -- Shift and release
-    when (releaseState.val .==. 2) do
+    when (releaseState.val .==. 2 .&&. inv ins.relDisable) do
       -- Release warp
       when (releaseSuccess.val) do
         relAction ins (releaseWarpId.val)
@@ -1531,3 +1872,57 @@ makeBarrierReleaseUnit ins = do
       -- Move back to state 1 when finished with block
       when (releaseWarpCount.val .==. ins.relWarpsPerBlock) do
         releaseState <== 1
+
+-- Note [Dynamic register spilling]
+-- ================================
+
+-- The size of the physical vector register file may be set such that
+-- it is smaller than the number of architectural registers. Most of
+-- the time, this may not be a problem due to register file compression
+-- (using scalarisation), but when compression fails to work well for
+-- a particular workload, or when the size of the physical register
+-- file is simply too small, we must deal with overflow.
+--
+-- Dynamic register spilling is a modification to the SIMT pipeline
+-- that spills registers to DRAM, and fetches them as and when
+-- required by an instruction.
+--
+-- The pipeline modifications for the spilling (eviction) of a
+-- register are as follows:
+--
+-- Warp Scheduler: The "pipeline spill mode" is triggered when the
+-- utilisation of the physical register file exceeds a threshold. In
+-- this mode, and a warp is selected fairly from the union of the warp
+-- queue, scalar warp queue, and the barrier queue. The threshold is
+-- chosen such that every inflight instruction has space to allocate
+-- at least one register in the register file.
+--
+-- Operand Fetch: In this stage, we decide which register to evict.
+-- Various policies are possible here; we leave it abstract for the
+-- purpose of this summary. However, there is one key condition on
+-- the register chosen for eviction: it must not be needed by the next
+-- instruction to be executed by the current warp. This guarantees
+-- forward progress, avoiding the livelock case where a register is
+-- continually fetched and subsequently evicted before being used,
+-- provided that the physical register file is big enough to hold at
+-- least three vectors for each warp.
+--
+-- Execute Stage: Here, we issue a write of the chosen vector to a
+-- small region of DRAM dedicated for register spilling.
+--
+-- Writeback Stage: Here, we mark the register as "evicted" in the
+-- register file, such that if the register is ever needed by a future
+-- instruction, we can detect that we need to fetch it from DRAM.
+--
+-- The pipeline modifications for the unspilling (fetching) of a
+-- register are as follows:
+--
+-- Operand Fetch: In this stage, we detect the case where an
+-- instruction needs a register that has been evicted to DRAM, and we
+-- remember this register for future stages.
+-- 
+-- Execute stage: Here, we issue a load to the register file spill
+-- region in DRAM, and arrange for the result to be written to the
+-- correct place in the register file.  The warp is then suspended, in
+-- the same way as a load instruction, and the PC of the current
+-- instruction is not incremented.

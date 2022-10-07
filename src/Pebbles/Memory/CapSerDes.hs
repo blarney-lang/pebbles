@@ -116,6 +116,7 @@ makeMemRespDeserialiser enableCHERI memResps
                      [ Option valid
                          ResumeReq {
                            resumeReqData = r.memRespData
+                         , resumeReqDataTagBit = r.memRespDataTagBit
                          , resumeReqCap = none
                          }
                      | Option valid r <- toList memResps.peek.snd ]
@@ -169,6 +170,7 @@ makeMemRespDeserialiser enableCHERI memResps
                            resumeReqData =
                              if flitCount.val .==. 1
                                then reg.val.val else resp.memRespData
+                         , resumeReqDataTagBit = tag
                          , resumeReqCap =
                              Option (flitCount.val .==. 1)
                                     (tag # resp.memRespData)
