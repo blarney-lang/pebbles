@@ -129,7 +129,8 @@ data SIMTPipelineConfig tag =
     -- ^ Execute stage for scalar unit
   , regSpillBaseAddr :: Integer
     -- ^ Base address of register spill region in DRAM
-  , useRoundRobinSpill :: Bool
+  , useLRUSpill :: Bool
+    -- ^ Prefer to spill registers that are not recently used
   }
 
 -- | SIMT pipeline inputs
@@ -403,9 +404,11 @@ makeSIMTPipeline c inputs =
     -- Vector register mask (for dynamic spilling)
     vecMask2b :: Reg (Bit 32) <- makeReg dontCare
 
-    -- Last register to have been spilled per warp
-    spillHistory :: Vec SIMTWarps (Reg RegId) <- V.replicateM (makeReg 0)
-    lastSpillMask :: Reg (Bit 32) <- makeReg dontCare
+    -- Maintain psuedo rolling average for register use
+    regUsage :: Vec 32 (Reg (Bit SIMTRegCountBits)) <- V.replicateM (makeReg 0)
+
+    -- Mask of not-recently-used registers to prioritise for spilling
+    spillMaskLRU :: Reg (Bit 32) <- makeReg dontCare
 
     -- Pipeline Initialisation
     -- =======================
@@ -729,11 +732,16 @@ makeSIMTPipeline c inputs =
                 (True , True)  -> spillFrom2 ? (c, i)
         let vecMasks = V.zipWith chooseRF
                          regFile.getVecMasks capRegFile.getVecMasks
-        vecMask2b <== vecMasks ! warpId2
-        when c.useRoundRobinSpill do
-          let last = V.map (.val) spillHistory ! warpId2
-          let oneHotLast = 1 .<<. last
-          lastSpillMask <== oneHotLast .|. (oneHotLast - 1)
+        let vecMask = vecMasks ! warpId2
+        vecMask2b <== vecMask
+        when c.useLRUSpill do
+          let subset xs = [x | (x, i) <- zip xs [0..], i `mod` 2 == 1]
+          let usage = zipWith (\v c -> if v then c.val else ones)
+                        (toBitList vecMask) (toList regUsage)
+          let min a b = if a .<. b then a else b
+          let regUsageMin = tree1 min (subset usage)
+          spillMaskLRU <==
+            pack (V.map (\c -> c.val .<=. regUsageMin) regUsage)
 
     -- Second instruction fetch stage
     ---------------------------------
@@ -748,7 +756,6 @@ makeSIMTPipeline c inputs =
 
     always do
       when enableSpill do
-        -- First source reg depends on whether we're spilling a reg or not
         let srcRegA = srcA instrMemA.out
         let srcRegB = srcB instrMemA.out
         let dstReg = dst instrMemA.out
@@ -756,9 +763,9 @@ makeSIMTPipeline c inputs =
                             inv (binaryDecode srcRegA
                                    .|. binaryDecode srcRegB
                                    .|. binaryDecode dstReg)
-        let spillMaskA1 = spillMaskA0 .&. inv lastSpillMask.val
+        let spillMaskA1 = spillMaskA0 .&. spillMaskLRU.val
         let spillMaskA =
-              if c.useRoundRobinSpill
+              if c.useLRUSpill
                 then (spillMaskA1 .==. 0) ? (spillMaskA0, spillMaskA1)
                 else spillMaskA0
         let spillA = binaryEncode (firstHot spillMaskA)
@@ -767,11 +774,6 @@ makeSIMTPipeline c inputs =
         fetchA3Reg <== spill2b ? (spillA, srcRegA)
         spillFail3Reg <== if enableSpill
           then (spill2b .&&. spillMaskA .==. 0) else false
-
-        -- Record last register spilt for current warp
-        when c.useRoundRobinSpill do
-          when (delay false (delay false spill2)) do
-            (spillHistory ! old (old warpId2)) <== spillA3Reg.val
 
     -- State for stage 3
     let stage2Delay :: forall a. Bits a => a -> a
@@ -971,6 +973,17 @@ makeSIMTPipeline c inputs =
       scalarTableA.load (toInstrAddr (state5.simtPC + 4))
 
       when go5 do
+        -- Maintain approximate rolling average of register usage
+        when (enableSpill && c.useLRUSpill) do
+          let anyFull = orList (map (.==. ones) (map (.val) (toList regUsage)))
+          let incA i = delay false usesA .&&. srcA instr5 .==. fromInteger i
+          let incB i = delay false usesB .&&. srcB instr5 .==. fromInteger i
+          when (warpId5 .==. 0) do
+            sequence_ [ if anyFull
+                          then r <== false # upper r.val
+                          else when (incA i .||. incB i) do r <== r.val + 1
+                      | (r, i) <- zip (drop 1 $ toList regUsage) [1..31] ]
+
         -- Update stat counters
         when isSusp5 do incSuspCount <== true
 
