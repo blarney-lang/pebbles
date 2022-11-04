@@ -16,6 +16,7 @@ import Pebbles.CSRs.TrapCodes
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.Mnemonics
+import Pebbles.Instructions.Units.BoundsUnit
 
 -- CHERI imports
 import CHERI.CapLib
@@ -78,6 +79,8 @@ getRelease = makeFieldSelector decodeCHERI_A "rl"
 -- Execute stage
 -- =============
 
+-- | CHERI instructions, excluding bounds setting instructions, which
+-- are defined separately (see below)
 executeCHERI ::
      CSRUnit
      -- ^ Access to CSRs
@@ -92,8 +95,8 @@ executeCHERI csrUnit memReqs s = do
   let cA = s.capA.capPipe
   let cB = s.capB.capPipe
   let topA = s.capA.capTop
-  let lenA = s.capA.capLength
   let baseA = s.capA.capBase
+  let lenA = s.capA.capLength
   let addrA = getAddr cA
   let permsA = getHardPerms cA
   let permsB = getHardPerms cB
@@ -128,32 +131,6 @@ executeCHERI csrUnit memReqs s = do
   -- Non-compliant; always returns the almighty capability
   when (s.opcode `is` [CSpecialRW]) do
     s.resultCap <== almightyCapPipeVal
-
-  -- Bounds setting instructions
-  -- ---------------------------
-
-  when (s.opcode `is` [CSetBounds, CSetBoundsExact]) do
-    let newCap = setBounds cA s.opBorImm
-    let needExact = s.opcode `is` [CSetBoundsExact]
-
-    -- Exception path
-    if inv (isValidCap cA) then
-      trap s cheri_exc_tagViolation
-    else if isSealed cA then
-      trap s cheri_exc_sealViolation
-    else if addrA .<. baseA .||.
-              zeroExtend addrA + zeroExtend (s.opBorImm) .>. topA then
-      trap s cheri_exc_lengthViolation
-    else if needExact .&&. inv newCap.exact then
-      trap s cheri_exc_representabilityViolation
-    else return ()
-
-    -- Result path
-    s.resultCap <== newCap.value
-
-  when (s.opcode `is` [CRRL, CRAM]) do
-    let result = setBoundsCombined nullCapPipe s.opA
-    s.result <== s.opcode `is` [CRRL] ? (result.length, result.mask)
 
   -- Other capability modification instructions
   -- ------------------------------------------
@@ -327,6 +304,70 @@ executeCHERI csrUnit memReqs s = do
                   }
               , capMemReqUpperData = upper memCap
               }
+
+-- | Bounds setting instructions
+executeSetBounds ::
+     State
+     -- ^ Pipeline state
+  -> Action ()
+executeSetBounds s = do
+
+  -- Shorthands / shared logic for capability operands
+  let cA = s.capA.capPipe
+  let topA = s.capA.capTop
+  let baseA = s.capA.capBase
+  let addrA = getAddr cA
+
+  -- Bounds setting instructions
+  -- ---------------------------
+
+  when (s.opcode `is` [CSetBounds, CSetBoundsExact]) do
+    let newCap = setBounds cA s.opBorImm
+    let needExact = s.opcode `is` [CSetBoundsExact]
+
+    -- Exception path
+    if inv (isValidCap cA) then
+      trap s cheri_exc_tagViolation
+    else if isSealed cA then
+      trap s cheri_exc_sealViolation
+    else if addrA .<. baseA .||.
+              zeroExtend addrA + zeroExtend (s.opBorImm) .>. topA then
+      trap s cheri_exc_lengthViolation
+    else if needExact .&&. inv newCap.exact then
+      trap s cheri_exc_representabilityViolation
+    else return ()
+
+    -- Result path
+    s.resultCap <== newCap.value
+
+  when (s.opcode `is` [CRRL, CRAM]) do
+    let result = setBoundsCombined nullCapPipe s.opA
+    s.result <== s.opcode `is` [CRRL] ? (result.length, result.mask)
+
+
+-- | Bounds setting instructions using (possibly shared) bounds unit
+executeBoundsUnit ::
+     Sink BoundsReq
+     -- ^ Bounds unit
+  -> State
+     -- ^ Pipeline state
+  -> Action ()
+executeBoundsUnit boundsUnit s = do
+  when (s.opcode `is` [CSetBounds, CSetBoundsExact, CRRL, CRAM]) do
+    if boundsUnit.canPut
+      then do
+        s.suspend
+        boundsUnit.put
+          BoundsReq {
+            isSetBounds = s.opcode `is` [CSetBounds]
+          , isSetBoundsExact = s.opcode `is` [CSetBoundsExact]
+          , isCRAM = s.opcode `is` [CRAM]
+          , isCRRL = s.opcode `is` [CRRL]
+          , cap = s.capA.capPipe
+          , len = if s.opcode `is` [CSetBounds, CSetBoundsExact]
+                    then s.opBorImm else s.opA
+          }
+      else s.retry
 
 -- Program counter capability
 -- ==========================
