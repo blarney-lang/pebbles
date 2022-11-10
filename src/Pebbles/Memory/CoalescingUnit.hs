@@ -394,6 +394,7 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
       -- and at least one other request
       let useWordMode = (wordModeMask .&. leader3.val .!=. 0) .&.
                           (wordModeMask .&. inv leader3.val .!=. 0)
+                   .||. isWordAccess leaderReq3.val.memReqAccessWidth
       if useWordMode
         then do
           sameBlockMode4 <== 2
