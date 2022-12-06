@@ -105,12 +105,24 @@ makeSBDCache dramResps = do
   -- DRAM request queue
   dramReqQueue :: Queue (DRAMReq DRAMReqId) <- makeShiftQueue 1
 
+  -- Fast zeroing enabled?
+  let enFastZeroing = EnableFastZeroing == 1
+
+  -- Count for fast zeroing loop
+  zeroingCount :: Reg (Bit 32) <- makeReg 0
+
+  -- Address range of fast zeroing request
+  zeroingBaseAddr :: Reg DRAMAddr <- makeReg 0
+  zeroingEndAddr :: Reg DRAMAddr <- makeReg 0
+
   -- Cache state
   -- 0: Meta-data & data lookup
   -- 1: Respond on hit, writeback on miss
   -- 2: Miss: fetch new line
   -- 3: Miss: receive new line
   -- 4: Loopback to state 1
+  -- 5: Zero out cache lines (fast zeroing)
+  -- 6: Issue fast zero requests to DRAM (fast zeroing)
   state :: Reg (Bit 3) <- makeReg 0
 
   always do
@@ -225,6 +237,7 @@ makeSBDCache dramResps = do
                     DRAMReq {
                       dramReqId = ()
                     , dramReqIsStore = true
+                    , dramReqIsFastZero = false
                     , dramReqAddr = metaMem.out.lineTag # lineNum
                     , dramReqData = dataMem.outBE
                     , dramReqDataTagBits = tagBitsMem.out
@@ -261,6 +274,7 @@ makeSBDCache dramResps = do
               DRAMReq {
                 dramReqId = ()
               , dramReqIsStore = false
+              , dramReqIsFastZero = false
               , dramReqAddr = truncate $
                   slice @31 @DRAMBeatLogBytes (reqReg.val.memReqAddr)
               , dramReqData = dontCare
@@ -301,6 +315,80 @@ makeSBDCache dramResps = do
       load tagBitsMem lineNum
       state <== 1
 
+    -- Fast zeroing loop (local cache lines)
+    when enFastZeroing do
+      when (state.val .==. 5) do
+        -- Is address in the cache?
+        let isHit = metaMem.out.lineValid .&&.
+                      tag .==. metaMem.out.lineTag
+        -- If so, zero the line
+        when isHit do
+          storeBE dataMem lineNum ones 0
+          store tagBitsMem lineNum 0
+
+        -- Is zeroing loop complete?
+        let done = zeroingCount.val .==. reqReg.val.memReqData
+              .||. zeroingCount.val .==. fromInteger (2^SBDCacheLogLines - 1)
+        if done
+          then do
+            -- Move to next state
+            state <== 6
+            zeroingCount <== 0
+          else do
+            -- Move on to next line
+            zeroingCount <== zeroingCount.val + 1
+            let reqNew =
+                  reqReg.val {
+                    memReqAddr = reqReg.val.memReqAddr + DRAMBeatBytes
+                  }
+            reqReg <== reqNew
+            metaMem.load (getLineNum reqNew.memReqAddr)
+            tagBitsMem.load (getLineNum reqNew.memReqAddr)
+
+    -- Fast zeroing loop (DRAM)
+    when enFastZeroing do
+      when (state.val .==. 6) do
+        when dramReqQueue.notFull do
+          -- Are we dealing with first write?
+          let isFirst = zeroingCount.val .==. 0
+          -- Bit mask for first write
+          let firstMask :: DRAMBeat =
+                fromBitList [ (fromInteger i :: Bit (DRAMBeatLogBytes+3))
+                                .>=. lower zeroingBaseAddr.val
+                            | i <- [0 .. DRAMBeatBits-1 ] ]
+          -- Are we dealing with final write?
+          let newCount = zeroingCount.val + DRAMBeatBits
+          let isFinal = newCount .>=. reqReg.val.memReqData
+          -- Bit mask for final write
+          let finalMask :: DRAMBeat =
+                fromBitList [ (fromInteger i :: Bit (DRAMBeatLogBytes+3))
+                                .<=. lower zeroingEndAddr.val
+                            | i <- [0 .. DRAMBeatBits-1 ] ]
+          -- Combine masks
+          let mask = (if isFirst then firstMask else ones)
+                 .&. (if isFinal then finalMask else ones)
+          -- Determine beat block
+          let (blockAddr, blockOffset :: Bit (DRAMBeatLogBytes+3)) =
+                split zeroingBaseAddr.val
+          -- Send fast zero request
+          dramReqQueue.enq
+            DRAMReq {
+              dramReqId = ()
+            , dramReqIsStore = true
+            , dramReqIsFastZero = true
+            , dramReqAddr = (blockAddr # 0) + lower zeroingCount.val
+            , dramReqData = mask
+            , dramReqDataTagBits = dontCare
+            , dramReqByteEn = dontCare
+            , dramReqBurst = 1
+            , dramReqIsFinal = true
+            }
+          -- Advance counter or finish
+          if isFinal
+            then do state <== 0
+                    zeroingCount <== 0
+            else do zeroingCount <== newCount
+
   return
     ( Sink {
         canPut = state.val .==. 0
@@ -308,10 +396,19 @@ makeSBDCache dramResps = do
           reqWire <== req
           reqReg <== req
           reqIdReg <== id
-          state <== (req.memReqOp .==. memGlobalFenceOp) ? (2, 1)
-          -- Checks
+          state <== if req.memReqOp .==. memGlobalFenceOp then 2
+                      else if req.memReqOp .==. memZeroOp then 5
+                        else 1
           dynamicAssert (req.memReqOp .!=. memAtomicOp)
             "Atomics not yet supported by SBDCache"
+          when enFastZeroing do
+            zeroingCount <== 0
+            let (beatAddr :: DRAMAddr, beatOffset) = split req.memReqAddr
+            zeroingBaseAddr <== beatAddr
+            zeroingEndAddr <== beatAddr + lower req.memReqData
+            when (req.memReqOp .==. memZeroOp) do
+              dynamicAssert (beatOffset .==. 0)
+                "SBDCache Fast Zeroing: address must be multiple of beat size"
       }
     , toStream respQueue
     , toStream dramReqQueue )

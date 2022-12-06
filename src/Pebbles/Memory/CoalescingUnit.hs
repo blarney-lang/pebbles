@@ -711,6 +711,7 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
           DRAMReq {
             dramReqId = ()
           , dramReqIsStore = isStore
+          , dramReqIsFastZero = false
           , dramReqAddr = truncate dramAddr .&. inv (zeroExtend addrMask)
           , dramReqData = useSameBlock ? (sameBlockData, sameAddrData)
           , dramReqDataTagBits =

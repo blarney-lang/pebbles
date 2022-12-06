@@ -22,6 +22,10 @@ data DRAMReq id =
     -- ^ Request id
   , dramReqIsStore :: Bit 1
     -- ^ Store operation?
+  , dramReqIsFastZero :: Bit 1
+    -- ^ If store, is it a fast zeroing operation? If so, the address
+    -- must be aligned to n beats, where n is the beat width. If bit i
+    -- of the data field is set then beat at [address + i*n] is zeroed.
   , dramReqAddr :: DRAMAddr
     -- ^ Address
   , dramReqData :: DRAMBeat

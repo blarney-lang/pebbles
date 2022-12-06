@@ -23,6 +23,7 @@ memLoadOp        :: MemReqOp = 1
 memStoreOp       :: MemReqOp = 2
 memAtomicOp      :: MemReqOp = 3
 memGlobalFenceOp :: MemReqOp = 4
+memZeroOp        :: MemReqOp = 5
 
 -- | Information about an atomic memory operation
 data AMOInfo =

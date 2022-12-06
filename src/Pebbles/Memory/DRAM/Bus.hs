@@ -19,39 +19,39 @@ import Pebbles.Memory.DRAM.Interface
 -- Types
 -- =====
 
-type Dual a = (a, a)
-
 -- | Bus tag indicates client id of the original request
-type DRAMBusId t_id = (Bit 1, t_id)
+-- (Maximum of 8 clients)
+type DRAMBusId t_id = (Bit 3, t_id)
 
--- Two-way DRAM bus
--- ================
+-- N-way DRAM bus
+-- ==============
 
--- Client A <--> +----------+    +------+
---               | DRAM Bus |<-->| DRAM |
--- Client B <--> +----------+    +------+
-
--- | Create a dual-port DRAM wrapper around a single DRAM.
+-- | Create a multi-port DRAM wrapper around a single DRAM.
 -- Requests are merged fairly and responses are returned in order.
 makeDRAMBus :: forall t_id. Bits t_id =>
-     Dual (Stream (DRAMReq t_id))
+     [Stream (DRAMReq t_id)]
      -- ^ Client request streams
   -> Stream (DRAMResp (DRAMBusId t_id))
      -- ^ Responses from DRAM
-  -> Module (Dual (Stream (DRAMResp t_id)),
+  -> Module ([Stream (DRAMResp t_id)],
              Stream (DRAMReq (DRAMBusId t_id)))
      -- ^ Client response streams, and requests to DRAM
-makeDRAMBus (reqs0, reqs1) dramResps = do
+makeDRAMBus reqStreams dramResps = do
+  let numClients = length reqStreams
+  staticAssert (numClients >= 1 && numClients <= 8)
+    "makeDRAMBus: number of clients must be in [1..8]"
+
   -- Tag a request with a client id
   let tag t req = req { dramReqId = (t, req.dramReqId) }
 
   -- Tag the request in each stream with a client id
-  let dramReqs0 = fmap (tag 0) reqs0
-  let dramReqs1 = fmap (tag 1) reqs1
+  let dramReqStreams = [ fmap (tag (fromInteger i)) s
+                       | (s, i) <- zip reqStreams [0..] ]
 
   -- Fair merger
-  dramReqs <- makeGenericFairMergeTwo makeQueue (const true)
-                dramReqIsFinal (dramReqs0, dramReqs1)
+  dramReqs <- treeM1 (\rs0 rs1 ->
+    makeGenericFairMergeTwo makeQueue (const true)
+                            dramReqIsFinal (rs0, rs1)) dramReqStreams
 
   -- Get the tag from the response
   let getTag resp = fst resp.dramRespId
@@ -59,18 +59,14 @@ makeDRAMBus (reqs0, reqs1) dramResps = do
   -- Untag the response
   let untag resp = resp { dramRespId = snd resp.dramRespId }
 
-  -- Split into two response streams
-  let resps0 =
-        Source {
-          peek = untag dramResps.peek
-        , canPeek = dramResps.canPeek .&. inv (getTag dramResps.peek)
-        , consume = dramResps.consume
-        }
-  let resps1 =
-        Source {
-          peek = untag dramResps.peek
-        , canPeek = dramResps.canPeek .&. getTag dramResps.peek
-        , consume = dramResps.consume
-        }
-
-  return ((resps0, resps1), dramReqs)
+  -- Split into response streams
+  let respStreams =
+        [ Source {
+            peek = untag dramResps.peek
+          , canPeek = dramResps.canPeek .&&.
+                        getTag dramResps.peek .==. fromIntegral i
+          , consume = dramResps.consume
+          }
+        | i <- [0 .. numClients - 1] ]
+ 
+  return (respStreams, dramReqs)

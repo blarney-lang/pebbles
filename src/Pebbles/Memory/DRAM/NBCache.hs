@@ -338,6 +338,7 @@ makeNBDRAMCache reqs dramResps = do
                     dramReqId =
                       miss.missWay # miss.missSetId # (0 :: BeatId)
                   , dramReqIsStore = false
+                  , dramReqIsFastZero = false
                   , dramReqAddr =
                       miss.missNewTag # miss.missSetId # (0 :: BeatId)
                   , dramReqData = dontCare
@@ -378,6 +379,7 @@ makeNBDRAMCache reqs dramResps = do
                   DRAMReq {
                     dramReqId = dontCare
                   , dramReqIsStore = true
+                  , dramReqIsFastZero = false
                   , dramReqAddr =
                       miss.missLine.lineTag # miss.missSetId # (0 :: BeatId)
                   , dramReqData = dataMemA.outBE

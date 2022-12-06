@@ -19,6 +19,7 @@
 import Blarney
 import Blarney.Queue
 import Blarney.Stream
+import Blarney.Option
 import Blarney.Interconnect
 import qualified Blarney.Vector as V
 
@@ -58,6 +59,9 @@ data StreamCacheReq t_id =
     -- ^ Data to write
   , streamCacheReqWriteEn :: StreamCacheData
     -- ^ Write-enable bit mask
+  , streamCacheReqZeroBits :: Option DRAMBeat
+    -- ^ When enabled, this field allows all the bits of the beat
+    -- being accessed to be set to zero, according to the given mask
   }
   deriving (Generic, Interface, Bits)
 
@@ -154,6 +158,8 @@ data StreamCacheConfig =
     useZeroTable :: Bool
     -- ^ Track cache lines known to be zero.  Initialises memory to
     -- zero and improves hit rate when memory fetched is often zero.
+  , baseAddr :: Bit DRAMAddrWidth
+    -- ^ Base address of region being cached
   }
 
 -- Helper functions
@@ -351,7 +357,7 @@ makeStreamCache config reqs dramResps = do
             (if isZero3.val then req.streamCacheReqIsStore else true)
       -- Stall condition
       let stall = -- We need to replace and line is busy
-                  replace .&&. (map val busyRegs ! evictWay.val)
+                  replace .&&. (map (.val) busyRegs ! evictWay.val)
              .||. -- The queue of inflight requests is full
                   inv inflightQueue.notFull
              .||. -- The miss queue is full
@@ -467,7 +473,8 @@ makeStreamCache config reqs dramResps = do
                       , beatKnownZero = miss.missZero
                       }
                   , dramReqIsStore = false
-                  , dramReqAddr = zeroExtend
+                  , dramReqIsFastZero = false
+                  , dramReqAddr = config.baseAddr + zeroExtend
                       (miss.missNewTag # miss.missSetId # (0 :: BeatId))
                   , dramReqData = dontCare
                   , dramReqDataTagBits = dontCare
@@ -508,7 +515,8 @@ makeStreamCache config reqs dramResps = do
                   DRAMReq {
                     dramReqId = dontCare
                   , dramReqIsStore = true
-                  , dramReqAddr = addr
+                  , dramReqIsFastZero = false
+                  , dramReqAddr = config.baseAddr + addr
                   , dramReqData = dataMemA.outBE
                   , dramReqDataTagBits = dontCare
                   , dramReqByteEn = ones
@@ -661,11 +669,17 @@ makeStreamCache config reqs dramResps = do
                   zip3 (toBitList $ pack mask)
                        (toBitList $ dataMemB.outBE)
                        (toBitList $ pack newData) ]
+      let writeZeroes :: DRAMBeat =
+            fromBitList
+              [ cond ? (0, old)
+              | (cond, old) <-
+                  zip (toBitList $ req.streamCacheReqZeroBits.val)
+                      (toBitList $ dataMemB.outBE) ]
       -- Update data memory
       storeBE dataMemB
         dataMemAddr
         ones
-        writeData
+        (if req.streamCacheReqZeroBits.valid then writeZeroes else writeData)
       -- Move back to initial state
       respState <== 0
 

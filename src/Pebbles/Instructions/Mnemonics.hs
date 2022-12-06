@@ -72,6 +72,9 @@ data Mnemonic =
     -- Custom extension (Cache Management)
   | CACHE_FLUSH_LINE
 
+    -- Custom extension (Fast zeroing)
+  | FAST_ZERO
+
     -- Custom extension (SIMT convergence)
   | SIMT_PUSH
   | SIMT_POP

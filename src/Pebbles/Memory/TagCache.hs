@@ -1,5 +1,5 @@
 module Pebbles.Memory.TagCache
-  ( makeTagCache
+  ( makeStreamCache
   , StreamCacheReqId
   , StreamCacheReq(..)
   , StreamCacheResp(..)
@@ -17,7 +17,6 @@ module Pebbles.Memory.TagCache
 #define StreamCacheLogMaxInflight     TagCacheLogMaxInflight
 #define StreamCachePendingReqsPerWay  TagCachePendingReqsPerWay
 #define StreamCacheAddrWidth          (DRAMAddrWidth-5)
-#define makeStreamCache               makeTagCache
 
 -- Cache code
 #include <Pebbles/Memory/StreamCache.hs>
