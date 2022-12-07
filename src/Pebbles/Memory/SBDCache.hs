@@ -318,9 +318,13 @@ makeSBDCache dramResps = do
     -- Fast zeroing loop (local cache lines)
     when enFastZeroing do
       when (state.val .==. 5) do
-        -- Is address in the cache?
+        -- Is current line being zeroed?
+        let tagBase = getTag (zeroingBaseAddr.val # 0)
+        let tagEnd = getTag (zeroingEndAddr.val # 0)
         let isHit = metaMem.out.lineValid .&&.
-                      tag .==. metaMem.out.lineTag
+                      metaMem.out.lineTag .>=. tagBase .&&.
+                      metaMem.out.lineTag .<=. tagEnd
+
         -- If so, zero the line
         when isHit do
           storeBE dataMem lineNum ones 0
