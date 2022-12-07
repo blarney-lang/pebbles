@@ -13,7 +13,7 @@
 // ==========
 
 // Default socket name to bind to
-#define JTAGUART_SOCKET_NAME "jtaguart1"
+#define JTAGUART_SOCKET_NAME_BASE "jtaguart"
 
 // Max size of internal queues
 #define JTAGUART_WQUEUE_SIZE 64
@@ -57,8 +57,15 @@ struct JTAGUART {
     // Ignore SIGPIPE
     signal(SIGPIPE, SIG_IGN);
 
+    // Socket name
+    char* cableId = getenv("PEBBLES_CABLE_ID");
+    if (cableId == NULL) cableId = "1";
+    char sockName[1024];
+    snprintf(sockName, sizeof(sockName), "%s%s",
+      JTAGUART_SOCKET_NAME_BASE, cableId);
+
     // Initialise sockets
-    sock = socketListen(JTAGUART_SOCKET_NAME);
+    sock = socketListen(sockName);
     conn = -1;
   }
 
