@@ -59,10 +59,9 @@ struct JTAGUART {
 
     // Socket name
     char* cableId = getenv("PEBBLES_CABLE_ID");
-    if (cableId == NULL) cableId = "1";
     char sockName[1024];
     snprintf(sockName, sizeof(sockName), "%s%s",
-      JTAGUART_SOCKET_NAME_BASE, cableId);
+      JTAGUART_SOCKET_NAME_BASE, cableId == NULL ? "1" : cableId);
 
     // Initialise sockets
     sock = socketListen(sockName);
