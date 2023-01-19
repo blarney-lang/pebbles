@@ -366,6 +366,7 @@ makeSIMTPipeline c inputs =
 
     -- Count DRAM accesses for performance stats
     dramAccessCount :: Reg (Bit 32) <- makeReg 0
+    dramTotalAccessCount :: Reg (Bit 32) <- makeReg 0
 
     -- Triggers from each execute unit to increment instruction count
     incInstrCountRegs <- replicateM SIMTLanes (makeDReg false)
@@ -529,6 +530,12 @@ makeSIMTPipeline c inputs =
             dramAccessCount.val +
                zeroExtend inputs.simtDRAMStatSigs.dramLoadSig +
                  zeroExtend inputs.simtDRAMStatSigs.dramStoreSig
+
+        -- Total DRAM accesses
+        dramTotalAccessCount <==
+         dramTotalAccessCount.val +
+            zeroExtend inputs.simtDRAMStatSigs.dramLoadSig +
+              zeroExtend inputs.simtDRAMStatSigs.dramStoreSig
 
     -- ===============
     -- Vector Pipeline
@@ -1780,6 +1787,8 @@ makeSIMTPipeline c inputs =
                       scalarAbortCount.val
                   , statId .==. simtStat_DRAMAccesses -->
                       dramAccessCount.val
+                  , statId .==. simtStat_TotalDRAMAccesses -->
+                      dramTotalAccessCount.val
                   ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)

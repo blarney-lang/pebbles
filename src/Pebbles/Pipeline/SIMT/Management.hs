@@ -56,6 +56,9 @@ simtStat_ScalarAborts = SIMTStatId 8
 -- | DRAM accesses (loads and stores)
 simtStat_DRAMAccesses = SIMTStatId 9
 
+-- | Total DRAM accesses, not reset on kernel initialisation
+simtStat_TotalDRAMAccesses = SIMTStatId 10
+
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
   SIMTReq {
