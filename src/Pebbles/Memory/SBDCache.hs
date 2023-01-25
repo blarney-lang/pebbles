@@ -319,16 +319,16 @@ makeSBDCache dramResps = do
     when enFastZeroing do
       when (state.val .==. 5) do
         -- Is current line being zeroed?
-        let tagBase = getTag (zeroingBaseAddr.val # 0)
-        let tagEnd = getTag (zeroingEndAddr.val # 0)
+        let lineAddr = metaMem.out.lineTag # lineNum
         let isHit = metaMem.out.lineValid .&&.
-                      metaMem.out.lineTag .>=. tagBase .&&.
-                      metaMem.out.lineTag .<=. tagEnd
+                      lineAddr .>=. zeroingBaseAddr.val .&&.
+                      lineAddr .<=. zeroingEndAddr.val
 
-        -- If so, zero the line
+        -- If so, zero the line and mark as clean
         when isHit do
           storeBE dataMem lineNum ones 0
           store tagBitsMem lineNum 0
+          store metaMem lineNum (metaMem.out { lineDirty = false })
 
         -- Is zeroing loop complete?
         let done = zeroingCount.val .==. reqReg.val.memReqData
