@@ -25,57 +25,61 @@ makeCapMemReqSerialiser :: forall n t_id. (KnownNat n, Bits t_id) =>
   -> Module (Sink (t_id, Vec n (Option CapMemReq), ScalarisedOperand))
      -- ^ Sink for capability memory requests
 makeCapMemReqSerialiser memReqSink = do
+  -- Request buffer
+  reqQueue <- makePipelineQueue 1
+
   -- Are we currently serialising a request?
   busy :: Reg (Bit 1) <- makeReg false
 
-  -- Register for request currently being serialised
-  reqReg :: Reg (t_id, Vec n (Option CapMemReq), ScalarisedOperand) <-
-    makeReg dontCare
-
   always do
-    when (busy.val .&&. memReqSink.canPut) do
-      -- Put the second (final) flits of the serialised requests
-      let stdReqs =
-            [ Option valid
-                req.capMemReqStd {
-                  memReqData = req.capMemReqUpperData
-                , memReqAddr = req.capMemReqStd.memReqAddr + 4
-                , memReqIsFinal = true
-                }
-            | Option valid req <- toList reqReg.val._1 ]
-      memReqSink.put (reqReg.val._0, fromList stdReqs,
-                        reqReg.val._2.scalarisedCapVal)
-      -- Serialisation complete
-      busy <== false
+    when (reqQueue.canDeq .&&. memReqSink.canPut) do
+      let (id, reqs, scal) = reqQueue.first
+      if busy.val
+        then do
+          -- Put the second (final) flits of the serialised requests
+          let stdReqs =
+                [ Option valid
+                    req.capMemReqStd {
+                      memReqData = req.capMemReqUpperData
+                    , memReqAddr = req.capMemReqStd.memReqAddr + 4
+                    , memReqIsFinal = true
+                    }
+                | Option valid req <- toList reqs ]
+          memReqSink.put (id, fromList stdReqs, scal.scalarisedCapVal)
+          -- Consume input request
+          reqQueue.deq
+          -- Serialisation complete
+          busy <== false
+        else do
+          -- A capability access will require serialisation
+          let isCapAccess = orList
+                [ valid .&&. r.capMemReqIsCapAccess
+                | Option valid r <- toList reqs ]
+          busy <== isCapAccess
+          -- Consume input request
+          when (inv isCapAccess) do reqQueue.deq
+          -- The first flits of the serialised requests 
+          let stdReqs =
+                [ Option valid
+                    r.capMemReqStd {
+                      -- If it's a capability access, disable final bit
+                      memReqIsFinal = inv r.capMemReqIsCapAccess
+                    }
+                | Option valid r <- toList reqs ]
+          -- FIXME: unsatisfying to set tag bit of lower word of
+          -- scalarised cap vector like this
+          let scalTagBit = orList
+                [ r.valid ? (r.val.capMemReqIsCapAccess, false)
+                | r <- toList reqs ]
+          let stdScal = fmap (\s ->
+                          ScalarVal { val = scalTagBit # s.val
+                                    , stride = s.stride })
+                            scal.scalarisedVal
+          -- Produce output request
+          memReqSink.put (id, fromList stdReqs, stdScal)
 
-  return
-    Sink {
-      canPut = inv busy.val .&&. memReqSink.canPut
-    , put = \(id, reqs, scal) -> do
-        reqReg <== (id, reqs, scal)
-        -- A capability access will require serialisation
-        busy <== orList
-          [ valid .&&. r.capMemReqIsCapAccess
-          | Option valid r <- toList reqs ]
-        -- Put the first flits of the serialised requests 
-        let stdReqs =
-              [ Option valid
-                  r.capMemReqStd {
-                    -- If it's a capability access, disable final bit
-                    memReqIsFinal = inv r.capMemReqIsCapAccess
-                  }
-              | Option valid r <- toList reqs ]
-        -- FIXME: unsatisfying to set tag bit of lower word of
-        -- scalarised cap vector like this
-        let scalTagBit = orList
-              [ r.valid ? (r.val.capMemReqIsCapAccess, false)
-              | r <- toList reqs ]
-        let stdScal = fmap (\s ->
-                        ScalarVal { val = scalTagBit # s.val
-                                  , stride = s.stride })
-                          scal.scalarisedVal
-        memReqSink.put (id, fromList stdReqs, stdScal)
-    }
+
+  return (toSink reqQueue)
 
 -- | Specialisation of 'makeCapMemReqSerialiser' to a single request
 makeCapMemReqSerialiserOne :: forall t_id. Bits t_id =>
