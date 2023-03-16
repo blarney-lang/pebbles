@@ -41,7 +41,7 @@ decodeCHERI =
   , "0001000 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetBounds
   , "imm[11:0]      rs1<5> 010 rd<5> 1011011" --> CSetBounds
   , "0001001 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetBoundsExact
-  , "0010100 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSub
+  , "0010100 rs2<5> rs1<5> 000 rd<5> 1011011" --> SUB
   , "1111111 01010  rs1<5> 000 rd<5> 1011011" --> CMove
   , "1111111 01011  rs1<5> 000 rd<5> 1011011" --> CClearTag
   , "0000001 scr<5> rs1<5> 000 rd<5> 1011011" --> CSpecialRW
@@ -180,12 +180,6 @@ executeCHERI csrUnit memReqs s = do
       $ flip setType newType
       $ flip setPerms newPerms
       $ cA )
-
-  -- Capability subtraction
-  -- ----------------------
-
-  when (s.opcode `is` [CSub]) do
-    s.result <== addrA - getAddr cB
 
   -- Capability jump
   -- ---------------
