@@ -347,8 +347,11 @@ makeSIMTPipeline c inputs =
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
-    -- Program counter capability registers
-    pccShared :: Reg CapPipe <- makeReg dontCare
+    -- Per-warp program counter capability registers, if shared PCC enabled
+    pccShared :: RAM (Bit SIMTLogWarps) CapMem <-
+      if enableCHERI && c.useSharedPCC
+        then makeDualRAM
+        else return nullRAM
 
     -- Basic stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
@@ -438,22 +441,21 @@ makeSIMTPipeline c inputs =
               }
 
         -- Initialise per-warp state
+        let initPCC = almightyCapMemVal -- TODO: constrain, or take as param
         sequence_
           [ do stateMem.store (warpIdCounter.val) initState
                if enableCHERI
-                 then do
-                   let initPCC = almightyCapMemVal -- TODO: constrain
-                   pccMem.store (warpIdCounter.val) initPCC
+                 then pccMem.store (warpIdCounter.val) initPCC
                  else return ()
           | (stateMem, pccMem) <- zip stateMemsA pccMems ]
+
+        -- Intialise PCC per warp
+        pccShared.store warpIdCounter.val initPCC
 
         when (warpIdCounter.val .==. 0) do
           -- Register file initialisation
           regFile.init
           capRegFile.init
-
-          -- Intialise PCC per kernel
-          pccShared <== almightyCapPipeVal -- TODO: constrain
 
           -- Reset various state
           excGlobal <== false
@@ -722,6 +724,10 @@ makeSIMTPipeline c inputs =
       let pc = state2.simtPC
       instrMemA.load (toInstrAddr pc)
 
+      -- Load per-warp PCC
+      when c.useSharedPCC do
+        pccShared.load warpId2
+
       -- Get vector register mask for current warp
       when enableSpill do
         let chooseRF i c =
@@ -782,9 +788,8 @@ makeSIMTPipeline c inputs =
     let warpId3 = stage2Delay warpId2
     let state3 = stage2Delay state2
     let pcc3 = stage2Delay
-          (let pccToUse = if c.useSharedPCC then pccShared.val
-                                            else fromMem (unpack pcc2)
-               cap = setAddr pccToUse state2.simtPC
+          (let pccToUse = if c.useSharedPCC then pccShared.out else pcc2
+               cap = setAddr (fromMem (unpack pccToUse)) state2.simtPC
             in decodeCapPipe cap.value)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
