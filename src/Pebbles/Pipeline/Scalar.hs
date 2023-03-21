@@ -123,7 +123,7 @@ makeScalarPipeline c pipeIns =
     -- Instruction operand registers
     regA :: Reg (Bit 32) <- makeReg dontCare
     regB :: Reg (Bit 32) <- makeReg dontCare
-    regBorImm :: Reg (Bit 32) <- makeReg dontCare
+    regBorImm <- makeReg dontCare
 
     -- Capbility operand registers (meta-data only)
     capA :: Reg CapPipeMeta <- makeReg dontCare
@@ -193,10 +193,12 @@ makeScalarPipeline c pipeIns =
     -- ==========================
 
     always do
-      let pcFetch = pcNext.active ? (pcNext.val, pc1.val + 4)
+      let pcPlus4 = pc1.val + 4
+      let pcFetch = pcNext.active ? (pcNext.val, pcPlus4)
 
       -- PC capability meta-data for fetch
-      let pccFetch = pccNext.active ? (pccNext.val, pcc1.val)
+      let pccFetch = pccNext.active ?
+            (pccNext.val, (setAddr pcc1.val pcPlus4).value)
 
       -- Index the instruction memory
       let instrAddr = truncateCast (slice @31 @2 pcFetch)
@@ -211,10 +213,7 @@ makeScalarPipeline c pipeIns =
         else do
           pc1 <== pcFetch
           go1 <== true
-
-          if enableCHERI
-            then pcc1 <== pccFetch
-            else return ()
+          when enableCHERI do pcc1 <== pccFetch
 
     -- Stage 1: Operand Fetch
     -- ======================
@@ -226,13 +225,7 @@ makeScalarPipeline c pipeIns =
           go2 <== true
           instr2 <== instrMem.out
           pc2 <== pc1.val
-
-          if enableCHERI
-            then do
-              -- Ensure the PCC is representable
-              let cap = setAddr (pcc1.val) (pc1.val)
-              pcc2 <== decodeCapPipe (cap.value)
-            else return ()
+          when enableCHERI do pcc2 <== decodeCapPipe pcc1.val
 
       -- Register file indicies
       let idxA = stallWire.val ? (srcA instr2.val, srcA instrMem.out)
@@ -285,10 +278,13 @@ makeScalarPipeline c pipeIns =
               else regFileB.out
 
     -- Use "imm" field if valid, otherwise use register b
-    let bOrImm = if Map.member "imm" fieldMap
+    let bOrImm = if Map.member "imm" fieldMap && Map.member "rs2" fieldMap
                    then let imm = getBitField fieldMap "imm"
-                        in imm.valid ? (imm.val, b)
-                   else b
+                            rs2 = getBitField fieldMap "rs2" :: Option RegId
+                            imm_b = imm.valid ? (imm.val, b)
+                            b_imm = rs2.valid ? (b, imm.val)
+                        in (imm_b, b_imm)
+                   else (b, b)
 
     -- Capability register forwarding
     let a_cap = if c.enableRegForwarding
@@ -368,12 +364,12 @@ makeScalarPipeline c pipeIns =
         instr = instr3.val
       , opA = regA.val
       , opB = regB.val
-      , opBorImm = regBorImm.val
+      , immOrOpB = fst regBorImm.val
+      , opBorImm = snd regBorImm.val
       , opAIndex = srcA instr3.val
       , opBIndex = srcB instr3.val
       , resultIndex = dst instr3.val
-      , pc = ReadWrite (pc3.val) \pcNew -> do
-               pcNext <== pcNew
+      , pc = ReadWrite (pc3.val) \pcNew -> return ()
       , result = WriteOnly \x ->
                    when destNonZero do
                      resultWire <== x

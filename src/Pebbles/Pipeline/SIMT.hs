@@ -229,9 +229,9 @@ makeSIMTPipeline c inputs =
       unzip <$> replicateM SIMTLanes makeQuadRAM
 
     -- One program counter capability RAM (meta-data only) per lane
-    pccMems :: [RAM (Bit SIMTLogWarps) CapMem] <-
+    pccMems :: [RAM (Bit SIMTLogWarps) CapMemMeta] <-
       replicateM SIMTLanes $
-        if enableCHERI && not (c.useSharedPCC)
+        if enableCHERI && not c.useSharedPCC
           then makeDualRAM
           else return nullRAM
 
@@ -445,7 +445,7 @@ makeSIMTPipeline c inputs =
         sequence_
           [ do stateMem.store (warpIdCounter.val) initState
                if enableCHERI
-                 then pccMem.store (warpIdCounter.val) initPCC
+                 then pccMem.store (warpIdCounter.val) (upper initPCC)
                  else return ()
           | (stateMem, pccMem) <- zip stateMemsA pccMems ]
 
@@ -647,7 +647,7 @@ makeSIMTPipeline c inputs =
           stateMem.load warpId
 
         -- Load PCC for next warp on each lane
-        if enableCHERI && not (c.useSharedPCC)
+        if enableCHERI && not c.useSharedPCC
           then do
             forM_ pccMems \pccMem -> do
               pccMem.load warpId
@@ -707,7 +707,7 @@ makeSIMTPipeline c inputs =
       let activeList =
             [ state2 === s .&&.
                 if enableCHERI && not (c.useSharedPCC)
-                  then upper pcc2 .==. (upper pcc :: CapMemMeta)
+                  then pcc2 .==. pcc
                   else true
             | (s, pcc) <- zip stateMemOuts2 pccs2]
       let activeMask :: Bit SIMTLanes = fromBitList activeList
@@ -788,9 +788,10 @@ makeSIMTPipeline c inputs =
     let warpId3 = stage2Delay warpId2
     let state3 = stage2Delay state2
     let pcc3 = stage2Delay
-          (let pccToUse = if c.useSharedPCC then pccShared.out else pcc2
-               cap = setAddr (fromMem (unpack pccToUse)) state2.simtPC
-            in decodeCapPipe cap.value)
+          (let pccToUse = if c.useSharedPCC then pccShared.out
+                                            else pcc2 # state2.simtPC
+               cap = fromMem (unpack pccToUse)
+            in decodeCapPipe cap)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
     let spillFail3 = if enableSpill then spillFail3Reg.val else false
@@ -915,10 +916,13 @@ makeSIMTPipeline c inputs =
 
     -- Stage 5 register B or immediate
     let getRegBorImm reg = old $
-          if Map.member "imm" fieldMap4
+          if Map.member "imm" fieldMap4 && Map.member "rs2" fieldMap4
             then let imm = getBitField fieldMap4 "imm"
-                 in  imm.valid ? (imm.val, reg)
-            else reg
+                     rs2 = getBitField fieldMap4 "rs2" :: Option RegId
+                     imm_r = imm.valid ? (imm.val, reg)
+                     r_imm = rs2.valid ? (reg, imm.val)
+                 in  (imm_r, r_imm)
+            else (reg, reg)
     let vecRegBorImm5 = V.map getRegBorImm regFile.outB
 
     -- Propagate signals to stage 5
@@ -1061,14 +1065,16 @@ makeSIMTPipeline c inputs =
     resultCapWires :: [Wire CapMemMeta] <-
       replicateM SIMTLanes (makeWire dontCare)
 
+    -- Next PC
+    let pcPlusFour = state5.simtPC + 4
+
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regA regB regBorImm
                  capRegA capRegB stateMem incInstrCount pccMem
                  excLocal laneId resultWire resultCapWire pcChange = do
 
           -- Per lane interfacing
-          pcNextWire :: Wire (Bit 32) <-
-            makeWire (state5.simtPC + 4)
+          pcNextWire :: Wire (Bit 32) <- makeWire pcPlusFour
           pccNextWire :: Wire CapPipe <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
@@ -1082,12 +1088,12 @@ makeSIMTPipeline c inputs =
               instr = instr5
             , opA = regA
             , opB = regB
-            , opBorImm = regBorImm
+            , immOrOpB = fst regBorImm
+            , opBorImm = snd regBorImm
             , opAIndex = srcA instr5
             , opBIndex = srcB instr5
             , resultIndex = dst instr5
-            , pc = ReadWrite (state5.simtPC) \pcNew -> do
-                     pcNextWire <== pcNew
+            , pc = ReadWrite (state5.simtPC) \pcNew -> return ()
             , result = WriteOnly \writeVal ->
                          when destNonZero do
                            resultWire <== writeVal
@@ -1106,9 +1112,8 @@ makeSIMTPipeline c inputs =
             , capB = capRegB
             , pcc = pcc5
             , pccNew = WriteOnly \pccNew -> do
-                if enableCHERI
-                  then pccNextWire <== pccNew
-                  else return ()
+                pcNextWire <== getAddr pccNew
+                pccNextWire <== pccNew
             , resultCap = WriteOnly \cap ->
                             when destNonZero do
                               let capMem = pack (toMem cap)
@@ -1145,8 +1150,9 @@ makeSIMTPipeline c inputs =
                   , simtNestLevel = (nestLevel + nestInc) - nestDec
                   , simtRetry = retryWire.val
                   }
-              when (pccNextWire.active) do
-                pccMem.store warpId5 (pack (toMem pccNextWire.val))
+              when (delay false pccNextWire.active) do
+                pccMem.store (old warpId5)
+                             (old $ upper $ pack $ toMem pccNextWire.val)
 
               -- Increment instruction count
               when (inv retryWire.val) do
@@ -1406,7 +1412,7 @@ makeSIMTPipeline c inputs =
     -- Instruciton operand registers
     scalarOpA4 :: Reg (ScalarVal 32) <- makeReg dontCare
     scalarOpB4 :: Reg (ScalarVal 32) <- makeReg dontCare
-    scalarOpBOrImm4 :: Reg (ScalarVal 32) <- makeReg dontCare
+    scalarOpBOrImm4 <- makeReg dontCare
 
     -- Abort scalar pipeline if instruction turns out not to be scalarisable
     scalarAbort4 :: Reg (Bit 1) <- makeReg dontCare
@@ -1501,12 +1507,19 @@ makeSIMTPipeline c inputs =
             matchMap False c.scalarUnitDecodeStage scalarInstr3.val
 
       -- Use "imm" field if valid, otherwise use register b
-      let bOrImm = if Map.member "imm" scalarFieldMap3
-                     then let imm = getBitField scalarFieldMap3 "imm"
-                          in imm.valid ?
-                               ( ScalarVal { val = imm.val, stride = 0 }
-                               , regFile.scalarD.val )
-                     else regFile.scalarD.val
+      let bOrImm =
+            if Map.member "imm" scalarFieldMap3 &&
+               Map.member "rs2" scalarFieldMap3
+              then
+                let imm = getBitField scalarFieldMap3 "imm"
+                    rs2 = getBitField scalarFieldMap3 "rs2" :: Option RegId
+                    choice = ( ScalarVal { val = imm.val, stride = 0 }
+                             , regFile.scalarD.val )
+                    swap (x, y) = (y, x)
+                    imm_r = imm.valid ? choice
+                    r_imm = rs2.valid ? (swap choice)
+                 in (imm_r, r_imm)
+              else (regFile.scalarD.val, regFile.scalarD.val)
 
       always do
         -- Trigger next stage
@@ -1571,7 +1584,8 @@ makeSIMTPipeline c inputs =
           instr = scalarInstr4.val
         , opA = scalarOpA4.val.val
         , opB = scalarOpB4.val.val
-        , opBorImm = scalarOpBOrImm4.val.val
+        , immOrOpB = (fst scalarOpBOrImm4.val).val
+        , opBorImm = (snd scalarOpBOrImm4.val).val
         , opAIndex = srcA scalarInstr4.val
         , opBIndex = srcB scalarInstr4.val
         , resultIndex = dst scalarInstr4.val
@@ -1626,9 +1640,9 @@ makeSIMTPipeline c inputs =
                 when (Map.findWithDefault false addOp scalarTagMap4) do
                   when (dst scalarInstr4.val .!=. 0) do
                     scalarResultWire <==
-                      scalarOpA4.val.val + scalarOpBOrImm4.val.val
+                      scalarOpA4.val.val + (fst scalarOpBOrImm4.val).val
                     scalarResultStrideWire <==
-                      scalarOpA4.val.stride + scalarOpBOrImm4.val.stride
+                      scalarOpA4.val.stride + (fst scalarOpBOrImm4.val).stride
 
         -- Lookup scalar prediction table
         scalarTableB.load (toInstrAddr scalarPCNextWire.val)
