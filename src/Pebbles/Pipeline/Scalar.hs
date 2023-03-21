@@ -369,7 +369,8 @@ makeScalarPipeline c pipeIns =
       , opAIndex = srcA instr3.val
       , opBIndex = srcB instr3.val
       , resultIndex = dst instr3.val
-      , pc = ReadWrite (pc3.val) \pcNew -> return ()
+      , pc = ReadWrite pc3.val \pcNew -> do
+          pcNext <== pcNew
       , result = WriteOnly \x ->
                    when destNonZero do
                      resultWire <== x

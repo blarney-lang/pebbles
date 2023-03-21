@@ -1093,7 +1093,8 @@ makeSIMTPipeline c inputs =
             , opAIndex = srcA instr5
             , opBIndex = srcB instr5
             , resultIndex = dst instr5
-            , pc = ReadWrite (state5.simtPC) \pcNew -> return ()
+            , pc = ReadWrite (state5.simtPC) \pcNew -> do
+                pcNextWire <== pcNew
             , result = WriteOnly \writeVal ->
                          when destNonZero do
                            resultWire <== writeVal
