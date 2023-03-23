@@ -229,11 +229,12 @@ makeSIMTPipeline c inputs =
       unzip <$> replicateM SIMTLanes makeQuadRAM
 
     -- One program counter capability RAM (meta-data only) per lane
-    pccMems :: [RAM (Bit SIMTLogWarps) CapMemMeta] <-
-      replicateM SIMTLanes $
-        if enableCHERI && not c.useSharedPCC
-          then makeDualRAM
-          else return nullRAM
+    (pccMemsA, pccMemsB) :: ([RAM (Bit SIMTLogWarps) CapMemMeta],
+                             [RAM (Bit SIMTLogWarps) CapMemMeta]) <-
+      unzip <$> (replicateM SIMTLanes $
+                   if enableCHERI && not c.useSharedPCC
+                     then makeQuadRAM
+                     else return (nullRAM, nullRAM))
 
     -- Instruction memory
     (instrMemA, instrMemB) ::
@@ -276,7 +277,7 @@ makeSIMTPipeline c inputs =
             then makeSIMTScalarisingRegFile
                    SIMTScalarisingRegFileConfig {
                      useAffine = False
-                   , useScalarUnit = False
+                   , useScalarUnit = c.useScalarUnit
                    , regInitVal = nullCapMemMetaVal
                    , size = SIMTCapRegFileSize
                    , useDynRegSpill =
@@ -348,10 +349,11 @@ makeSIMTPipeline c inputs =
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
     -- Per-warp program counter capability registers, if shared PCC enabled
-    pccShared :: RAM (Bit SIMTLogWarps) CapMem <-
+    (pccSharedA, pccSharedB) :: (RAM (Bit SIMTLogWarps) CapPipe,
+                                 RAM (Bit SIMTLogWarps) CapPipe) <-
       if enableCHERI && c.useSharedPCC
-        then makeDualRAM
-        else return nullRAM
+        then makeQuadRAM
+        else return (nullRAM, nullRAM)
 
     -- Basic stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
@@ -447,10 +449,11 @@ makeSIMTPipeline c inputs =
                if enableCHERI
                  then pccMem.store (warpIdCounter.val) (upper initPCC)
                  else return ()
-          | (stateMem, pccMem) <- zip stateMemsA pccMems ]
+          | (stateMem, pccMem) <- zip stateMemsA pccMemsA ]
 
         -- Intialise PCC per warp
-        pccShared.store warpIdCounter.val initPCC
+        -- TODO: constrain, or take as param
+        pccSharedA.store warpIdCounter.val almightyCapPipeVal
 
         when (warpIdCounter.val .==. 0) do
           -- Register file initialisation
@@ -649,7 +652,7 @@ makeSIMTPipeline c inputs =
         -- Load PCC for next warp on each lane
         if enableCHERI && not c.useSharedPCC
           then do
-            forM_ pccMems \pccMem -> do
+            forM_ pccMemsA \pccMem -> do
               pccMem.load warpId
           else return ()
 
@@ -683,7 +686,7 @@ makeSIMTPipeline c inputs =
     let states2_tmp =
           [iterateN (stage1Substages-1) buffer (mem.out) | mem <- stateMemsA]
     let pccs2_tmp =
-          [iterateN (stage1Substages-1) buffer (mem.out) | mem <- pccMems]
+          [iterateN (stage1Substages-1) buffer (mem.out) | mem <- pccMemsA]
   
     -- State and PCC of leader
     let state2 = buffer (states2_tmp ! leaderIdx)
@@ -726,7 +729,7 @@ makeSIMTPipeline c inputs =
 
       -- Load per-warp PCC
       when c.useSharedPCC do
-        pccShared.load warpId2
+        pccSharedA.load warpId2
 
       -- Get vector register mask for current warp
       when enableSpill do
@@ -787,11 +790,10 @@ makeSIMTPipeline c inputs =
                                        else delay zero x
     let warpId3 = stage2Delay warpId2
     let state3 = stage2Delay state2
-    let pcc3 = stage2Delay
-          (let pccToUse = if c.useSharedPCC then pccShared.out
-                                            else pcc2 # state2.simtPC
-               cap = fromMem (unpack pccToUse)
-            in decodeCapPipe cap)
+    let pcc3 = stage2Delay $ decodeCapPipe $
+          if c.useSharedPCC
+            then (setAddr pccSharedA.out state2.simtPC).value
+            else fromMem $ unpack (pcc2 # state2.simtPC)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
     let spillFail3 = if enableSpill then spillFail3Reg.val else false
@@ -945,8 +947,10 @@ makeSIMTPipeline c inputs =
     -- Determine if this instruction is scalarisable
     when c.useRegFileScalarisation do
       always do
-        let isAffineA = regFile.scalarA.valid
-        let isAffineB = regFile.scalarB.valid
+        let isAffineA = regFile.scalarA.valid .&&.
+              if enableCHERI then capRegFile.scalarA.valid else true
+        let isAffineB = regFile.scalarB.valid .&&.
+              if enableCHERI then capRegFile.scalarB.valid else true
         let isUniformA = isAffineA .&&. regFile.scalarA.val.stride .==. 0
         let isUniformB = isAffineB .&&. regFile.scalarB.val.stride .==. 0
         let allUniform = (usesA .==>. isUniformA) .&&. (usesB .==>. isUniformB)
@@ -1177,7 +1181,7 @@ makeSIMTPipeline c inputs =
                <*> ZipList (toList vecCapRegB5)
                <*> ZipList stateMemsA
                <*> ZipList incInstrCountRegs
-               <*> ZipList pccMems
+               <*> ZipList pccMemsA
                <*> ZipList excLocals
                <*> ZipList [0..]
                <*> ZipList resultWires
@@ -1375,10 +1379,6 @@ makeSIMTPipeline c inputs =
     -- Scalar Pipeline
     -- ===============
 
-    -- XXX: CHERI is not yet supported in the SIMT scalar pipeline
-    staticAssert (c.useScalarUnit <= not enableCHERI)
-      "CHERI is not yet supported in the SIMT scalar pipeline"
-
     -- Scalar pipeline stage trigger signals
     scalarGo0 :: Reg (Bit 1) <- makeDReg false
     scalarGo1 :: Reg (Bit 1) <- makeDReg false
@@ -1405,6 +1405,11 @@ makeSIMTPipeline c inputs =
     scalarState4 :: Reg SIMTThreadState <- makeReg dontCare
     scalarState5 :: Reg SIMTThreadState <- makeReg dontCare
 
+    -- Warp PCC, per pipeline stage
+    scalarPCC2 :: Reg CapPipe <- makeReg dontCare
+    scalarPCC3 :: Reg Cap <- makeReg dontCare
+    scalarPCC4 :: Reg Cap <- makeReg dontCare
+
     -- Warp suspension status, per pipeline stage
     scalarIsSusp3 :: Reg (Bit 1) <- makeReg dontCare
     scalarIsSusp4 :: Reg (Bit 1) <- makeReg dontCare
@@ -1414,6 +1419,8 @@ makeSIMTPipeline c inputs =
     scalarOpA4 :: Reg (ScalarVal 32) <- makeReg dontCare
     scalarOpB4 :: Reg (ScalarVal 32) <- makeReg dontCare
     scalarOpBOrImm4 <- makeReg dontCare
+    scalarCapA4 :: Reg Cap <- makeReg dontCare
+    scalarCapB4 :: Reg Cap <- makeReg dontCare
 
     -- Abort scalar pipeline if instruction turns out not to be scalarisable
     scalarAbort4 :: Reg (Bit 1) <- makeReg dontCare
@@ -1465,6 +1472,11 @@ makeSIMTPipeline c inputs =
         -- Lookup warp's PC
         (head stateMemsB).load warpId
 
+        -- Lookup warp's PCC
+        if c.useSharedPCC
+          then do pccSharedB.load warpId
+          else do (head pccMemsB).load warpId
+
         -- Trigger stage 1
         when scalarGo0.val do
           scalarGo1 <== true
@@ -1475,6 +1487,10 @@ makeSIMTPipeline c inputs =
 
       always do
         let state = (head stateMemsB).out
+        let pcc =
+              if c.useSharedPCC
+                then (setAddr pccSharedB.out state.simtPC).value
+                else fromMem $ unpack ((head pccMemsB).out # state.simtPC)
 
         -- Load next instruction
         instrMemB.load (toInstrAddr state.simtPC)
@@ -1483,6 +1499,7 @@ makeSIMTPipeline c inputs =
         scalarGo2 <== scalarGo1.val
         scalarWarpId2 <== scalarWarpId1.val
         scalarState2 <== state
+        scalarPCC2 <== pcc
 
       -- Stage 2: Operand Fetch
       -- ======================
@@ -1491,6 +1508,9 @@ makeSIMTPipeline c inputs =
         -- Fetch operands from register file
         regFile.loadScalarC (scalarWarpId2.val, srcA instrMemB.out)
         regFile.loadScalarD (scalarWarpId2.val, srcB instrMemB.out)
+        when enableCHERI do
+          capRegFile.loadScalarC (scalarWarpId2.val, srcA instrMemB.out)
+          capRegFile.loadScalarD (scalarWarpId2.val, srcB instrMemB.out)
         -- Is any thread in warp suspended?
         scalarIsSusp3 <== orList [ map (.val) regs ! scalarWarpId2.val
                                  | regs <- suspBits ]
@@ -1498,6 +1518,7 @@ makeSIMTPipeline c inputs =
         scalarGo3 <== scalarGo2.val
         scalarWarpId3 <== scalarWarpId2.val
         scalarState3 <== scalarState2.val
+        scalarPCC3 <== decodeCapPipe scalarPCC2.val
         scalarInstr3 <== instrMemB.out
 
       -- Stage 3: Operand Latch
@@ -1529,15 +1550,35 @@ makeSIMTPipeline c inputs =
         scalarOpA4 <== regFile.scalarC.val
         scalarOpB4 <== regFile.scalarD.val
         scalarOpBOrImm4 <== bOrImm
+        when enableCHERI do
+          scalarCapA4 <==
+            decodeCapMem (capRegFile.scalarC.val.val #
+                          regFile.scalarC.val.val)
+          scalarCapB4 <==
+            decodeCapMem (capRegFile.scalarD.val.val #
+                          regFile.scalarD.val.val)
         scalarWarpId4 <== scalarWarpId3.val
         scalarState4 <== scalarState3.val
+        scalarPCC4 <== scalarPCC3.val
         scalarInstr4 <== scalarInstr3.val
         scalarIsSusp4 <== scalarIsSusp3.val
+        -- Check PCC
+        let pccFail =
+              case c.checkPCCFunc of
+                -- CHERI disabled; no check required
+                Nothing -> false
+                -- Check PCC
+                Just checkPCC ->
+                  let table = checkPCC scalarPCC3.val
+                      exception = orList [cond | (cond, _) <- table]
+                   in exception .&&. scalarGo3.val
         -- Check that instruction can indeed run on scalar unit
         let usesA = isFieldInUse "rs1" scalarFieldMap3
         let usesB = isFieldInUse "rs2" scalarFieldMap3
-        let isAffineA = regFile.scalarC.valid
-        let isAffineB = regFile.scalarD.valid
+        let isAffineA = regFile.scalarC.valid .&&.
+              if enableCHERI then capRegFile.scalarC.valid else true
+        let isAffineB = regFile.scalarD.valid .&&.
+              if enableCHERI then capRegFile.scalarD.valid else true
         let isUniformA = isAffineA .&&. regFile.scalarC.val.stride .==. 0
         let isUniformB = isAffineB .&&. regFile.scalarD.val.stride .==. 0
         let allUniform = (usesA .==>. isUniformA) .&&. (usesB .==>. isUniformB)
@@ -1554,17 +1595,22 @@ makeSIMTPipeline c inputs =
         let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op scalarTagMap3
               | op <- c.scalarUnitAllowList ]
-        scalarAbort4 <== inv areOperandsScalar .||. inv isOpcodeScalarisable
+        scalarAbort4 <== inv areOperandsScalar
+                    .||. inv isOpcodeScalarisable
+                    .||. pccFail
        
       -- Stage 4: Execute & Suspend
       -- ==========================
 
       -- Execute stage wires
-      scalarPCNextWire :: Wire (Bit 32) <-
-        makeWire (scalarState4.val.simtPC + 4)
+      let pcPlusFour = scalarState4.val.simtPC + 4
+      scalarPCNextWire :: Wire (Bit 32) <- makeWire pcPlusFour
       scalarResultWire :: Wire (Bit 32) <- makeWire dontCare
       scalarResultStrideWire :: Wire (Bit SIMTAffineScalarisationBits) <-
         makeWire 0
+      scalarPCCNextWire :: Wire CapPipe <-
+        makeWire (setAddrUnsafe scalarPCC4.val.capPipe pcPlusFour)
+      scalarResultCapWire :: Wire CapMemMeta <- makeWire dontCare
 
       let scalarTagMap4 = Map.map old scalarTagMap3
 
@@ -1595,6 +1641,9 @@ makeSIMTPipeline c inputs =
         , result = WriteOnly \x ->
                      when (dst scalarInstr4.val .!=. 0) do
                        scalarResultWire <== x
+                       if enableCHERI
+                         then scalarResultCapWire <== nullCapMemMetaVal
+                         else return ()
         , suspend = do scalarSuspend5 <== true
         , retry = do scalarRetry5 <== true
         , opcode =
@@ -1604,13 +1653,20 @@ makeSIMTPipeline c inputs =
                 Nothing -> scalarTagMap4
                 Just addOp -> Map.insert addOp false scalarTagMap4
         , trap = \code -> do
+            -- TODO: handle trap
             display "Scalar unit trap: code=" code
                     " pc=0x" (formatHex 8 scalarState4.val.simtPC)
-        , capA = dontCare
-        , capB = dontCare
-        , pcc = dontCare
-        , pccNew = WriteOnly \pccNew -> return ()
-        , resultCap = WriteOnly \cap -> return ()
+        , capA = scalarCapA4.val
+        , capB = scalarCapB4.val
+        , pcc = scalarPCC4.val
+        , pccNew = WriteOnly \pccNew -> do
+            scalarPCNextWire <== getAddr pccNew
+            scalarPCCNextWire <== pccNew
+        , resultCap = WriteOnly \cap ->
+            when (dst scalarInstr4.val .!=. 0) do
+              let capMem = pack (toMem cap)
+              scalarResultWire <== lower capMem
+              scalarResultCapWire <== upper capMem
         }
 
       always do
@@ -1644,6 +1700,8 @@ makeSIMTPipeline c inputs =
                       scalarOpA4.val.val + (fst scalarOpBOrImm4.val).val
                     scalarResultStrideWire <==
                       scalarOpA4.val.stride + (fst scalarOpBOrImm4.val).stride
+                    when enableCHERI do
+                      scalarResultCapWire <== nullCapMemMetaVal
 
         -- Lookup scalar prediction table
         scalarTableB.load (toInstrAddr scalarPCNextWire.val)
@@ -1678,6 +1736,13 @@ makeSIMTPipeline c inputs =
             sequence_
               [ stateMem.store scalarWarpId5.val newState
               | stateMem <- stateMemsB ]
+            -- Update PCC
+            when enableCHERI do
+              when (delay false scalarPCCNextWire.active) do
+                let newPCC = upper $ pack $ toMem $ old scalarPCCNextWire.val
+                sequence_
+                  [ pccMem.store scalarWarpId5.val newPCC
+                  | pccMem <- pccMemsB ]
 
           -- Reschedule warp
           if scalarAbort5.val .||. (inv scalarIsSusp5.val .&&.
@@ -1704,6 +1769,10 @@ makeSIMTPipeline c inputs =
             regFile.storeScalar dest
               ScalarVal { val = old scalarResultWire.val
                         , stride = old scalarResultStrideWire.val }
+            when enableCHERI do
+              capRegFile.storeScalar dest
+                ScalarVal { val = old scalarResultCapWire.val
+                          , stride = 0 }
           else do
             let resumeReqs = inputs.simtScalarResumeReqs
             when resumeReqs.canPeek do
@@ -1715,6 +1784,12 @@ makeSIMTPipeline c inputs =
                 -- Affine vectors not yet allowed on resume path
                 regFile.storeScalar dest
                   ScalarVal { val = req.resumeReqData, stride = 0 }
+                when enableCHERI do
+                  capRegFile.storeScalar dest
+                    ScalarVal { val = if req.resumeReqCap.valid
+                                        then req.resumeReqCap.val
+                                        else nullCapMemMetaVal
+                              , stride = 0 }
               -- Trigger warp resumption
               scalarResumeGo <== true
               scalarResumeWarpId <== info.warpId

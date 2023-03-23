@@ -87,14 +87,14 @@ getIsUnsignedLoad = makeFieldSelector decodeI "ul"
 executeI ::
      Maybe (Sink MulReq)
      -- ^ Optionally use multiplier to implement shifts
-  -> CSRUnit
+  -> Maybe CSRUnit
      -- ^ Access to CSRs
-  -> Sink MemReq
+  -> Maybe (Sink MemReq)
      -- ^ Access to memory
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeI shiftUnit csrUnit memReqs s = do
+executeI m_shiftUnit m_csrUnit m_memReqs s = do
   -- Add/sub/compare unit
   let AddOuts sum less equal = addUnit 
         AddIns {
@@ -122,7 +122,7 @@ executeI shiftUnit csrUnit memReqs s = do
   when (s.opcode `is` [LUI]) do
     s.result <== s.immOrOpB
 
-  case shiftUnit of
+  case m_shiftUnit of
 
     -- Use barrel shifter
     Nothing -> do
@@ -186,66 +186,74 @@ executeI shiftUnit csrUnit memReqs s = do
   when (s.opcode `is` [EBREAK]) do
     trap s exc_breakpoint
 
-  -- Memory fence
-  when (s.opcode `is` [FENCE]) do
-    if memReqs.canPut
-      then do
-        s.suspend
-        -- Send request to memory unit
-        put memReqs
-          MemReq {
-            memReqAccessWidth = dontCare
-          , memReqOp = memGlobalFenceOp
-          , memReqAMOInfo = dontCare
-          , memReqAddr = dontCare
-          , memReqData = dontCare
-          , memReqDataTagBit = 0
-          , memReqDataTagBitMask = 0
-          , memReqIsUnsigned = dontCare
-          , memReqIsFinal = true
-          }
-      else s.retry
+  -- CSRs
+  case m_csrUnit of
+    Nothing -> return ()
+    Just csrUnit ->
+      -- Control/status registers
+      when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
+        -- Condition for reading CSR
+        let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
+        -- Read CSR
+        x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
+        s.result <== x
+        -- Condition for writing CSR
+        let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
+        -- Determine operand
+        let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
+        -- Data to write for CSRRS/CSRRC
+        let maskedData = fromBitList
+              [ cond ? (s.opcode `is` [CSRRS], old)
+              | (old, cond) <- zip (toBitList x) (toBitList operand) ]
+        -- Data to write
+        let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
+        -- Write CSR
+        when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
 
-  -- Control/status registers
-  when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
-    -- Condition for reading CSR
-    let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
-    -- Read CSR
-    x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
-    s.result <== x
-    -- Condition for writing CSR
-    let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
-    -- Determine operand
-    let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
-    -- Data to write for CSRRS/CSRRC
-    let maskedData = fromBitList
-          [ cond ? (s.opcode `is` [CSRRS], old)
-          | (old, cond) <- zip (toBitList x) (toBitList operand) ]
-    -- Data to write
-    let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
-    -- Write CSR
-    when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
+  -- Memory
+  case m_memReqs of
+    Nothing -> return ()
+    Just memReqs -> do
+      -- Memory fence
+      when (s.opcode `is` [FENCE]) do
+        if memReqs.canPut
+          then do
+            s.suspend
+            -- Send request to memory unit
+            put memReqs
+              MemReq {
+                memReqAccessWidth = dontCare
+              , memReqOp = memGlobalFenceOp
+              , memReqAMOInfo = dontCare
+              , memReqAddr = dontCare
+              , memReqData = dontCare
+              , memReqDataTagBit = 0
+              , memReqDataTagBitMask = 0
+              , memReqIsUnsigned = dontCare
+              , memReqIsFinal = true
+              }
+          else s.retry
 
-  -- Memory access
-  when (s.opcode `is` [LOAD, STORE]) do
-    if memReqs.canPut
-      then do
-        -- Currently the memory subsystem doesn't issue store responses
-        -- so we make sure to only suspend on a load
-        let hasResp = s.opcode `is` [LOAD]
-        when hasResp do s.suspend
-        -- Send request to memory unit
-        put memReqs
-          MemReq {
-            memReqAccessWidth = getAccessWidth s.instr
-          , memReqOp =
-              if s.opcode `is` [LOAD] then memLoadOp else memStoreOp
-          , memReqAMOInfo = dontCare
-          , memReqAddr = plus
-          , memReqData = s.opB
-          , memReqDataTagBit = 0
-          , memReqDataTagBitMask = 0
-          , memReqIsUnsigned = getIsUnsignedLoad s.instr
-          , memReqIsFinal = true
-          }
-      else s.retry
+      -- Memory access
+      when (s.opcode `is` [LOAD, STORE]) do
+        if memReqs.canPut
+          then do
+            -- Currently the memory subsystem doesn't issue store responses
+            -- so we make sure to only suspend on a load
+            let hasResp = s.opcode `is` [LOAD]
+            when hasResp do s.suspend
+            -- Send request to memory unit
+            put memReqs
+              MemReq {
+                memReqAccessWidth = getAccessWidth s.instr
+              , memReqOp =
+                  if s.opcode `is` [LOAD] then memLoadOp else memStoreOp
+              , memReqAMOInfo = dontCare
+              , memReqAddr = plus
+              , memReqData = s.opB
+              , memReqDataTagBit = 0
+              , memReqDataTagBitMask = 0
+              , memReqIsUnsigned = getIsUnsignedLoad s.instr
+              , memReqIsFinal = true
+              }
+          else s.retry

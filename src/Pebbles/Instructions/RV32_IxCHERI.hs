@@ -87,7 +87,6 @@ decodeIxCHERI =
   , "1111111 10001  rs1<5> 000 rd<5> 1011011" --> CSealEntry
   , "1111111 01000  rs1<5> 000 rd<5> 1011011" --> CRRL
   , "1111111 01001  rs1<5> 000 rd<5> 1011011" --> CRAM
-  --, "1111111 01100  rs1<5> 000 rd<5> 1011011" --> CJALR
   ]
 
 decodeAxCHERI =
@@ -127,14 +126,14 @@ getRelease = makeFieldSelector decodeAxCHERI "rl"
 executeIxCHERI ::
      Maybe (Sink MulReq)
      -- ^ Optionally use multiplier to implement shifts
-  -> CSRUnit
+  -> Maybe CSRUnit
      -- ^ Access to CSRs
-  -> Sink CapMemReq
+  -> Maybe (Sink CapMemReq)
      -- ^ Access to memory
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeIxCHERI shiftUnit csrUnit memReqs s = do
+executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
   -- Add/sub/compare unit
   let AddOuts sum less equal = addUnit 
         AddIns {
@@ -162,7 +161,7 @@ executeIxCHERI shiftUnit csrUnit memReqs s = do
   when (s.opcode `is` [LUI]) do
     s.result <== s.immOrOpB
 
-  case shiftUnit of
+  case m_shiftUnit of
 
     -- Use barrel shifter
     Nothing -> do
@@ -209,50 +208,28 @@ executeIxCHERI shiftUnit csrUnit memReqs s = do
   when (s.opcode `is` [EBREAK]) do
     trap s exc_breakpoint
 
-  -- Memory fence
-  when (s.opcode `is` [FENCE]) do
-    if memReqs.canPut
-      then do
-        s.suspend
-        -- Send request to memory unit
-        put memReqs
-          CapMemReq {
-            capMemReqStd =
-              MemReq {
-                memReqAccessWidth = dontCare
-              , memReqOp = memGlobalFenceOp
-              , memReqAMOInfo = dontCare
-              , memReqAddr = dontCare
-              , memReqData = dontCare
-              , memReqDataTagBit = 0
-              , memReqDataTagBitMask = 0
-              , memReqIsUnsigned = dontCare
-              , memReqIsFinal = true
-              }
-          , capMemReqIsCapAccess = false
-          , capMemReqUpperData = dontCare
-          }
-     else s.retry
-
   -- Control/status registers
-  when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
-    -- Condition for reading CSR
-    let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
-    -- Read CSR
-    x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
-    s.result <== x
-    -- Condition for writing CSR
-    let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
-    -- Determine operand
-    let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
-    -- Data to write for CSRRS/CSRRC
-    let maskedData = fromBitList
-          [ cond ? (s.opcode `is` [CSRRS], old)
-          | (old, cond) <- zip (toBitList x) (toBitList operand) ]
-    -- Data to write
-    let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
-    -- Write CSR
-    when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
+  case m_csrUnit of
+    Nothing -> return ()
+    Just csrUnit ->
+      when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
+        -- Condition for reading CSR
+        let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
+        -- Read CSR
+        x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
+        s.result <== x
+        -- Condition for writing CSR
+        let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
+        -- Determine operand
+        let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
+        -- Data to write for CSRRS/CSRRC
+        let maskedData = fromBitList
+              [ cond ? (s.opcode `is` [CSRRS], old)
+              | (old, cond) <- zip (toBitList x) (toBitList operand) ]
+        -- Data to write
+        let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
+        -- Write CSR
+        when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
 
   -- Shorthands / shared logic for capability operands
   let cA = s.capA.capPipe
@@ -366,104 +343,132 @@ executeIxCHERI shiftUnit csrUnit memReqs s = do
   -- Memory access
   -- -------------
 
-  when (s.opcode `is` [LOAD, STORE, AMO]) do
-    if inv memReqs.canPut
-      then s.retry
-      else do
-        -- Address being accessed
-        let memAddr = s.opA + s.immOrOpB
-        -- Determine access width for memory request
-        let accessWidth = getAccessWidth s.instr
-        -- Is it a capability load/store?
-        let isCapAccess = accessWidth .==. 3
-        -- Number of bytes being accessed (for bounds check)
-        let numBytes :: Bit 4 = 1 .<<. accessWidth
-        -- Alignment check
-        let alignmentMask :: Bit 3 = truncate (numBytes - 1)
-        let alignmentOk =
-              (slice @2 @0 memAddr .&. alignmentMask) .==. 0
-        -- Permission to load/store?
-        let havePermission =
-              if s.opcode `is` [LOAD]
-                then permsA.permitLoad
-                else permsA.permitStore
-        -- Convert capability to in-memory format for storing
-        let (memCapTag, memCap) = toMem cB
-        -- Possible exceptions
-        let exceptionTable =
-              [ inv (isValidCap cA)
-                  --> cheri_exc_tagViolation
-              , isSealed cA
-                  --> cheri_exc_sealViolation
-              , s.opcode `is` [LOAD]
-                 .&&. inv permsA.permitLoad
-                  --> cheri_exc_permitLoadViolation
-              , s.opcode `is` [STORE]
-                 .&&. inv permsA.permitStore
-                  --> cheri_exc_permitStoreViolation
-              , s.opcode `is` [STORE]
-                 .&&. isCapAccess
-                 .&&. inv permsA.permitStoreCap
-                 .&&. isValidCap cB
-                  --> cheri_exc_permitStoreCapViolation
-              , s.opcode `is` [STORE]
-                 .&&. isCapAccess
-                 .&&. inv permsA.permitStoreLocalCap
-                 .&&. isValidCap cB
-                 .&&. permsB.global
-                  --> cheri_exc_permitStoreLocalCapViolation
-              , inv alignmentOk
-                  --> if s.opcode `is` [LOAD]
-                        then exc_loadAddrMisaligned
-                        else exc_storeAMOAddrMisaligned
-              , memAddr .<. baseA
-                 .||. zeroExtend memAddr + zeroExtend numBytes .>. topA
-                  --> cheri_exc_lengthViolation
-              ]
-        -- Check for exception
-        let isException = orList [cond | (cond, _) <- exceptionTable]
-        -- Trigger exception
-        if isException
-          then trap s (priorityIf exceptionTable dontCare)
+  case m_memReqs of
+    Nothing -> return ()
+    Just memReqs -> do
+      when (s.opcode `is` [LOAD, STORE, AMO]) do
+        if inv memReqs.canPut
+          then s.retry
           else do
-            -- Currently the memory subsystem doesn't issue store responses
-            -- so we make sure to only suspend on a load
-            let hasResp = s.opcode `is` [LOAD]
-                     .||. s.opcode `is` [AMO] .&&. s.resultIndex .!=. 0
-            when hasResp do s.suspend
+            -- Address being accessed
+            let memAddr = s.opA + s.immOrOpB
+            -- Determine access width for memory request
+            let accessWidth = getAccessWidth s.instr
+            -- Is it a capability load/store?
+            let isCapAccess = accessWidth .==. 3
+            -- Number of bytes being accessed (for bounds check)
+            let numBytes :: Bit 4 = 1 .<<. accessWidth
+            -- Alignment check
+            let alignmentMask :: Bit 3 = truncate (numBytes - 1)
+            let alignmentOk =
+                  (slice @2 @0 memAddr .&. alignmentMask) .==. 0
+            -- Permission to load/store?
+            let havePermission =
+                  if s.opcode `is` [LOAD]
+                    then permsA.permitLoad
+                    else permsA.permitStore
+            -- Convert capability to in-memory format for storing
+            let (memCapTag, memCap) = toMem cB
+            -- Possible exceptions
+            let exceptionTable =
+                  [ inv (isValidCap cA)
+                      --> cheri_exc_tagViolation
+                  , isSealed cA
+                      --> cheri_exc_sealViolation
+                  , s.opcode `is` [LOAD]
+                     .&&. inv permsA.permitLoad
+                      --> cheri_exc_permitLoadViolation
+                  , s.opcode `is` [STORE]
+                     .&&. inv permsA.permitStore
+                      --> cheri_exc_permitStoreViolation
+                  , s.opcode `is` [STORE]
+                     .&&. isCapAccess
+                     .&&. inv permsA.permitStoreCap
+                     .&&. isValidCap cB
+                      --> cheri_exc_permitStoreCapViolation
+                  , s.opcode `is` [STORE]
+                     .&&. isCapAccess
+                     .&&. inv permsA.permitStoreLocalCap
+                     .&&. isValidCap cB
+                     .&&. permsB.global
+                      --> cheri_exc_permitStoreLocalCapViolation
+                  , inv alignmentOk
+                      --> if s.opcode `is` [LOAD]
+                            then exc_loadAddrMisaligned
+                            else exc_storeAMOAddrMisaligned
+                  , memAddr .<. baseA
+                     .||. zeroExtend memAddr + zeroExtend numBytes .>. topA
+                      --> cheri_exc_lengthViolation
+                  ]
+            -- Check for exception
+            let isException = orList [cond | (cond, _) <- exceptionTable]
+            -- Trigger exception
+            if isException
+              then trap s (priorityIf exceptionTable dontCare)
+              else do
+                -- Currently the memory subsystem doesn't issue store
+                -- responses so we make sure to only suspend on a load
+                let hasResp = s.opcode `is` [LOAD]
+                         .||. s.opcode `is` [AMO] .&&. s.resultIndex .!=. 0
+                when hasResp do s.suspend
+                -- Send request to memory unit
+                put memReqs
+                  CapMemReq {
+                    capMemReqIsCapAccess = isCapAccess
+                  , capMemReqStd =
+                      MemReq {
+                        memReqAccessWidth =
+                          -- Capability accesses are serialised
+                          if isCapAccess then 2 else accessWidth
+                      , memReqOp =
+                          select
+                            [ s.opcode `is` [LOAD]  --> memLoadOp
+                            , s.opcode `is` [STORE] --> memStoreOp
+                            , s.opcode `is` [AMO]   --> memAtomicOp
+                            ]
+                      , memReqAMOInfo =
+                          AMOInfo {
+                            amoOp = getAMO s.instr
+                          , amoAcquire = getAcquire s.instr
+                          , amoRelease = getRelease s.instr
+                          , amoNeedsResp = hasResp
+                          }
+                      , memReqAddr = memAddr
+                      , memReqData =
+                          if isCapAccess then truncate memCap else s.opB
+                      , memReqDataTagBit = isCapAccess .&&. memCapTag
+                        -- Mask to be applied to tag bit of loaded capability
+                      , memReqDataTagBitMask = permsA.permitLoadCap
+                      , memReqIsUnsigned = getIsUnsignedLoad s.instr
+                      , memReqIsFinal = true
+                      }
+                  , capMemReqUpperData = upper memCap
+                  }
+
+      -- Memory fence
+      when (s.opcode `is` [FENCE]) do
+        if memReqs.canPut
+          then do
+            s.suspend
             -- Send request to memory unit
             put memReqs
               CapMemReq {
-                capMemReqIsCapAccess = isCapAccess
-              , capMemReqStd =
+                capMemReqStd =
                   MemReq {
-                    memReqAccessWidth =
-                      -- Capability accesses are serialised
-                      if isCapAccess then 2 else accessWidth
-                  , memReqOp =
-                      select
-                        [ s.opcode `is` [LOAD]  --> memLoadOp
-                        , s.opcode `is` [STORE] --> memStoreOp
-                        , s.opcode `is` [AMO]   --> memAtomicOp
-                        ]
-                  , memReqAMOInfo =
-                      AMOInfo {
-                        amoOp = getAMO s.instr
-                      , amoAcquire = getAcquire s.instr
-                      , amoRelease = getRelease s.instr
-                      , amoNeedsResp = hasResp
-                      }
-                  , memReqAddr = memAddr
-                  , memReqData =
-                      if isCapAccess then truncate memCap else s.opB
-                  , memReqDataTagBit = isCapAccess .&&. memCapTag
-                    -- Mask to be applied to tag bit of loaded capability
-                  , memReqDataTagBitMask = permsA.permitLoadCap
-                  , memReqIsUnsigned = getIsUnsignedLoad s.instr
+                    memReqAccessWidth = dontCare
+                  , memReqOp = memGlobalFenceOp
+                  , memReqAMOInfo = dontCare
+                  , memReqAddr = dontCare
+                  , memReqData = dontCare
+                  , memReqDataTagBit = 0
+                  , memReqDataTagBitMask = 0
+                  , memReqIsUnsigned = dontCare
                   , memReqIsFinal = true
                   }
-              , capMemReqUpperData = upper memCap
+              , capMemReqIsCapAccess = false
+              , capMemReqUpperData = dontCare
               }
+         else s.retry
 
 -- | Bounds setting instructions
 executeSetBounds ::
