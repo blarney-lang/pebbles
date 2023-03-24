@@ -482,7 +482,9 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
       -- Was it a scalar before this write?
       let wasScalar = storeScalarEntry2.val `is` #scalar
       -- Is it a vector after this write?
-      let isVector = inv (storeIsScalar2.val .==. ones)
+      let isVector = if SIMTRegFilePreventScalarDetection == 1
+                       then true
+                       else inv (storeIsScalar2.val .==. ones)
 
       if isVector .&&. inv storeEvict2.val
         then do
