@@ -306,8 +306,10 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
     V.replicateM (V.replicateM (makeReg dontCare))
 
   -- Eviction status of each register
-  evictStatus :: RAM SIMTRegFileIdx (Bit 1) <-
-    if opts.useDynRegSpill then makeDualRAM else return nullRAM
+  (evictStatus, evictStatusB) :: (RAM SIMTRegFileIdx (Bit 1),
+                                  RAM SIMTRegFileIdx (Bit 1)) <-
+    if opts.useDynRegSpill then makeQuadRAM
+                           else return (nullRAM, nullRAM)
 
   -- Count number of vectors in use
   vecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
@@ -520,7 +522,8 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
             -- We need to reclaim the vector
             dynamicAssert freeSlots1.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots1.push (truncateCast (untag #vector storeScalarEntry2.val))
+            freeSlots1.push (truncateCast
+              (untag #vector storeScalarEntry2.val))
             vecCountDecr1.pulse
           -- Write to scalar reg file
           let scalarVal =
@@ -559,6 +562,7 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
         scalarRegFileB.store idx s
         scalarRegFileD.store idx s
         scalarRegFileF.store idx s
+        evictStatusB.store idx false
         -- Reclaim vector space
         when (scalarRegFileF.out `is` #vector) do
           dynamicAssert freeSlots2.notFull

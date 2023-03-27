@@ -602,9 +602,9 @@ makeSIMTPipeline c inputs =
 
       -- Dynamic register spilling: bit mask of available warps
       let spillAvail :: Bit SIMTWarps = fromBitList
-            [ orList [w.val, s.val, b.val] .&&. inv e.val .&&. inv susp.val
-            | (w, s, b, e, susp) <-
-                zip5 warpQueue scalarQueue barrierBits
+            [ orList [w.val, b.val] .&&. inv e.val .&&. inv susp.val
+            | (w, b, e, susp) <-
+                zip4 warpQueue barrierBits
                      spillingWarps warpSuspMask ]
 
       -- Dynamic register spilling: fair scheduler
@@ -1461,7 +1461,7 @@ makeSIMTPipeline c inputs =
           | (r, c) <- zip scalarQueue (toBitList chosen) ]
 
         -- Trigger next stage
-        when (avail .!=. 0 .&&. inv regSpillMode.val) do
+        when (avail .!=. 0) do
           scalarSchedHistory <== newSchedHistory
           scalarGo0 <== true
 
