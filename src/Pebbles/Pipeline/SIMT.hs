@@ -121,8 +121,12 @@ data SIMTPipelineConfig tag =
     -- ^ Use dedicated scalar unit for parallel scalar/vector execution?
   , scalarUnitAllowList :: [tag]
     -- ^ A list of instructions that can execute on the scalar unit
-  , scalarUnitAffineAdder :: Maybe tag
+  , scalarUnitAffineAdd :: Maybe tag
     -- ^ Optionally replace add instr with built-in affine add instr
+  , scalarUnitAffineCMove :: Maybe tag
+    -- ^ Optionally replace cmove instr with built-in affine version
+  , scalarUnitAffineCIncOffset :: Maybe tag
+    -- ^ Optionally replace cincoffset instr with built-in affine version
   , scalarUnitDecodeStage :: [(String, tag)]
     -- ^ Decode table for scalar unit
   , scalarUnitExecuteStage :: State -> Module ExecuteStage
@@ -414,6 +418,11 @@ makeSIMTPipeline c inputs =
 
     -- Mask of not-recently-used registers to prioritise for spilling
     spillMaskLRU :: Reg (Bit 32) <- makeReg dontCare
+
+    -- Tags of affine-scalarisable instructions
+    let affineTags = catMaybes [ c.scalarUnitAffineAdd
+                               , c.scalarUnitAffineCMove
+                               , c.scalarUnitAffineCIncOffset ]
 
     -- Pipeline Initialisation
     -- =======================
@@ -957,13 +966,11 @@ makeSIMTPipeline c inputs =
         let allAffine = (usesA .==>. isAffineA) .&&. (usesB .==>. isAffineB)
         let oneUniform = allAffine .&&.
               ((usesA .==>. isUniformA) .||. (usesB .==>. isUniformB))
-        let areOperandsScalar =
-              case c.scalarUnitAffineAdder of
-                Nothing -> allUniform
-                Just addOp -> 
-                  if Map.findWithDefault false addOp tagMap4
-                    then oneUniform
-                    else allUniform
+        let affineTagActive = orList
+              [ Map.findWithDefault false affineTag tagMap4
+              | affineTag <- affineTags ]
+        let areOperandsScalar = if affineTagActive then oneUniform
+                                                   else allUniform
         let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op tagMap4
               | op <- c.scalarUnitAllowList ]
@@ -1421,6 +1428,7 @@ makeSIMTPipeline c inputs =
     scalarOpBOrImm4 <- makeReg dontCare
     scalarCapA4 :: Reg Cap <- makeReg dontCare
     scalarCapB4 :: Reg Cap <- makeReg dontCare
+    scalarCapMemMetaA4 :: Reg CapMemMeta <- makeReg dontCare
 
     -- Abort scalar pipeline if instruction turns out not to be scalarisable
     scalarAbort4 :: Reg (Bit 1) <- makeReg dontCare
@@ -1557,6 +1565,7 @@ makeSIMTPipeline c inputs =
           scalarCapB4 <==
             decodeCapMem (capRegFile.scalarD.val.val #
                           regFile.scalarD.val.val)
+          scalarCapMemMetaA4 <== capRegFile.scalarC.val.val
         scalarWarpId4 <== scalarWarpId3.val
         scalarState4 <== scalarState3.val
         scalarPCC4 <== scalarPCC3.val
@@ -1585,13 +1594,11 @@ makeSIMTPipeline c inputs =
         let allAffine = (usesA .==>. isAffineA) .&&. (usesB .==>. isAffineB)
         let oneUniform = allAffine .&&.
               ((usesA .==>. isUniformA) .||. (usesB .==>. isUniformB))
-        let areOperandsScalar =
-              case c.scalarUnitAffineAdder of
-                Nothing -> allUniform
-                Just addOp ->
-                  if Map.findWithDefault false addOp scalarTagMap3
-                    then oneUniform
-                    else allUniform
+        let affineTagActive = orList
+              [ Map.findWithDefault false affineTag scalarTagMap3
+              | affineTag <- affineTags ]
+        let areOperandsScalar = if affineTagActive then oneUniform
+                                                   else allUniform
         let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op scalarTagMap3
               | op <- c.scalarUnitAllowList ]
@@ -1647,11 +1654,9 @@ makeSIMTPipeline c inputs =
         , suspend = do scalarSuspend5 <== true
         , retry = do scalarRetry5 <== true
         , opcode =
-            -- Filter out add instruction if using built-in affine adder
-            packTagMap $
-              case c.scalarUnitAffineAdder of
-                Nothing -> scalarTagMap4
-                Just addOp -> Map.insert addOp false scalarTagMap4
+            -- Filter out instructions overridden by built-in affine versions
+            packTagMap $ foldr (\tag m -> Map.insert tag false m)
+                               scalarTagMap4 affineTags
         , trap = \code -> do
             -- TODO: handle trap
             display "Scalar unit trap: code=" code
@@ -1668,6 +1673,9 @@ makeSIMTPipeline c inputs =
               scalarResultWire <== lower capMem
               scalarResultCapWire <== upper capMem
         }
+
+      -- For aborting built-in affine operation
+      affineAbortWire <- makeWire false
 
       always do
         when scalarGo4.val do
@@ -1690,18 +1698,48 @@ makeSIMTPipeline c inputs =
               display "Instruction not recognised @ PC="
                 (formatHex 8 scalarState4.val.simtPC)
 
-            -- Built-in affine adder
-            case c.scalarUnitAffineAdder of
+            let dstNonZero = dst scalarInstr4.val .!=. 0
+
+            -- Built-in affine add
+            case c.scalarUnitAffineAdd of
               Nothing -> return ()
               Just addOp -> do
                 when (Map.findWithDefault false addOp scalarTagMap4) do
-                  when (dst scalarInstr4.val .!=. 0) do
+                  when dstNonZero do
                     scalarResultWire <==
                       scalarOpA4.val.val + (fst scalarOpBOrImm4.val).val
                     scalarResultStrideWire <==
                       scalarOpA4.val.stride + (fst scalarOpBOrImm4.val).stride
                     when enableCHERI do
                       scalarResultCapWire <== nullCapMemMetaVal
+
+            -- Built-in affine cmove
+            case c.scalarUnitAffineCMove of
+              Nothing -> return ()
+              Just cmoveOp -> do
+                when (Map.findWithDefault false cmoveOp scalarTagMap4) do
+                  when dstNonZero do
+                    scalarResultWire <== scalarOpA4.val.val
+                    scalarResultStrideWire <== scalarOpA4.val.stride
+                    when enableCHERI do
+                      scalarResultCapWire <== scalarCapMemMetaA4.val
+
+            -- Built-in affine cincoffset
+            case c.scalarUnitAffineCIncOffset of
+              Nothing -> return ()
+              Just cincOp -> do
+                when (Map.findWithDefault false cincOp scalarTagMap4) do
+                  when dstNonZero do
+                    let sum = scalarOpA4.val.val +
+                              (fst scalarOpBOrImm4.val).val
+                    scalarResultWire <== sum
+                    scalarResultStrideWire <==
+                      scalarOpA4.val.stride + (fst scalarOpBOrImm4.val).stride
+                    when enableCHERI do
+                      scalarResultCapWire <== scalarCapMemMetaA4.val
+                    -- Abort as result could be out of representable bounds
+                    when (zeroExtend sum .>. scalarCapA4.val.capTop) do
+                      affineAbortWire <== true
 
         -- Lookup scalar prediction table
         scalarTableB.load (toInstrAddr scalarPCNextWire.val)
@@ -1712,7 +1750,7 @@ makeSIMTPipeline c inputs =
         scalarState5 <== scalarState4.val
         scalarIsSusp5 <== scalarIsSusp4.val
         scalarInstr5 <== scalarInstr4.val
-        scalarAbort5 <== scalarAbort4.val
+        scalarAbort5 <== scalarAbort4.val .||. affineAbortWire.val
 
       -- Stage 5: Writeback & Resume
       -- ===========================
@@ -1763,7 +1801,7 @@ makeSIMTPipeline c inputs =
             ((head suspBits)!scalarWarpId5.val) <== true
 
         -- Write to reg file
-        if delay false scalarResultWire.active
+        if delay false scalarResultWire.active .&&. inv scalarAbort5.val
           then do
             let dest = (scalarWarpId5.val, dst scalarInstr5.val)
             regFile.storeScalar dest
