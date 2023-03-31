@@ -135,6 +135,8 @@ data SIMTPipelineConfig tag =
     -- ^ Base address of register spill region in DRAM
   , useLRUSpill :: Bool
     -- ^ Prefer to spill registers that are not recently used
+  , useRRSpill :: Bool
+    -- ^ Round robin spill strategy
   }
 
 -- | SIMT pipeline inputs
@@ -416,8 +418,11 @@ makeSIMTPipeline c inputs =
     -- Maintain psuedo rolling average for register use
     regUsage :: Vec 32 (Reg (Bit SIMTRegCountBits)) <- V.replicateM (makeReg 0)
 
-    -- Mask of not-recently-used registers to prioritise for spilling
-    spillMaskLRU :: Reg (Bit 32) <- makeReg dontCare
+    -- Mask of registers to prioritise for spilling
+    spillMaskPref :: Reg (Bit 32) <- makeReg dontCare
+
+    -- Previous register spilled
+    spillMaskPrev :: Reg (Bit 32) <- makeReg 0
 
     -- Tags of affine-scalarisable instructions
     let affineTags = catMaybes [ c.scalarUnitAffineAdd
@@ -758,8 +763,10 @@ makeSIMTPipeline c inputs =
                         (toBitList vecMask) (toList regUsage)
           let min a b = if a .<. b then a else b
           let regUsageMin = tree1 min (subset usage)
-          spillMaskLRU <==
+          spillMaskPref <==
             pack (V.map (\c -> c.val .<=. regUsageMin) regUsage)
+        when c.useRRSpill do
+          spillMaskPref <== reverseBits (reverseBits spillMaskPrev.val - 1)
 
     -- Second instruction fetch stage
     ---------------------------------
@@ -781,12 +788,14 @@ makeSIMTPipeline c inputs =
                             inv (binaryDecode srcRegA
                                    .|. binaryDecode srcRegB
                                    .|. binaryDecode dstReg)
-        let spillMaskA1 = spillMaskA0 .&. spillMaskLRU.val
+        let spillMaskA1 = spillMaskA0 .&. spillMaskPref.val
         let spillMaskA =
-              if c.useLRUSpill
+              if c.useLRUSpill || c.useRRSpill
                 then (spillMaskA1 .==. 0) ? (spillMaskA0, spillMaskA1)
                 else spillMaskA0
-        let spillA = binaryEncode (firstHot spillMaskA)
+        let firstSpillMaskA = firstHot spillMaskA
+        spillMaskPrev <== firstSpillMaskA
+        let spillA = binaryEncode firstSpillMaskA
         spillA3Reg <== spillA
         let spill2b = delay false spill2
         fetchA3Reg <== spill2b ? (spillA, srcRegA)
