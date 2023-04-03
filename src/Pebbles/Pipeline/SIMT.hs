@@ -51,6 +51,7 @@ import Blarney.PulseWire
 import Blarney.SourceSink
 import Blarney.TaggedUnion
 import Blarney.QuadPortRAM
+import Blarney.TypeFamilies
 import Blarney.Interconnect
 import Blarney.Vector qualified as V
 import Blarney.Vector (Vec, fromList, toList)
@@ -137,6 +138,8 @@ data SIMTPipelineConfig tag =
     -- ^ Prefer to spill registers that are not recently used
   , useRRSpill :: Bool
     -- ^ Round robin spill strategy
+  , useSharedVectorScratchpad :: Bool
+    -- ^ Share vector scatchpad between int and cap reg files?
   }
 
 -- | SIMT pipeline inputs
@@ -258,7 +261,7 @@ makeSIMTPipeline c inputs =
             else if enableCHERI then 2 else 1
 
     -- Register file
-    regFile :: SIMTRegFile 32 <-
+    regFile :: SIMTRegFile (Log2Ceil SIMTRegFileSize) 33 <-
       if c.useRegFileScalarisation
         then makeSIMTScalarisingRegFile
                SIMTScalarisingRegFileConfig {
@@ -268,6 +271,7 @@ makeSIMTPipeline c inputs =
                , size = SIMTRegFileSize
                , useDynRegSpill =
                    SIMTRegFileSize < SIMTWarps * 32
+               , useSharedVecSpad = Nothing
                }
         else makeSIMTRegFile
                SIMTRegFileConfig {
@@ -276,7 +280,7 @@ makeSIMTPipeline c inputs =
                }
 
     -- Capability register file (meta-data only)
-    capRegFile :: SIMTRegFile CapMemMetaWidth <-
+    capRegFile :: SIMTRegFile (Log2Ceil SIMTCapRegFileSize) CapMemMetaWidth <-
       if enableCHERI
         then
           if c.useCapRegFileScalarisation
@@ -288,6 +292,10 @@ makeSIMTPipeline c inputs =
                    , size = SIMTCapRegFileSize
                    , useDynRegSpill =
                        SIMTCapRegFileSize < SIMTWarps * 32
+                   , useSharedVecSpad =
+                       if c.useSharedVectorScratchpad
+                         then Just regFile.sharedVecSpad
+                         else Nothing
                    }
             else makeSIMTRegFile
                    SIMTRegFileConfig {
@@ -593,14 +601,26 @@ makeSIMTPipeline c inputs =
 
       -- Enable register spill mode when required
       when enableSpill do
-        let needSpill :: forall n. SIMTRegFile n -> Bit 1
-            needSpill rf = rf.numVecRegsUnused .<. SIMTWarps
-        let needRegSpill =
-              if enableRegSpill then needSpill regFile else false
-        let needCapSpill =
-              if enableCapSpill then needSpill capRegFile else false
-        regSpillMode <== needRegSpill .||. needCapSpill
-        regSpillModeIntOrCap <== if needRegSpill then 0 else 1
+        if c.useSharedVectorScratchpad
+          then do
+            let totalRegs = regFile.numVecRegs + capRegFile.numVecRegs
+            let needSpill = SIMTRegFileSize - totalRegs .<. SIMTWarps
+            let doCapSpill = if enableCapSpill
+                               then capRegFile.numVecRegs .>=.
+                                      SIMTSharedVecSpadCapThreshold
+                               else false
+            regSpillMode <== if enableRegSpill || enableCapSpill
+                               then needSpill else false
+            regSpillModeIntOrCap <== if doCapSpill then 1 else 0
+          else do
+            let needSpill :: forall s n. SIMTRegFile s n -> Bit 1
+                needSpill rf = rf.numVecRegsUnused .<. SIMTWarps
+            let needRegSpill =
+                  if enableRegSpill then needSpill regFile else false
+            let needCapSpill =
+                  if enableCapSpill then needSpill capRegFile else false
+            regSpillMode <== needRegSpill .||. needCapSpill
+            regSpillModeIntOrCap <== if needRegSpill then 0 else 1
 
     -- Scheduler: 1st substage
     always do
@@ -828,13 +848,14 @@ makeSIMTPipeline c inputs =
     let pcc4 = delay dontCare pcc3
 
     always do
-      -- Fetch operands from register file
-      regFile.loadA (warpId3, fetchA3)
-      regFile.loadB (warpId3, srcB instr3)
+      when (inv capRegFile.stall) do
+        -- Fetch operands from register file
+        regFile.loadA (warpId3, fetchA3)
+        regFile.loadB (warpId3, srcB instr3)
 
-      -- Fetch capability meta-data from register file
-      capRegFile.loadA (warpId3, fetchA3)
-      capRegFile.loadB (warpId3, srcB instr3)
+        -- Fetch capability meta-data from register file
+        capRegFile.loadA (warpId3, fetchA3)
+        capRegFile.loadB (warpId3, srcB instr3)
 
       -- Load eviction status of destination register
       when enableSpill do
@@ -860,15 +881,22 @@ makeSIMTPipeline c inputs =
               let trapCode = priorityIf table (excCapCode 0)
               display "SIMT pipeline: PCC exception: code=" trapCode
 
+      -- Handle reg file stall
+      when (enableSpill && c.useSharedVectorScratchpad) do
+        when (go3 .&&. capRegFile.stall) do
+          if spill3
+            then (spillingWarps!warpId3) <== false
+            else (warpQueue!warpId3) <== true
+
       -- Trigger stage 4
       warpId4 <== warpId3
       activeMask4 <== activeMask3
       instr4 <== instr3
       state4 <== state3
-      spill4 <== spill3
+      spill4 <== spill3 .&&. inv capRegFile.stall
       spillFrom4 <== spillFrom3
       spillReg4 <== spillA3Reg.val
-      go4 <== go3
+      go4 <== go3 .&&. inv capRegFile.stall
 
     -- Stage 4: Operand Latch
     -- ======================
@@ -882,14 +910,16 @@ makeSIMTPipeline c inputs =
     let (tagMap4, fieldMap4) = matchMap False (c.decodeStage) delayedInstr4
 
     -- Stage 5 register operands
-    let vecRegA5 = old regFile.outA
-    let vecRegB5 = old regFile.outB
+    let rfAOut = V.map (slice @31 @0) regFile.outA
+    let rfBOut = V.map (slice @31 @0) regFile.outB
+    let vecRegA5 = old rfAOut
+    let vecRegB5 = old rfBOut
 
     -- Stage 5 capability register operands
     let getCapReg intReg capReg =
           old $ decodeCapMem (capReg # intReg)
-    let vecCapRegA5 = V.zipWith getCapReg regFile.outA capRegFile.outA
-    let vecCapRegB5 = V.zipWith getCapReg regFile.outB capRegFile.outB
+    let vecCapRegA5 = V.zipWith getCapReg rfAOut capRegFile.outA
+    let vecCapRegB5 = V.zipWith getCapReg rfBOut capRegFile.outB
     let vecRawCapMetaRegA5 = V.map old capRegFile.outA
 
     -- Determine if field is available in current instruction
@@ -928,9 +958,11 @@ makeSIMTPipeline c inputs =
     let unspill5 = delay false unspill4_5
 
     -- Stage 5 scalarised operands
+    let trunc32ScalarVal x = ScalarVal { val = slice @31 @0 x.val
+                                       , stride = x.stride }
     let scalarisedOperandB5 =
           ScalarisedOperand {
-            scalarisedVal = old regFile.scalarB
+            scalarisedVal = old (fmap trunc32ScalarVal regFile.scalarB)
           , scalarisedCapVal = old capRegFile.scalarB
           }
 
@@ -943,7 +975,7 @@ makeSIMTPipeline c inputs =
                      r_imm = rs2.valid ? (reg, imm.val)
                  in  (imm_r, r_imm)
             else (reg, reg)
-    let vecRegBorImm5 = V.map getRegBorImm regFile.outB
+    let vecRegBorImm5 = V.map getRegBorImm rfBOut
 
     -- Propagate signals to stage 5
     let pcc5 = old (loadDelay pcc4)
@@ -1334,7 +1366,7 @@ makeSIMTPipeline c inputs =
                            resumeInfo.regFileId .!=. regFileInt)
       -- Write to register file(s)
       when writeInt do
-        regFile.store writeIdx writeVec
+        regFile.store writeIdx (V.map (fmap (false #)) writeVec)
       when enableCHERI do
         when writeCapMeta do
           capRegFile.store writeIdx writeCapVec
@@ -1564,16 +1596,17 @@ makeSIMTPipeline c inputs =
         -- Trigger next stage
         scalarGo4 <== scalarGo3.val
         -- Latch operands
-        scalarOpA4 <== regFile.scalarC.val
-        scalarOpB4 <== regFile.scalarD.val
-        scalarOpBOrImm4 <== bOrImm
+        scalarOpA4 <== trunc32ScalarVal regFile.scalarC.val
+        scalarOpB4 <== trunc32ScalarVal regFile.scalarD.val
+        scalarOpBOrImm4 <== (trunc32ScalarVal $ fst bOrImm,
+                             trunc32ScalarVal $ snd bOrImm)
         when enableCHERI do
           scalarCapA4 <==
             decodeCapMem (capRegFile.scalarC.val.val #
-                          regFile.scalarC.val.val)
+                          slice @31 @0 regFile.scalarC.val.val)
           scalarCapB4 <==
             decodeCapMem (capRegFile.scalarD.val.val #
-                          regFile.scalarD.val.val)
+                          slice @31 @0 regFile.scalarD.val.val)
           scalarCapMemMetaA4 <== capRegFile.scalarC.val.val
         scalarWarpId4 <== scalarWarpId3.val
         scalarState4 <== scalarState3.val
@@ -1814,7 +1847,7 @@ makeSIMTPipeline c inputs =
           then do
             let dest = (scalarWarpId5.val, dst scalarInstr5.val)
             regFile.storeScalar dest
-              ScalarVal { val = old scalarResultWire.val
+              ScalarVal { val = false # old scalarResultWire.val
                         , stride = old scalarResultStrideWire.val }
             when enableCHERI do
               capRegFile.storeScalar dest
@@ -1830,7 +1863,7 @@ makeSIMTPipeline c inputs =
               when (info.destReg .!=. 0) do
                 -- Affine vectors not yet allowed on resume path
                 regFile.storeScalar dest
-                  ScalarVal { val = req.resumeReqData, stride = 0 }
+                  ScalarVal { val = false # req.resumeReqData, stride = 0 }
                 when enableCHERI do
                   capRegFile.storeScalar dest
                     ScalarVal { val = if req.resumeReqCap.valid
