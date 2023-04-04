@@ -601,7 +601,7 @@ makeSIMTPipeline c inputs =
 
       -- Enable register spill mode when required
       when enableSpill do
-        if c.useSharedVectorScratchpad
+        if enableCHERI && c.useSharedVectorScratchpad
           then do
             let totalRegs = regFile.numVecRegs + capRegFile.numVecRegs
             let needSpill = SIMTRegFileSize - totalRegs .<. SIMTWarps
@@ -882,7 +882,7 @@ makeSIMTPipeline c inputs =
               display "SIMT pipeline: PCC exception: code=" trapCode
 
       -- Handle reg file stall
-      when (enableSpill && c.useSharedVectorScratchpad) do
+      when (enableCHERI && enableSpill && c.useSharedVectorScratchpad) do
         when (go3 .&&. capRegFile.stall) do
           if spill3
             then (spillingWarps!warpId3) <== false
