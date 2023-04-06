@@ -369,6 +369,7 @@ makeSIMTScalarisingRegFile opts = do
       scalarRegFileB.store idx initScalarReg
       scalarRegFileD.store idx initScalarReg
       scalarRegFileF.store idx initScalarReg
+      evictStatus.store idx false
       when (not enSharedVecSpad) do
         when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
           freeSlots.push1 (truncateCast initIdx.val)
