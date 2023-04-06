@@ -905,6 +905,11 @@ makeSIMTPipeline c inputs =
     let loadDelay :: Bits a => a -> a
         loadDelay inp = iterateN (loadLatency - 1) (delay zero) inp
 
+    -- Extra latch when shared vector spad in use
+    let extra :: Bits a => a -> a
+        extra inp = if enableCHERI && c.useSharedVectorScratchpad
+                      then delay zero inp else inp
+
     -- Decode instruction
     let delayedInstr4 = loadDelay instr4.val
     let (tagMap4, fieldMap4) = matchMap False (c.decodeStage) delayedInstr4
@@ -912,15 +917,15 @@ makeSIMTPipeline c inputs =
     -- Stage 5 register operands
     let rfAOut = V.map (slice @31 @0) regFile.outA
     let rfBOut = V.map (slice @31 @0) regFile.outB
-    let vecRegA5 = old rfAOut
-    let vecRegB5 = old rfBOut
+    let vecRegA5 = old $ extra rfAOut
+    let vecRegB5 = old $ extra rfBOut
 
     -- Stage 5 capability register operands
     let getCapReg intReg capReg =
-          old $ decodeCapMem (capReg # intReg)
+          old $ decodeCapMem (extra (capReg # intReg))
     let vecCapRegA5 = V.zipWith getCapReg rfAOut capRegFile.outA
     let vecCapRegB5 = V.zipWith getCapReg rfBOut capRegFile.outB
-    let vecRawCapMetaRegA5 = V.map old capRegFile.outA
+    let vecRawCapMetaRegA5 = V.map (old . extra) capRegFile.outA
 
     -- Determine if field is available in current instruction
     let isFieldInUse fld fldMap =
@@ -952,22 +957,22 @@ makeSIMTPipeline c inputs =
                   (usesB .&&. capRegFile.evictedB) ? (srcB4, dest4))
           else (usesA .&&. regFile.evictedA) ? (srcA4,
                   (usesB .&&. regFile.evictedB) ? (srcB4, dest4))
-    let unspillTo5 = old unspillTo4
-    let unspillReg5 = old unspillReg4
+    let unspillTo5 = old $ extra unspillTo4
+    let unspillReg5 = old $ extra unspillReg4
     let unspill4_5 = unspill4 .&&. loadDelay (go4.val .&&. inv spill4.val)
-    let unspill5 = delay false unspill4_5
+    let unspill5 = delay false $ extra unspill4_5
 
     -- Stage 5 scalarised operands
     let trunc32ScalarVal x = ScalarVal { val = slice @31 @0 x.val
                                        , stride = x.stride }
     let scalarisedOperandB5 =
           ScalarisedOperand {
-            scalarisedVal = old (fmap trunc32ScalarVal regFile.scalarB)
-          , scalarisedCapVal = old capRegFile.scalarB
+            scalarisedVal = old $ extra (fmap trunc32ScalarVal regFile.scalarB)
+          , scalarisedCapVal = old $ extra capRegFile.scalarB
           }
 
     -- Stage 5 register B or immediate
-    let getRegBorImm reg = old $
+    let getRegBorImm reg = old $ extra $
           if Map.member "imm" fieldMap4 && Map.member "rs2" fieldMap4
             then let imm = getBitField fieldMap4 "imm"
                      rs2 = getBitField fieldMap4 "rs2" :: Option RegId
@@ -978,21 +983,21 @@ makeSIMTPipeline c inputs =
     let vecRegBorImm5 = V.map getRegBorImm rfBOut
 
     -- Propagate signals to stage 5
-    let pcc5 = old (loadDelay pcc4)
-    let isSusp5 = old (loadDelay isSusp4.val)
-    let warpId5 = old (loadDelay warpId4.val)
-    let activeMask5 = old (if unspill4_5 then ones
-                             else loadDelay activeMask4.val)
-    let instr5 = old (loadDelay instr4.val)
-    let state5 = old (loadDelay state4.val)
-    let spill5 = delay false (loadDelay spill4.val)
-    let spillFrom5 = old (loadDelay spillFrom4.val)
-    let spillReg5 = old (loadDelay spillReg4.val)
-    let go5 = delay false (loadDelay (go4.val .&&. inv spill4.val)
-                             .&&. inv unspill4)
+    let pcc5 = old $ extra (loadDelay pcc4)
+    let isSusp5 = old $ extra (loadDelay isSusp4.val)
+    let warpId5 = old $ extra (loadDelay warpId4.val)
+    let activeMask5 = old $ extra (if unspill4_5 then ones
+                                     else loadDelay activeMask4.val)
+    let instr5 = old $ extra (loadDelay instr4.val)
+    let state5 = old $ extra (loadDelay state4.val)
+    let spill5 = delay false $ extra (loadDelay spill4.val)
+    let spillFrom5 = old $ extra (loadDelay spillFrom4.val)
+    let spillReg5 = old $ extra (loadDelay spillReg4.val)
+    let go5 = delay false $ extra (loadDelay (go4.val .&&. inv spill4.val)
+                                     .&&. inv unspill4)
 
     -- Buffer the decode tables
-    let tagMap5 = Map.map old tagMap4
+    let tagMap5 = Map.map (old . extra) tagMap4
 
     -- Determine if this instruction is scalarisable
     when c.useRegFileScalarisation do
@@ -1015,11 +1020,11 @@ makeSIMTPipeline c inputs =
         let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op tagMap4
               | op <- c.scalarUnitAllowList ]
-        instrScalarisable5 <== andList
+        instrScalarisable5 <== extra (andList
           [ loadDelay (activeMask4.val .==. ones)
           , isOpcodeScalarisable
           , areOperandsScalar
-          ]
+          ])
 
     -- Stages 5: Execute
     -- =================
