@@ -1960,6 +1960,10 @@ makeSIMTPipeline c inputs =
                       scalarAbortCount.val
                   , statId .==. simtStat_DRAMAccesses -->
                       dramAccessCount.val
+                  , statId .==. simtStat_TotalVecRegs -->
+                      regFile.totalVecRegs
+                  , statId .==. simtStat_TotalCapVecRegs -->
+                      capRegFile.totalVecRegs
                   ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)

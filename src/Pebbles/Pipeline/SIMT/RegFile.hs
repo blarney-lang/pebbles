@@ -106,6 +106,8 @@ data SIMTRegFile t_logSize regWidth =
     -- ^ Current number of vector registers unused
   , maxVecRegs :: Bit (SIMTLogWarps + 7)
     -- ^ Max number of vector registers used
+  , totalVecRegs :: Bit 32
+    -- ^ Total vector registers, sampled at parameterised rate
   , getVecMasks :: Vec SIMTWarps (Bit 32)
     -- ^ Which registers for each warp are vectors?
   , sharedVecSpad :: SharedVecSpad t_logSize regWidth
@@ -154,6 +156,7 @@ makeNullSIMTRegFile = do
     , init = return ()
     , initInProgress = false
     , maxVecRegs = fromInteger (SIMTWarps * 32)
+    , totalVecRegs = 0
     , numVecRegsUnused = 0
     , numVecRegs = fromInteger (SIMTWarps * 32)
     , getVecMasks = V.replicate ones
@@ -237,6 +240,7 @@ makeSIMTRegFile opts = do
           Just _ -> do initInProgress <== true
     , initInProgress = initInProgress.val
     , maxVecRegs = fromInteger (SIMTWarps * 32)
+    , totalVecRegs = 0
     , numVecRegs = fromInteger (SIMTWarps * 32)
     , numVecRegsUnused = 0
     , getVecMasks = V.replicate ones
@@ -343,6 +347,9 @@ makeSIMTScalarisingRegFile opts = do
   -- Track max vector count
   maxVecCount :: Reg (Bit (SIMTLogWarps + 7)) <- makeReg 0
 
+  -- For determining averge vector scratchpad occupancy
+  totalVecCount :: Reg (Bit 32) <- makeReg 0
+
   let enSharedVecSpad = 
         case opts.useSharedVecSpad of
           Nothing -> False
@@ -380,6 +387,7 @@ makeSIMTScalarisingRegFile opts = do
       when (initIdx.val .==. 0) do
         vecCount <== 0
         maxVecCount <== 0
+        totalVecCount <== 0
         initInProgress <== false
 
   -- Track max vector count
@@ -391,12 +399,20 @@ makeSIMTScalarisingRegFile opts = do
   -- Vector count
   -- ============
 
+  sampleCount :: Reg (Bit 32) <- makeReg 0
+
   always do
     when (orList [vecCountIncr.val, vecCountDecr1.val
                                   , vecCountDecr2.val]) do
       vecCount <== vecCount.val + zeroExtend vecCountIncr.val
                                 - zeroExtend vecCountDecr1.val
                                 - zeroExtend vecCountDecr2.val
+
+    if sampleCount.val .==. SIMTTotalVecCountSampleRate
+      then do
+        sampleCount <== 0
+        totalVecCount <== totalVecCount.val + zeroExtend vecCount.val
+      else sampleCount <== sampleCount.val + 1
 
   -- Load path
   -- =========
@@ -719,6 +735,7 @@ makeSIMTScalarisingRegFile opts = do
     , maxVecRegs = maxVecCount.val
     , numVecRegsUnused = fromIntegral opts.size - vecCount.val
     , numVecRegs = vecCount.val
+    , totalVecRegs = totalVecCount.val
     , getVecMasks = 
         V.map (\mask -> pack (V.map (.val) mask)) vecMasks
     , sharedVecSpad =
