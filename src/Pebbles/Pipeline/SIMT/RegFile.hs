@@ -432,16 +432,12 @@ makeSIMTScalarisingRegFile opts = do
     if enSharedVecSpad
       then do
         when (delay false stall) do
-          when (delay false isVectorA) do
-            sequence_ [ bank.load (old idxA) | bank <- vecSpadA ]
-          when (delay false isVectorB) do
-            sequence_ [ bank.load (old idxB) | bank <- vecSpadB ]
+          sequence_ [ bank.load (old idxA) | bank <- vecSpadA ]
+          sequence_ [ bank.load (old idxB) | bank <- vecSpadB ]
       else do
         when goLoad do
-          when isVectorA do
-            sequence_ [ bank.load idxA | bank <- vecSpadA ]
-          when isVectorB do
-            sequence_ [ bank.load idxB | bank <- vecSpadB ]
+          sequence_ [ bank.load idxA | bank <- vecSpadA ]
+          sequence_ [ bank.load idxB | bank <- vecSpadB ]
 
     -- Compute affine offsets
     when goLoad do
