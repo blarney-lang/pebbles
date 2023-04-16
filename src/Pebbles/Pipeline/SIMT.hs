@@ -260,6 +260,9 @@ makeSIMTPipeline c inputs =
             then simtScalarisingRegFile_loadLatency
             else if enableCHERI then 2 else 1
 
+    -- Is the pipeline active?
+    pipelineActive :: Reg (Bit 1) <- makeReg false
+
     -- Register file
     regFile :: SIMTRegFile (Log2Ceil SIMTRegFileSize) 33 <-
       if c.useRegFileScalarisation
@@ -272,6 +275,7 @@ makeSIMTPipeline c inputs =
                , useDynRegSpill =
                    SIMTRegFileSize < SIMTWarps * 32
                , useSharedVecSpad = Nothing
+               , pipelineActive = pipelineActive.val
                }
         else makeSIMTRegFile
                SIMTRegFileConfig {
@@ -293,9 +297,12 @@ makeSIMTPipeline c inputs =
                    , useDynRegSpill =
                        SIMTCapRegFileSize < SIMTWarps * 32
                    , useSharedVecSpad =
-                       if c.useSharedVectorScratchpad
-                         then Just regFile.sharedVecSpad
-                         else Nothing
+#if SIMTUseSharedVecScratchpad
+                         Just regFile.sharedVecSpad
+#else
+                         Nothing
+#endif
+                   , pipelineActive = pipelineActive.val
                    }
             else makeSIMTRegFile
                    SIMTRegFileConfig {
@@ -445,9 +452,6 @@ makeSIMTPipeline c inputs =
 
     -- Warp id counter, to initialise PC of each thread
     warpIdCounter :: Reg (Bit SIMTLogWarps) <- makeReg 0
-
-    -- Is the pipeline active?
-    pipelineActive :: Reg (Bit 1) <- makeReg false
 
     -- Has initialisation completed?
     initComplete :: Reg (Bit 1) <- makeReg false

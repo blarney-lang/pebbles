@@ -287,6 +287,8 @@ data SIMTScalarisingRegFileConfig t_logSize regWidth =
     -- e.g. track which registers are vectors and which are evicted
   , useSharedVecSpad :: Maybe (SharedVecSpad t_logSize regWidth)
     -- ^ Use shared vector scratchpad
+  , pipelineActive :: Bit 1
+    -- ^ Is processor pipeline active?
   }
 
 -- | Scalarising implementation
@@ -349,6 +351,7 @@ makeSIMTScalarisingRegFile opts = do
 
   -- For determining averge vector scratchpad occupancy
   totalVecCount :: Reg (Bit 32) <- makeReg 0
+  sampleCount :: Reg (Bit 32) <- makeReg 0
 
   let enSharedVecSpad = 
         case opts.useSharedVecSpad of
@@ -386,6 +389,7 @@ makeSIMTScalarisingRegFile opts = do
       initIdx <== initIdx.val - 1
       when (initIdx.val .==. 0) do
         vecCount <== 0
+        sampleCount <== 0
         maxVecCount <== 0
         totalVecCount <== 0
         initInProgress <== false
@@ -399,8 +403,6 @@ makeSIMTScalarisingRegFile opts = do
   -- Vector count
   -- ============
 
-  sampleCount :: Reg (Bit 32) <- makeReg 0
-
   always do
     when (orList [vecCountIncr.val, vecCountDecr1.val
                                   , vecCountDecr2.val]) do
@@ -408,11 +410,12 @@ makeSIMTScalarisingRegFile opts = do
                                 - zeroExtend vecCountDecr1.val
                                 - zeroExtend vecCountDecr2.val
 
-    if sampleCount.val .==. SIMTTotalVecCountSampleRate
-      then do
-        sampleCount <== 0
-        totalVecCount <== totalVecCount.val + zeroExtend vecCount.val
-      else sampleCount <== sampleCount.val + 1
+    when (opts.pipelineActive .&&. inv initInProgress.val) do
+      if sampleCount.val .==. SIMTTotalVecCountSampleRate
+        then do
+          sampleCount <== 0
+          totalVecCount <== totalVecCount.val + zeroExtend vecCount.val
+        else sampleCount <== sampleCount.val + 1
 
   -- Load path
   -- =========
