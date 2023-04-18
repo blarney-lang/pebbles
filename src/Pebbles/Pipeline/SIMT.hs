@@ -71,6 +71,7 @@ import Pebbles.Pipeline.SIMT.Management
 import Pebbles.Pipeline.SIMT.RegFile
 import Pebbles.Memory.Interface
 import Pebbles.Memory.DRAM.Interface
+import Pebbles.Memory.CoalescingUnit
 import Pebbles.CSRs.TrapCodes
 import Pebbles.CSRs.Custom.SIMTDevice
 
@@ -159,6 +160,8 @@ data SIMTPipelineIns =
       -- ^ For DRAM stat counters
     , simtMemReqs :: Vec SIMTLanes (Sink MemReq)
       -- ^ Memory request path
+    , simtCoalStats :: CoalUnitPerfStats
+      -- ^ For coalescing unit stat counters
   }
 
 -- | SIMT pipeline outputs
@@ -393,6 +396,12 @@ makeSIMTPipeline c inputs =
     -- Count DRAM accesses for performance stats
     dramAccessCount :: Reg (Bit 32) <- makeReg 0
 
+    -- Count coalescing unit store buffer load hit/miss
+    sbLoadHitCount :: Reg (Bit 32) <- makeReg 0
+    sbLoadMissCount :: Reg (Bit 32) <- makeReg 0
+    sbCapLoadHitCount :: Reg (Bit 32) <- makeReg 0
+    sbCapLoadMissCount :: Reg (Bit 32) <- makeReg 0
+
     -- Triggers from each execute unit to increment instruction count
     incInstrCountRegs <- replicateM SIMTLanes (makeDReg false)
     incScalarInstrCount <- makeDReg false
@@ -520,6 +529,10 @@ makeSIMTPipeline c inputs =
         scalarSuspCount <== 0
         scalarAbortCount <== 0
         dramAccessCount <== 0
+        sbLoadHitCount <== 0
+        sbLoadMissCount <== 0
+        sbCapLoadHitCount <== 0
+        sbCapLoadMissCount <== 0
 
     -- Stat counters
     -- =============
@@ -560,6 +573,17 @@ makeSIMTPipeline c inputs =
             dramAccessCount.val +
                zeroExtend inputs.simtDRAMStatSigs.dramLoadSig +
                  zeroExtend inputs.simtDRAMStatSigs.dramStoreSig
+
+          -- Store buffer hit rate
+          when inputs.simtCoalStats.incLoadHit do
+            if inputs.simtCoalStats.isCapMetaAccess
+              then sbCapLoadHitCount <== sbCapLoadHitCount.val + 1
+              else sbLoadHitCount <== sbLoadHitCount.val + 1
+
+          when inputs.simtCoalStats.incLoadMiss do
+            if inputs.simtCoalStats.isCapMetaAccess
+              then sbCapLoadMissCount <== sbCapLoadMissCount.val + 1
+              else sbLoadMissCount <== sbLoadMissCount.val + 1
 
     -- ===============
     -- Vector Pipeline
@@ -1968,6 +1992,14 @@ makeSIMTPipeline c inputs =
                       regFile.totalVecRegs
                   , statId .==. simtStat_TotalCapVecRegs -->
                       capRegFile.totalVecRegs
+                  , statId .==. simtStat_SBLoadHit -->
+                      sbLoadHitCount.val
+                  , statId .==. simtStat_SBLoadMiss -->
+                      sbLoadMissCount.val
+                  , statId .==. simtStat_SBCapLoadHit -->
+                      sbCapLoadHitCount.val
+                  , statId .==. simtStat_SBCapLoadMiss -->
+                      sbCapLoadMissCount.val
                   ]
             enq kernelRespQueue
               (if c.enableStatCounters then resp else zero)
