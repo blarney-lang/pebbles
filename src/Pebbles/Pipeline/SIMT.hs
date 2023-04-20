@@ -141,6 +141,8 @@ data SIMTPipelineConfig tag =
     -- ^ Round robin spill strategy
   , useSharedVectorScratchpad :: Bool
     -- ^ Share vector scatchpad between int and cap reg files?
+  , usesCap :: [tag]
+    -- ^ Instructions that use cap meta-data of register operands
   }
 
 -- | SIMT pipeline inputs
@@ -868,6 +870,13 @@ makeSIMTPipeline c inputs =
     let instr3 = if enableSpill then old instrMemA.out else instrMemA.out
     let activeMask3 =
           if enableSpill then old activeMask2b.val else activeMask2b.val
+    let (tagMap3, _) = matchMap False (c.decodeStage) instr3
+    let usesCapMetaData3 = 
+          if enableCHERI && c.useSharedVectorScratchpad
+            then orList
+                   [ Map.findWithDefault false tag tagMap3
+                   | tag <- c.usesCap ]
+            else true
     let go3 = stage2Delay go2
 
     -- Stage 3: Operand Fetch
@@ -876,14 +885,16 @@ makeSIMTPipeline c inputs =
     let pcc4 = delay dontCare pcc3
 
     always do
-      when (inv capRegFile.stall) do
+      when (go3 .&&. inv capRegFile.stall) do
+
         -- Fetch operands from register file
         regFile.loadA (warpId3, fetchA3)
         regFile.loadB (warpId3, srcB instr3)
 
         -- Fetch capability meta-data from register file
-        capRegFile.loadA (warpId3, fetchA3)
-        capRegFile.loadB (warpId3, srcB instr3)
+        when usesCapMetaData3 do
+          capRegFile.loadA (warpId3, fetchA3)
+          capRegFile.loadB (warpId3, srcB instr3)
 
       -- Load eviction status of destination register
       when enableSpill do

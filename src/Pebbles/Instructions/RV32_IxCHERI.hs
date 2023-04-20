@@ -551,3 +551,22 @@ checkPCC cap =
   where
     addr = getAddr cap.capPipe
     perms = getHardPerms cap.capPipe
+
+-- CHERI instructions
+-- ==================
+
+-- Instructions that use the capability meta-data of their operand registers
+instrsThatUseCapMetaData :: [Mnemonic]
+instrsThatUseCapMetaData =
+  [ AUIPC, JALR
+  , LOAD, STORE
+  , CGetPerm, CGetType
+  , CGetBase, CGetLen
+  , CGetTag, CGetSealed
+  , CGetFlags, CGetAddr
+  , CAndPerm, CSetFlags
+  , CSetAddr , CIncOffset
+  , CSetBounds, CSetBoundsExact
+  , CMove, CClearTag
+  , CSpecialRW, CSealEntry
+  , CRRL, CRAM ]
