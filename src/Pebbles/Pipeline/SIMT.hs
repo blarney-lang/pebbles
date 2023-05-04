@@ -974,6 +974,9 @@ makeSIMTPipeline c inputs =
     let usesA = isFieldInUse "rs1" fieldMap4
     let usesB = isFieldInUse "rs2" fieldMap4
     let usesDest = isFieldInUse "rd" fieldMap4
+    let usesA5 = delay false $ extra usesA
+    let usesB5 = delay false $ extra usesB
+    let usesDest5 =  delay false $ extra usesDest
 
     -- Register unspilling (fetching)
     let needsDest4 = usesDest .&&. loadDelay (activeMask4.val .!=. ones)
@@ -1081,8 +1084,8 @@ makeSIMTPipeline c inputs =
         -- Maintain approximate rolling average of register usage
         when (enableSpill && c.useLRUSpill) do
           let anyFull = orList (map (.==. ones) (map (.val) (toList regUsage)))
-          let incA i = delay false usesA .&&. srcA instr5 .==. fromInteger i
-          let incB i = delay false usesB .&&. srcB instr5 .==. fromInteger i
+          let incA i = usesA5 .&&. srcA instr5 .==. fromInteger i
+          let incB i = usesB5 .&&. srcB instr5 .==. fromInteger i
           when (warpId5 .==. 0) do
             sequence_ [ if anyFull
                           then r <== false # upper r.val
