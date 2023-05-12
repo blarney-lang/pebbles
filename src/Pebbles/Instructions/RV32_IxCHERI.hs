@@ -559,7 +559,7 @@ checkPCC cap =
 instrsThatUseCapMetaData :: [Mnemonic]
 instrsThatUseCapMetaData =
   [ AUIPC, JALR
-  , LOAD, STORE
+  , LOAD, STORE, AMO
   , CGetPerm, CGetType
   , CGetBase, CGetLen
   , CGetTag, CGetSealed
