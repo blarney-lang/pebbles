@@ -873,7 +873,7 @@ makeSIMTPipeline c inputs =
     let (tagMap3, _) = matchMap False (c.decodeStage) instr3
     let usesCapMetaData3 = 
           if enableCHERI && c.useSharedVectorScratchpad
-            then orList
+            then spill3 .||. orList
                    [ Map.findWithDefault false tag tagMap3
                    | tag <- c.usesCap ]
             else true
@@ -974,29 +974,31 @@ makeSIMTPipeline c inputs =
     let usesA = isFieldInUse "rs1" fieldMap4
     let usesB = isFieldInUse "rs2" fieldMap4
     let usesDest = isFieldInUse "rd" fieldMap4
+    let usesCap = loadDelay (delay false usesCapMetaData3)
     let usesA5 = delay false $ extra usesA
     let usesB5 = delay false $ extra usesB
-    let usesDest5 =  delay false $ extra usesDest
+    let usesDest5 = delay false $ extra usesDest
 
     -- Register unspilling (fetching)
     let needsDest4 = usesDest .&&. loadDelay (activeMask4.val .!=. ones)
     let unspill4 = if not enableSpill then false else orList [
             usesA .&&. regFile.evictedA
-          , usesA .&&. capRegFile.evictedA
+          , usesA .&&. capRegFile.evictedA .&&. usesCap
           , usesB .&&. regFile.evictedB
-          , usesB .&&. capRegFile.evictedB
+          , usesB .&&. capRegFile.evictedB .&&. usesCap
           , needsDest4 .&&. regFile.evictedStatus
           , needsDest4 .&&. capRegFile.evictedStatus ]
     let unspillTo4 = orList [
-            usesA .&&. capRegFile.evictedA
-          , usesB .&&. capRegFile.evictedB
+            usesA .&&. capRegFile.evictedA .&&. usesCap
+          , usesB .&&. capRegFile.evictedB .&&. usesCap
           , needsDest4 .&&. capRegFile.evictedStatus ]
     let srcA4 = srcA delayedInstr4
     let srcB4 = srcB delayedInstr4
     let dest4 = dst delayedInstr4
     let unspillReg4 = if unspillTo4
-          then (usesA .&&. capRegFile.evictedA) ? (srcA4,
-                  (usesB .&&. capRegFile.evictedB) ? (srcB4, dest4))
+          then (usesA .&&. capRegFile.evictedA .&&. usesCap) ? (srcA4,
+                  (usesB .&&. capRegFile.evictedB .&&. usesCap) ?
+                     (srcB4, dest4))
           else (usesA .&&. regFile.evictedA) ? (srcA4,
                   (usesB .&&. regFile.evictedB) ? (srcB4, dest4))
     let unspillTo5 = old $ extra unspillTo4
