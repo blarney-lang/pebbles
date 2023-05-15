@@ -119,8 +119,8 @@ data SIMTRegFile t_logSize regWidth =
 -- | Vector scratchpad can be shared between register files
 data SharedVecSpad t_logSize regWidth =
   SharedVecSpad {
-    vecSpadA :: [RAM (Bit t_logSize) (Bit regWidth)]
-  , vecSpadB :: [RAM (Bit t_logSize) (Bit regWidth)]
+    vecSpadA :: [RAM (Bit t_logSize) (Option (Bit regWidth))]
+  , vecSpadB :: [RAM (Bit t_logSize) (Option (Bit regWidth))]
   , freeSlots :: SlotManager (Bit t_logSize)
   }
 
@@ -251,22 +251,28 @@ makeSIMTRegFile opts = do
 -- Basic scalarising implementation
 -- ================================
 
--- This scalarising register file consists of a scalar register
--- file containing scalar values or pointers to a dynamically
--- growing/shrinking vector scratchpad.
+-- This scalarising register file consists of a scalar register file,
+-- a dynamically growing/shrinking vector scratchpad, and a directory
+-- mapping each register to a location in the vector scratchpad.
+
+-- | Register status
+data RegStatus = RegStatus (Bit 2) deriving (Generic, Bits, Cmp)
+reg_Scalar  = RegStatus 0
+reg_Vector  = RegStatus 1
+reg_Evicted = RegStatus 2
 
 -- | Pointer to vector in scratchpad
 type SpadPtr = SIMTRegFileAddr
 
--- | A scalar register is either a scalar val or a pointer to a vector
--- in the scratchpad; it can also be a vector that has been evicted to
--- DRAM due to scratchpad overflow.
-type ScalarReg regWidth =
-  TaggedUnion [
-    "scalar" ::: ScalarVal regWidth
-  , "vector" ::: SpadPtr
-  , "evicted" ::: ()
-  ]
+-- | Entry in the directory
+data DirEntry =
+  DirEntry {
+    status :: RegStatus
+    -- ^ Status of this register
+  , ptr :: SpadPtr
+    -- ^ If it's a vector, where can vector be found? 
+  }
+  deriving (Generic, Bits)
 
 -- | Load latency of this implementation
 simtScalarisingRegFile_loadLatency :: Int = 3
@@ -299,24 +305,35 @@ makeSIMTScalarisingRegFile :: forall t_logSize regWidth.
   -> Module (SIMTRegFile t_logSize regWidth)
 makeSIMTScalarisingRegFile opts = do
 
-  -- Scalar register file (6 read ports, 2 write ports)
-  (scalarRegFileA, scalarRegFileB) ::
-    (RAM SIMTRegFileIdx (ScalarReg regWidth),
-     RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
-  (scalarRegFileC, scalarRegFileD) ::
-    (RAM SIMTRegFileIdx (ScalarReg regWidth),
-     RAM SIMTRegFileIdx (ScalarReg regWidth)) <-
+  -- Directory
+  (dirA, dirB) ::
+    (RAM SIMTRegFileIdx DirEntry,
+     RAM SIMTRegFileIdx DirEntry) <- makeQuadRAM
+  (dirC, dirD) ::
+    (RAM SIMTRegFileIdx DirEntry,
+     RAM SIMTRegFileIdx DirEntry) <-
        if opts.useScalarUnit
          then makeQuadRAM
          else return (nullRAM, nullRAM)
-  (scalarRegFileE, scalarRegFileF) ::
-    (RAM SIMTRegFileIdx (ScalarReg regWidth),
-     RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
+  (dirE, dirF) ::
+    (RAM SIMTRegFileIdx DirEntry,
+     RAM SIMTRegFileIdx DirEntry) <- makeQuadRAM
+
+  -- Scalar register file
+  (scalarRegFileA, scalarRegFileB) ::
+    (RAM SIMTRegFileIdx (ScalarVal regWidth),
+     RAM SIMTRegFileIdx (ScalarVal regWidth)) <- makeQuadRAM
+  (scalarRegFileC, scalarRegFileD) ::
+    (RAM SIMTRegFileIdx (ScalarVal regWidth),
+     RAM SIMTRegFileIdx (ScalarVal regWidth)) <-
+       if opts.useScalarUnit
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
 
   -- Vector scratchpad (banked)
   (vecSpadA, vecSpadB) ::
-    ([RAM (Bit t_logSize) (Bit regWidth)],
-     [RAM (Bit t_logSize) (Bit regWidth)]) <-
+    ([RAM (Bit t_logSize) (Option (Bit regWidth))],
+     [RAM (Bit t_logSize) (Option (Bit regWidth))]) <-
        case opts.useSharedVecSpad of
          Nothing -> unzip <$> replicateM SIMTLanes makeQuadRAM
          Just spad -> return (spad.vecSpadA, spad.vecSpadB)
@@ -370,15 +387,22 @@ makeSIMTScalarisingRegFile opts = do
   -- Initialisation
   always do
     when initInProgress.val do
-      let initScalarReg = tag #scalar
+      let initDirEntry =
+            DirEntry {
+              status = reg_Scalar
+            , ptr = 0
+            }
+      let initScalarVal =
             ScalarVal {
               val = opts.regInitVal
             , stride = 0
             }
       let idx = unpack initIdx.val
-      scalarRegFileB.store idx initScalarReg
-      scalarRegFileD.store idx initScalarReg
-      scalarRegFileF.store idx initScalarReg
+      dirA.store idx initDirEntry
+      dirC.store idx initDirEntry
+      dirE.store idx initDirEntry
+      scalarRegFileB.store idx initScalarVal
+      scalarRegFileD.store idx initScalarVal
       evictStatus.store idx false
       when (not enSharedVecSpad) do
         when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
@@ -438,10 +462,10 @@ makeSIMTScalarisingRegFile opts = do
   -- (TODO: don't issue load if not load wire not active?)
   always do
     let goLoad = delay false (loadWireA.val .||. loadWireB.val)
-    let isVectorA = scalarRegFileA.out `is` #vector
-    let isVectorB = scalarRegFileB.out `is` #vector
-    let idxA = truncateCast (untag #vector scalarRegFileA.out)
-    let idxB = truncateCast (untag #vector scalarRegFileB.out)
+    let isVectorA = dirA.out.status .==. reg_Vector
+    let isVectorB = dirB.out.status .==. reg_Vector
+    let idxA = truncateCast dirA.out.ptr
+    let idxB = truncateCast dirB.out.ptr
     let stall = if enSharedVecSpad
                   then goLoad .&&. (isVectorA .||. isVectorB)
                   else false
@@ -461,8 +485,8 @@ makeSIMTScalarisingRegFile opts = do
     -- Compute affine offsets
     when goLoad do
       when opts.useAffine do
-        let scalarA = untag #scalar scalarRegFileA.out
-        let scalarB = untag #scalar scalarRegFileB.out
+        let scalarA = scalarRegFileA.out
+        let scalarB = scalarRegFileB.out
         zipWithM_ (<==) affineOffsetsA
           [ zeroExtend scalarA.stride * fromInteger i
           | i <- [0..SIMTLanes-1] ]
@@ -486,29 +510,15 @@ makeSIMTScalarisingRegFile opts = do
   storeVec2 <- makeReg dontCare
   storeEvict2 <- makeDReg false
   storeIsScalar2 <- makeReg dontCare
-  storeScalarEntry2 <- makeReg dontCare
+  storeDirEntry2 <- makeReg dontCare
   storeStride2 :: Reg (Bit SIMTAffineScalarisationBits) <- makeReg 0
-  storeOffsets2 ::
-    [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
-      replicateM SIMTLanes (makeReg 0)
 
   always do
     -- Stage 1
     when store1.val do
-      -- Scalar reg before write
-      let scalarReg = untag #scalar scalarRegFileE.out
-      -- Is it a uniform vector?
-      let isUniform = scalarRegFileE.out `is` #scalar .&&.
-                        (if opts.useAffine
-                           then scalarReg.stride .==. 0
-                           else true)
       -- Validity of writes
       let anyValid = orList [item.valid | item <- toList storeVec1.val]
       let allValid = andList [item.valid | item <- toList storeVec1.val]
-      -- Compute new vector to write
-      let writeVals :: Vec SIMTLanes (Bit regWidth) = fromList
-            [ item.valid ? (item.val, scalarReg.val)
-            | item <- toList storeVec1.val ]
       -- Comparison function for detecting uniform/affine vectors
       let equal x y =
             if opts.useAffine
@@ -517,33 +527,27 @@ makeSIMTScalarisingRegFile opts = do
       -- Is it a scalar write?
       -- If so, all bits in this list will be true. For timing
       -- reasons, we "and" them together in the next cycle, not here
-      let isScalarConds = (allValid .||. isUniform) :
-            zipWith equal (toList writeVals)
-                          (drop 1 $ toList writeVals)
+      let isScalarConds = allValid :
+            zipWith equal (map (.val) $ toList storeVec1.val)
+                          (drop 1 $ map (.val) $ toList storeVec1.val)
       -- Trigger next stage
       storeIsScalar2 <== (fromBitList isScalarConds :: Bit SIMTLanes)
-      storeScalarEntry2 <== scalarRegFileE.out
+      storeDirEntry2 <== dirE.out
       storeIdx2 <== storeIdx1.val
-      storeVec2 <== V.zipWith (\item writeVal -> Option item.valid writeVal)
-                      storeVec1.val writeVals
+      storeVec2 <== storeVec1.val
       storeStride2 <== storeStride1.val
       storeEvict2 <== storeEvict1.val
       when (anyValid .||. storeEvict1.val) do
         store2 <== true
-      -- Expand affine vector
-      when opts.useAffine do
-        zipWithM_ (<==) storeOffsets2
-          [ item.valid ? (0, zeroExtend scalarReg.stride * fromInteger i)
-          | (item, i) <- zip (toList storeVec1.val) [0..SIMTLanes-1] ]
  
     -- Stage 2
     when store2.val do
       -- Was it a vector before this write?
-      let wasVector = storeScalarEntry2.val `is` #vector
+      let wasVector = storeDirEntry2.val.status .==. reg_Vector
       -- Was it an evicted vector before this write?
-      let wasEvicted = storeScalarEntry2.val `is` #evicted
+      let wasEvicted = storeDirEntry2.val.status .==. reg_Evicted
       -- Was it a scalar before this write?
-      let wasScalar = storeScalarEntry2.val `is` #scalar
+      let wasScalar = storeDirEntry2.val.status .==. reg_Scalar
       -- Is it a vector after this write?
       let isVector = if SIMTRegFilePreventScalarDetection == 1
                        then true
@@ -560,33 +564,30 @@ makeSIMTScalarisingRegFile opts = do
               "Scalarising reg file: out of free space"
             freeSlots.pop1
             vecCountIncr.pulse
-            -- Tell scalar reg file about new vector
-            let newScalarRegEntry = tag #vector (zeroExtendCast slot)
-            scalarRegFileA.store storeIdx2.val newScalarRegEntry
-            scalarRegFileC.store storeIdx2.val newScalarRegEntry
-            scalarRegFileE.store storeIdx2.val newScalarRegEntry
+            -- Tell directory about new vector
+            let newDirEntry =
+                  DirEntry {
+                    status = reg_Vector
+                  , ptr = zeroExtendCast slot
+                  }
+            dirA.store storeIdx2.val newDirEntry
+            dirC.store storeIdx2.val newDirEntry
+            dirE.store storeIdx2.val newDirEntry
             evictStatus.store storeIdx2.val false
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
-                ( truncateCast (untag #vector storeScalarEntry2.val)
+                ( truncateCast storeDirEntry2.val.ptr
                 , slot )
-          let isAffine = storeScalarEntry2.val `is` #scalar
           sequence_
-            [ when (item.valid .||. inv wasVector) do
-                if opts.useAffine
-                  then bank.store spadAddr
-                         (item.val + zeroExtendCast offset.val)
-                  else bank.store spadAddr item.val
-            | (bank, item, offset) <-
-                zip3 vecSpadA (toList storeVec2.val) storeOffsets2 ]
+            [ when (item.valid .||. inv wasVector) do bank.store spadAddr item
+            | (bank, item) <- zip vecSpadA (toList storeVec2.val) ]
         else do
           -- Now a scalar (or evicted vector). Was it a vector before?
           when wasVector do
             -- We need to reclaim the vector
             dynamicAssert freeSlots.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots.push1 (truncateCast
-              (untag #vector storeScalarEntry2.val))
+            freeSlots.push1 (truncateCast storeDirEntry2.val.ptr)
             vecCountDecr1.pulse
           -- Write to scalar reg file
           let scalarVal =
@@ -594,12 +595,16 @@ makeSIMTScalarisingRegFile opts = do
                   val = (V.head storeVec2.val).val
                 , stride = storeStride2.val
                 }
-          let writeVal = storeEvict2.val ?
-                (tag #evicted (), tag #scalar scalarVal)
-          
-          scalarRegFileA.store storeIdx2.val writeVal
-          scalarRegFileC.store storeIdx2.val writeVal
-          scalarRegFileE.store storeIdx2.val writeVal
+          let writeEntry =
+                DirEntry {
+                  status = storeEvict2.val ? (reg_Evicted, reg_Scalar)
+                , ptr = 0
+                }
+          dirA.store storeIdx2.val writeEntry
+          dirC.store storeIdx2.val writeEntry
+          dirE.store storeIdx2.val writeEntry
+          scalarRegFileA.store storeIdx2.val scalarVal
+          scalarRegFileC.store storeIdx2.val scalarVal
           evictStatus.store storeIdx2.val storeEvict2.val
 
       -- Track vectors
@@ -620,17 +625,19 @@ makeSIMTScalarisingRegFile opts = do
     when opts.useScalarUnit do
       when storeScalarGo.val do
         -- Update scalar reg file
-        let s = tag #scalar storeScalarVal.val
         let idx = storeScalarIdx.val
-        scalarRegFileB.store idx s
-        scalarRegFileD.store idx s
-        scalarRegFileF.store idx s
+        let entry = DirEntry { status = reg_Scalar, ptr = 0 }
+        scalarRegFileB.store idx storeScalarVal.val
+        scalarRegFileD.store idx storeScalarVal.val
+        dirB.store idx entry
+        dirD.store idx entry
+        dirF.store idx entry
         evictStatusB.store idx false
         -- Reclaim vector space
-        when (scalarRegFileF.out `is` #vector) do
+        when (dirF.out.status .==. reg_Vector) do
           dynamicAssert freeSlots.notFull
             "Scalarising reg file: freeSlots overflow"
-          freeSlots.push2 (truncateCast (untag #vector scalarRegFileF.out))
+          freeSlots.push2 (truncateCast dirF.out.ptr)
           vecCountDecr2.pulse
         -- Track vector registers
         when opts.useDynRegSpill do
@@ -638,7 +645,11 @@ makeSIMTScalarisingRegFile opts = do
           ((vecMasks ! warpId) ! regId) <== false
 
   -- Expand scalar register to vector
-  let expandScalar scalarReg offsets = 
+  let expandScalar :: forall regWidth. KnownNat regWidth
+                   => ScalarVal regWidth
+                   -> [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))]
+                   -> Vec SIMTLanes (Bit regWidth)
+      expandScalar scalarReg offsets = 
         if opts.useAffine
           then fromList [ scalarReg.val + zeroExtendCast o.val
                         | o <- offsets ]
@@ -647,64 +658,80 @@ makeSIMTScalarisingRegFile opts = do
   return
     SIMTRegFile {
       loadA = \idx -> do
+        dirA.load idx
         scalarRegFileA.load idx
         loadWireA <== true
     , loadB = \idx -> do
+        dirB.load idx
         scalarRegFileB.load idx
         loadWireB <== true
     , loadScalarC = \idx -> do
+        dirC.load idx
         scalarRegFileC.load idx
     , loadScalarD = \idx -> do
+        dirD.load idx
         scalarRegFileD.load idx
     , outA =
-        let isVector = delay false (scalarRegFileA.out `is` #vector) in
+        let isVector = delay false (dirA.out.status .==. reg_Vector) in
           if enSharedVecSpad
             then
-              delay false isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadA]
-                , old $ expandScalar (old $ untag #scalar scalarRegFileA.out)
-                                     affineOffsetsA )
+              fromList
+                [ (delay false isVector .&&. vecItem.valid) ?
+                    (vecItem.val, scalItem)
+                | (vecItem, scalItem) <- 
+                    zip [bank.out | bank <- vecSpadA]
+                        (toList $ old $ expandScalar
+                           (old scalarRegFileA.out) affineOffsetsA)
+                ]
             else
-              old $ isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadA]
-                , expandScalar (old $ untag #scalar scalarRegFileA.out)
-                               affineOffsetsA )
+              old $ fromList
+                [ (isVector .&&. vecItem.valid) ? (vecItem.val, scalItem)
+                | (vecItem, scalItem) <- 
+                    zip [bank.out | bank <- vecSpadA]
+                        (toList $ expandScalar
+                           (old scalarRegFileA.out) affineOffsetsA)
+                ]
     , outB =
-        let isVector = delay false (scalarRegFileB.out `is` #vector) in
+        let isVector = delay false (dirB.out.status .==. reg_Vector) in
           if enSharedVecSpad
             then
-              delay false isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadB]
-                , old $ expandScalar (old $ untag #scalar scalarRegFileB.out)
-                                     affineOffsetsB )
+              fromList
+                [ (delay false isVector .&&. vecItem.valid) ?
+                    (vecItem.val, scalItem)
+                | (vecItem, scalItem) <- 
+                    zip [bank.out | bank <- vecSpadB]
+                        (toList $ old $ expandScalar
+                           (old scalarRegFileB.out) affineOffsetsB)
+                ]
             else
-              old $ isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadB]
-                , expandScalar (old $ untag #scalar scalarRegFileB.out)
-                               affineOffsetsB )
-    , evictedA = iterateN 2 (delay false) (scalarRegFileA.out `is` #evicted)
-    , evictedB = iterateN 2 (delay false) (scalarRegFileB.out `is` #evicted)
+              old $ fromList
+                [ (isVector .&&. vecItem.valid) ? (vecItem.val, scalItem)
+                | (vecItem, scalItem) <- 
+                    zip [bank.out | bank <- vecSpadB]
+                        (toList $ expandScalar
+                           (old scalarRegFileB.out) affineOffsetsB)
+                ]
+    , evictedA = iterateN 2 (delay false) (dirA.out.status .==. reg_Evicted)
+    , evictedB = iterateN 2 (delay false) (dirB.out.status .==. reg_Evicted)
     , loadEvictedStatus = \idx -> evictStatus.load idx
     , evictedStatus = iterateN 2 (delay false) evictStatus.out
     , scalarA =
-        let isScalar = delay false (scalarRegFileA.out `is` #scalar)
-            scalar = old (untag #scalar scalarRegFileA.out)
+        let isScalar = delay false (dirA.out.status .==. reg_Scalar)
+            scalar = old scalarRegFileA.out
         in  delay none (Option isScalar scalar)
     , scalarB =
-        let isScalar = delay false (scalarRegFileB.out `is` #scalar)
-            scalar = old (untag #scalar scalarRegFileB.out)
+        let isScalar = delay false (dirB.out.status .==. reg_Scalar)
+            scalar = old scalarRegFileB.out
         in  delay none (Option isScalar scalar)
     , scalarC =
-        Option (scalarRegFileC.out `is` #scalar)
-               (untag #scalar scalarRegFileC.out)
+        Option (dirC.out.status .==. reg_Scalar) scalarRegFileC.out
     , scalarD =
-        Option (scalarRegFileD.out `is` #scalar)
-               (untag #scalar scalarRegFileD.out)
+        Option (dirD.out.status .==. reg_Scalar) scalarRegFileD.out
     , store = \idx vec -> do
         store1 <== true
         storeIdx1 <== idx
         storeVec1 <== vec
-        scalarRegFileE.load idx
+        dirE.load idx
         -- Determine stride for affine scalarisation
         when opts.useAffine do
           let v0 = vec ! (0::Int)
@@ -724,9 +751,9 @@ makeSIMTScalarisingRegFile opts = do
         store1 <== true
         storeIdx1 <== idx
         storeEvict1 <== true
-        scalarRegFileE.load idx
+        dirE.load idx
     , storeScalar = \idx x -> do
-        scalarRegFileF.load idx
+        dirF.load idx
         storeScalarGo <== true
         storeScalarIdx <== idx
         storeScalarVal <== x
