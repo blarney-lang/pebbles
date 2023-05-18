@@ -117,6 +117,10 @@ data SIMTPipelineConfig tag =
     -- ^ Use scalarising register file?
   , useAffineScalarisation :: Bool
     -- ^ Use affine scalarisation, or plain uniform scalarisation?
+  , usePartialScalarisationInt :: Bool
+    -- ^ Use 2-way partial scalarisation for int reg file?
+  , usePartialScalarisationCap :: Bool
+    -- ^ Use 2-way partial scalarisation for cap meta-data reg file?
   , useCapRegFileScalarisation :: Bool
     -- ^ Use scalarising register file for capabilities?
   , useScalarUnit :: Bool
@@ -281,6 +285,7 @@ makeSIMTPipeline c inputs =
                    SIMTRegFileSize < SIMTWarps * 32
                , useSharedVecSpad = Nothing
                , pipelineActive = pipelineActive.val
+               , usePartial = c.usePartialScalarisationInt
                }
         else makeSIMTRegFile
                SIMTRegFileConfig {
@@ -308,6 +313,7 @@ makeSIMTPipeline c inputs =
                          Nothing
 #endif
                    , pipelineActive = pipelineActive.val
+                   , usePartial = c.usePartialScalarisationCap
                    }
             else makeSIMTRegFile
                    SIMTRegFileConfig {
@@ -1050,8 +1056,10 @@ makeSIMTPipeline c inputs =
               if enableCHERI then capRegFile.scalarA.valid else true
         let isAffineB = regFile.scalarB.valid .&&.
               if enableCHERI then capRegFile.scalarB.valid else true
-        let isUniformA = isAffineA .&&. regFile.scalarA.val.stride .==. 0
-        let isUniformB = isAffineB .&&. regFile.scalarB.val.stride .==. 0
+        let isUniformA = isAffineA .&&.
+              regFile.scalarA.val.stride .==. stride_0
+        let isUniformB = isAffineB .&&.
+              regFile.scalarB.val.stride .==. stride_0
         let allUniform = (usesA .==>. isUniformA) .&&. (usesB .==>. isUniformB)
         let allAffine = (usesA .==>. isAffineA) .&&. (usesB .==>. isAffineB)
         let oneUniform = allAffine .&&.
@@ -1633,7 +1641,7 @@ makeSIMTPipeline c inputs =
               then
                 let imm = getBitField scalarFieldMap3 "imm"
                     rs2 = getBitField scalarFieldMap3 "rs2" :: Option RegId
-                    choice = ( ScalarVal { val = imm.val, stride = 0 }
+                    choice = ( ScalarVal { val = imm.val, stride = stride_0 }
                              , regFile.scalarD.val )
                     swap (x, y) = (y, x)
                     imm_r = imm.valid ? choice
@@ -1679,8 +1687,10 @@ makeSIMTPipeline c inputs =
               if enableCHERI then capRegFile.scalarC.valid else true
         let isAffineB = regFile.scalarD.valid .&&.
               if enableCHERI then capRegFile.scalarD.valid else true
-        let isUniformA = isAffineA .&&. regFile.scalarC.val.stride .==. 0
-        let isUniformB = isAffineB .&&. regFile.scalarD.val.stride .==. 0
+        let isUniformA = isAffineA .&&.
+              regFile.scalarC.val.stride .==. stride_0
+        let isUniformB = isAffineB .&&.
+              regFile.scalarD.val.stride .==. stride_0
         let allUniform = (usesA .==>. isUniformA) .&&. (usesB .==>. isUniformB)
         let allAffine = (usesA .==>. isAffineA) .&&. (usesB .==>. isAffineB)
         let oneUniform = allAffine .&&.
@@ -1704,8 +1714,7 @@ makeSIMTPipeline c inputs =
       let pcPlusFour = scalarState4.val.simtPC + 4
       scalarPCNextWire :: Wire (Bit 32) <- makeWire pcPlusFour
       scalarResultWire :: Wire (Bit 32) <- makeWire dontCare
-      scalarResultStrideWire :: Wire (Bit SIMTAffineScalarisationBits) <-
-        makeWire 0
+      scalarResultStrideWire :: Wire Stride <- makeWire stride_0
       scalarPCCNextWire :: Wire CapPipe <-
         makeWire (setAddrUnsafe scalarPCC4.val.capPipe pcPlusFour)
       scalarResultCapWire :: Wire CapMemMeta <- makeWire dontCare
@@ -1789,7 +1798,16 @@ makeSIMTPipeline c inputs =
               display "Instruction not recognised @ PC="
                 (formatHex 8 scalarState4.val.simtPC)
 
+            -- Shorthands for builtin affine operations
             let dstNonZero = dst scalarInstr4.val .!=. 0
+            let valA = scalarOpA4.val
+            let valB = fst scalarOpBOrImm4.val
+            let affineAlignFail =
+                       valA.stride .!=. stride_0 .&&.
+                         inv (affineAlignCheck valB.val valA.stride)
+                  .||. valB.stride .!=. stride_0 .&&.
+                         inv (affineAlignCheck valA.val valB.stride)
+
 
             -- Built-in affine add
             case c.scalarUnitAffineAdd of
@@ -1797,10 +1815,12 @@ makeSIMTPipeline c inputs =
               Just addOp -> do
                 when (Map.findWithDefault false addOp scalarTagMap4) do
                   when dstNonZero do
-                    scalarResultWire <==
-                      scalarOpA4.val.val + (fst scalarOpBOrImm4.val).val
+                    scalarResultWire <== valA.val + valB.val
                     scalarResultStrideWire <==
-                      scalarOpA4.val.stride + (fst scalarOpBOrImm4.val).stride
+                      if valA.stride .==. stride_0
+                        then valB.stride else valA.stride
+                    when affineAlignFail do
+                      affineAbortWire <== true
                     when enableCHERI do
                       scalarResultCapWire <== nullCapMemMetaVal
 
@@ -1810,8 +1830,8 @@ makeSIMTPipeline c inputs =
               Just cmoveOp -> do
                 when (Map.findWithDefault false cmoveOp scalarTagMap4) do
                   when dstNonZero do
-                    scalarResultWire <== scalarOpA4.val.val
-                    scalarResultStrideWire <== scalarOpA4.val.stride
+                    scalarResultWire <== valA.val
+                    scalarResultStrideWire <== valA.stride
                     when enableCHERI do
                       scalarResultCapWire <== scalarCapMemMetaA4.val
 
@@ -1821,13 +1841,15 @@ makeSIMTPipeline c inputs =
               Just cincOp -> do
                 when (Map.findWithDefault false cincOp scalarTagMap4) do
                   when dstNonZero do
-                    let sum = scalarOpA4.val.val +
-                              (fst scalarOpBOrImm4.val).val
+                    let sum = valA.val + valB.val
                     scalarResultWire <== sum
                     scalarResultStrideWire <==
-                      scalarOpA4.val.stride + (fst scalarOpBOrImm4.val).stride
+                      if valA.stride .==. stride_0
+                        then valB.stride else valA.stride
                     when enableCHERI do
                       scalarResultCapWire <== scalarCapMemMetaA4.val
+                    when affineAlignFail do
+                      affineAbortWire <== true
                     -- Abort as result could be out of representable bounds
                     when (zeroExtend sum .>. scalarCapA4.val.capTop) do
                       affineAbortWire <== true
@@ -1901,7 +1923,7 @@ makeSIMTPipeline c inputs =
             when enableCHERI do
               capRegFile.storeScalar dest
                 ScalarVal { val = old scalarResultCapWire.val
-                          , stride = 0 }
+                          , stride = stride_0 }
           else do
             let resumeReqs = inputs.simtScalarResumeReqs
             when resumeReqs.canPeek do
@@ -1912,13 +1934,14 @@ makeSIMTPipeline c inputs =
               when (info.destReg .!=. 0) do
                 -- Affine vectors not yet allowed on resume path
                 regFile.storeScalar dest
-                  ScalarVal { val = false # req.resumeReqData, stride = 0 }
+                  ScalarVal { val = false # req.resumeReqData
+                            , stride = stride_0 }
                 when enableCHERI do
                   capRegFile.storeScalar dest
                     ScalarVal { val = if req.resumeReqCap.valid
                                         then req.resumeReqCap.val
                                         else nullCapMemMetaVal
-                              , stride = 0 }
+                              , stride = stride_0 }
               -- Trigger warp resumption
               scalarResumeGo <== true
               scalarResumeWarpId <== info.warpId

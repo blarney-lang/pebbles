@@ -32,12 +32,19 @@ import Data.Proxy
 type SIMTRegFileIdx = (Bit SIMTLogWarps, RegId)
 type SIMTRegFileAddr = Bit (SIMTLogWarps + 5)
 
+-- | Affine stride
+data Stride = Stride (Bit 2) deriving (Generic, Bits, Interface, Cmp)
+stride_0 = Stride 0
+stride_1 = Stride 1
+stride_2 = Stride 2
+stride_4 = Stride 3
+
 -- | This structure represents a unform or affine vector
 data ScalarVal n =
   ScalarVal {
     val :: Bit n
     -- ^ Value
-  , stride :: Bit SIMTAffineScalarisationBits
+  , stride :: Stride
     -- ^ Stride between values of an affine vector;
     -- if stride is 0 then the vector is uniform
   }
@@ -295,6 +302,8 @@ data SIMTScalarisingRegFileConfig t_logSize regWidth =
     -- ^ Use shared vector scratchpad
   , pipelineActive :: Bit 1
     -- ^ Is processor pipeline active?
+  , usePartial :: Bool
+    -- ^ Use partial scalarisation?
   }
 
 -- | Scalarising implementation
@@ -327,6 +336,28 @@ makeSIMTScalarisingRegFile opts = do
     (RAM SIMTRegFileIdx (ScalarVal regWidth),
      RAM SIMTRegFileIdx (ScalarVal regWidth)) <-
        if opts.useScalarUnit
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+
+  -- Partial scalar register file
+  -- (optional extenion of scalar register file)
+  (partialRegFileA, partialRegFileB) ::
+    (RAM SIMTRegFileIdx (ScalarVal regWidth),
+     RAM SIMTRegFileIdx (ScalarVal regWidth)) <-
+       if opts.usePartial
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+
+  (partialMaskA, partialMaskB) ::
+    (RAM SIMTRegFileIdx (Bit SIMTLanes),
+     RAM SIMTRegFileIdx (Bit SIMTLanes)) <-
+       if opts.usePartial
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+  (partialMaskE, partialMaskF) ::
+    (RAM SIMTRegFileIdx (Bit SIMTLanes),
+     RAM SIMTRegFileIdx (Bit SIMTLanes)) <-
+       if opts.usePartial
          then makeQuadRAM
          else return (nullRAM, nullRAM)
 
@@ -370,6 +401,14 @@ makeSIMTScalarisingRegFile opts = do
   totalVecCount :: Reg (Bit 32) <- makeReg 0
   sampleCount :: Reg (Bit 32) <- makeReg 0
 
+  -- Get lower bits for affine detection
+  let getLower :: Bit regWidth -> Bit (SIMTLogLanes+2)
+      getLower = unsafeSlice (SIMTLogLanes+1, 0)
+
+  -- Get upper bits for affine detection
+  let getUpper :: Bit regWidth -> Bit (regWidth-SIMTLogLanes-2)
+      getUpper = unsafeSlice (valueOf @regWidth - 1, SIMTLogLanes+2)
+
   let enSharedVecSpad = 
         case opts.useSharedVecSpad of
           Nothing -> False
@@ -395,7 +434,7 @@ makeSIMTScalarisingRegFile opts = do
       let initScalarVal =
             ScalarVal {
               val = opts.regInitVal
-            , stride = 0
+            , stride = stride_0
             }
       let idx = unpack initIdx.val
       dirA.store idx initDirEntry
@@ -403,6 +442,8 @@ makeSIMTScalarisingRegFile opts = do
       dirE.store idx initDirEntry
       scalarRegFileB.store idx initScalarVal
       scalarRegFileD.store idx initScalarVal
+      partialMaskB.store idx 0
+      partialMaskF.store idx 0
       evictStatus.store idx false
       when (not enSharedVecSpad) do
         when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
@@ -451,14 +492,6 @@ makeSIMTScalarisingRegFile opts = do
   -- Stall load pipeline (to handle shared vector scratchpad)
   loadStallWire <- makePulseWire
 
-  -- Affine offsets
-  affineOffsetsA ::
-    [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
-      replicateM SIMTLanes (makeReg 0)
-  affineOffsetsB ::
-    [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
-      replicateM SIMTLanes (makeReg 0)
-
   -- (TODO: don't issue load if not load wire not active?)
   always do
     let goLoad = delay false (loadWireA.val .||. loadWireB.val)
@@ -482,18 +515,6 @@ makeSIMTScalarisingRegFile opts = do
           sequence_ [ bank.load idxA | bank <- vecSpadA ]
           sequence_ [ bank.load idxB | bank <- vecSpadB ]
 
-    -- Compute affine offsets
-    when goLoad do
-      when opts.useAffine do
-        let scalarA = scalarRegFileA.out
-        let scalarB = scalarRegFileB.out
-        zipWithM_ (<==) affineOffsetsA
-          [ zeroExtend scalarA.stride * fromInteger i
-          | i <- [0..SIMTLanes-1] ]
-        zipWithM_ (<==) affineOffsetsB
-          [ zeroExtend scalarB.stride * fromInteger i
-          | i <- [0..SIMTLanes-1] ]
-
   -- Store path
   -- ==========
 
@@ -502,7 +523,8 @@ makeSIMTScalarisingRegFile opts = do
   storeIdx1 <- makeReg dontCare
   storeVec1 <- makeReg dontCare
   storeEvict1 <- makeDReg false
-  storeStride1 :: Reg (Bit SIMTAffineScalarisationBits) <- makeReg 0
+  storeLeaderLane1 :: Reg (Bit SIMTLogLanes) <- makeReg dontCare
+  storeLeaderVal1 :: Reg (Bit regWidth) <- makeReg dontCare
 
   -- Stage 2 pipeline registers
   store2 <- makeDReg false
@@ -510,38 +532,97 @@ makeSIMTScalarisingRegFile opts = do
   storeVec2 <- makeReg dontCare
   storeEvict2 <- makeDReg false
   storeIsScalar2 <- makeReg dontCare
+  storeIsPartial2 <- makeReg dontCare
   storeDirEntry2 <- makeReg dontCare
-  storeStride2 :: Reg (Bit SIMTAffineScalarisationBits) <- makeReg 0
+  storeStride2 <- makeReg dontCare
+  storeLeaderVal2 <- makeReg dontCare
+  storePartialMask2 <- makeReg dontCare
 
   always do
     -- Stage 1
     when store1.val do
+      -- Write mask
+      let writeMask :: Bit SIMTLanes =
+            fromBitList [item.valid | item <- toList storeVec1.val]
       -- Validity of writes
-      let anyValid = orList [item.valid | item <- toList storeVec1.val]
-      let allValid = andList [item.valid | item <- toList storeVec1.val]
-      -- Comparison function for detecting uniform/affine vectors
-      let equal x y =
-            if opts.useAffine
-              then x + zeroExtendCast storeStride1.val .==. y
-              else x .==. y
-      -- Is it a scalar write?
-      -- If so, all bits in this list will be true. For timing
-      -- reasons, we "and" them together in the next cycle, not here
-      let isScalarConds = allValid :
-            zipWith equal (map (.val) $ toList storeVec1.val)
-                          (drop 1 $ map (.val) $ toList storeVec1.val)
+      let anyValid = writeMask .!=. 0
+      let allValid = writeMask .==. ones
+      -- Are the upper bits of each active element the same?
+      let isBaseEq = andList
+             [ inv x.valid .||.
+                 getUpper x.val .==. getUpper storeLeaderVal1.val
+             | x <- toList storeVec1.val ]
+      -- Is there a stride of 0?
+      let isStride0 = andList
+             [ inv x.valid .||.
+                 getLower x.val .==. getLower storeLeaderVal1.val
+             | x <- toList storeVec1.val ]
+      -- Is there a stride of 1?
+      let isStride1 = andList
+             [ inv x.valid .||.
+                 upper low .==. (upper lowLeader :: Bit 2) .&&.
+                 lower low .==. (fromInteger laneId :: Bit SIMTLogLanes)
+             | (x, laneId) <- zip (toList storeVec1.val) [0..]
+             , let low = getLower x.val
+             , let lowLeader = getLower storeLeaderVal1.val
+             ]
+      -- Is there a stride of 2?
+      let isStride2 = andList
+             [ inv x.valid .||.
+                 upper low .==. (upper lowLeader :: Bit 1) .&&.
+                 slice @SIMTLogLanes @1 low .==. fromInteger laneId .&&.
+                 lower low .==. (0 :: Bit 1)
+             | (x, laneId) <- zip (toList storeVec1.val) [0..]
+             , let low = getLower x.val
+             , let lowLeader = getLower storeLeaderVal1.val
+             ]
+      -- Is there a stride of 4?
+      let isStride4 = andList
+             [ inv x.valid .||.
+                 upper low .==. (fromInteger laneId :: Bit SIMTLogLanes) .&&.
+                 lower low .==. (0 :: Bit 2)
+             | (x, laneId) <- zip (toList storeVec1.val) [0..]
+             , let low = getLower x.val
+             ]
+      -- Can store as partial scalar?
+      let canStorePartial =
+            if opts.usePartial
+              then dirE.out.status .==. reg_Scalar
+                     .&&. (partialMaskE.out .==. 0 .||.
+                           partialMaskE.out .==. writeMask)
+              else false
       -- Trigger next stage
-      storeIsScalar2 <== (fromBitList isScalarConds :: Bit SIMTLanes)
+      storeIsScalar2 <== andList
+        [ isBaseEq
+        , if opts.useAffine
+            then orList [isStride0, isStride1, isStride2, isStride4]
+            else isStride0
+        , allValid .||. canStorePartial
+        ]
+      storeIsPartial2 <== canStorePartial
+      storeStride2 <==
+        if opts.useAffine
+          then priorityIf [
+                 isStride0 --> stride_0
+               , isStride1 --> stride_1
+               , isStride2 --> stride_2
+               , isStride4 --> stride_4
+               ] dontCare
+          else stride_0
+      storeLeaderVal2 <== storeLeaderVal1.val
       storeDirEntry2 <== dirE.out
       storeIdx2 <== storeIdx1.val
       storeVec2 <== storeVec1.val
-      storeStride2 <== storeStride1.val
       storeEvict2 <== storeEvict1.val
+      storePartialMask2 <== partialMaskE.out
       when (anyValid .||. storeEvict1.val) do
         store2 <== true
  
     -- Stage 2
     when store2.val do
+      -- Write mask
+      let writeMask :: Bit SIMTLanes =
+            fromBitList [item.valid | item <- toList storeVec2.val]
       -- Was it a vector before this write?
       let wasVector = storeDirEntry2.val.status .==. reg_Vector
       -- Was it an evicted vector before this write?
@@ -551,7 +632,7 @@ makeSIMTScalarisingRegFile opts = do
       -- Is it a vector after this write?
       let isVector = if SIMTRegFilePreventScalarDetection == 1
                        then true
-                       else inv (storeIsScalar2.val .==. ones)
+                       else inv storeIsScalar2.val
       -- Next free slot
       let slot = freeSlots.top1
 
@@ -592,7 +673,7 @@ makeSIMTScalarisingRegFile opts = do
           -- Write to scalar reg file
           let scalarVal =
                 ScalarVal {
-                  val = (V.head storeVec2.val).val
+                  val = storeLeaderVal2.val
                 , stride = storeStride2.val
                 }
           let writeEntry =
@@ -600,12 +681,19 @@ makeSIMTScalarisingRegFile opts = do
                   status = storeEvict2.val ? (reg_Evicted, reg_Scalar)
                 , ptr = 0
                 }
+          evictStatus.store storeIdx2.val storeEvict2.val
           dirA.store storeIdx2.val writeEntry
           dirC.store storeIdx2.val writeEntry
           dirE.store storeIdx2.val writeEntry
-          scalarRegFileA.store storeIdx2.val scalarVal
-          scalarRegFileC.store storeIdx2.val scalarVal
-          evictStatus.store storeIdx2.val storeEvict2.val
+          if storeIsPartial2.val
+            then do
+              partialRegFileA.store storeIdx2.val scalarVal
+            else do
+              scalarRegFileA.store storeIdx2.val scalarVal
+              scalarRegFileC.store storeIdx2.val scalarVal
+          let partialMask = storeIsPartial2.val ? (writeMask, 0)
+          partialMaskA.store storeIdx2.val partialMask
+          partialMaskE.store storeIdx2.val partialMask
 
       -- Track vectors
       when opts.useDynRegSpill do
@@ -644,26 +732,55 @@ makeSIMTScalarisingRegFile opts = do
           let (warpId, regId) = storeScalarIdx.val
           ((vecMasks ! warpId) ! regId) <== false
 
+  -- Expand compressed affine vector using lane id
+  let expandAffine :: forall regWidth. KnownNat regWidth
+                   => Bit SIMTLogLanes
+                   -> ScalarVal regWidth
+                   -> Bit regWidth
+      expandAffine i s = unsafeBitCast
+        (unsafeSlice ( valueOf @regWidth - 1
+                     , SIMTLogLanes+2 ) s.val # expanded)
+        where
+          expanded :: Bit (SIMTLogLanes+2) =
+            select
+              [ s.stride .==. stride_0 -->
+                  unsafeSlice (SIMTLogLanes+1, 0) s.val
+              , s.stride .==. stride_1 -->
+                  unsafeSlice (SIMTLogLanes+1, SIMTLogLanes) s.val # i
+              , s.stride .==. stride_2 -->
+                  unsafeAt (SIMTLogLanes+1) s.val # i # (0 :: Bit 1)
+              , s.stride .==. stride_4 -->
+                  i # (0 :: Bit 2) ]
+
   -- Expand scalar register to vector
   let expandScalar :: forall regWidth. KnownNat regWidth
                    => ScalarVal regWidth
-                   -> [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))]
+                   -> ScalarVal regWidth
+                   -> Bit SIMTLanes
                    -> Vec SIMTLanes (Bit regWidth)
-      expandScalar scalarReg offsets = 
-        if opts.useAffine
-          then fromList [ scalarReg.val + zeroExtendCast o.val
-                        | o <- offsets ]
-          else V.replicate scalarReg.val
+      expandScalar scalarReg partialReg mask =
+        V.fromList [ if opts.usePartial
+                       then getLane (fromInteger i)
+                                    (p ? (partialReg, scalarReg))
+                       else getLane (fromInteger i) scalarReg
+                   | (i, p) <- zip [0..] (toBitList mask) ]
+        where
+          getLane i s =
+            if opts.useAffine then expandAffine i s else s.val
 
   return
     SIMTRegFile {
       loadA = \idx -> do
         dirA.load idx
         scalarRegFileA.load idx
+        partialRegFileA.load idx
+        partialMaskA.load idx
         loadWireA <== true
     , loadB = \idx -> do
         dirB.load idx
         scalarRegFileB.load idx
+        partialRegFileB.load idx
+        partialMaskB.load idx
         loadWireB <== true
     , loadScalarC = \idx -> do
         dirC.load idx
@@ -681,7 +798,9 @@ makeSIMTScalarisingRegFile opts = do
                 | (vecItem, scalItem) <- 
                     zip [bank.out | bank <- vecSpadA]
                         (toList $ old $ expandScalar
-                           (old scalarRegFileA.out) affineOffsetsA)
+                           (old scalarRegFileA.out)
+                           (old partialRegFileA.out)
+                           (old partialMaskA.out))
                 ]
             else
               old $ fromList
@@ -689,7 +808,9 @@ makeSIMTScalarisingRegFile opts = do
                 | (vecItem, scalItem) <- 
                     zip [bank.out | bank <- vecSpadA]
                         (toList $ expandScalar
-                           (old scalarRegFileA.out) affineOffsetsA)
+                           (old scalarRegFileA.out)
+                           (old partialRegFileA.out)
+                           (old partialMaskA.out))
                 ]
     , outB =
         let isVector = delay false (dirB.out.status .==. reg_Vector) in
@@ -701,7 +822,9 @@ makeSIMTScalarisingRegFile opts = do
                 | (vecItem, scalItem) <- 
                     zip [bank.out | bank <- vecSpadB]
                         (toList $ old $ expandScalar
-                           (old scalarRegFileB.out) affineOffsetsB)
+                           (old scalarRegFileB.out)
+                           (old partialRegFileB.out)
+                           (old partialMaskB.out))
                 ]
             else
               old $ fromList
@@ -709,7 +832,9 @@ makeSIMTScalarisingRegFile opts = do
                 | (vecItem, scalItem) <- 
                     zip [bank.out | bank <- vecSpadB]
                         (toList $ expandScalar
-                           (old scalarRegFileB.out) affineOffsetsB)
+                           (old scalarRegFileB.out)
+                           (old partialRegFileB.out)
+                           (old partialMaskB.out))
                 ]
     , evictedA = iterateN 2 (delay false) (dirA.out.status .==. reg_Evicted)
     , evictedB = iterateN 2 (delay false) (dirB.out.status .==. reg_Evicted)
@@ -732,16 +857,17 @@ makeSIMTScalarisingRegFile opts = do
         storeIdx1 <== idx
         storeVec1 <== vec
         dirE.load idx
-        -- Determine stride for affine scalarisation
-        when opts.useAffine do
-          let v0 = vec ! (0::Int)
-          let v1 = vec ! (1::Int)
-          let diff = v1.val - v0.val
-          let mask = fromInteger (2^SIMTAffineScalarisationBits - 1)
-          storeStride1 <==
-            if v0.valid .&&. v1.valid .&&. (diff .&. inv mask .==. 0)
-              then truncateCast diff
-              else 0
+        partialMaskE.load idx
+        -- Determine leader lane and value for partial scalarisation
+        if opts.usePartial
+          then do
+            let idx :: Bit SIMTLogLanes =
+                  firstHot $ fromBitList $ map (.valid) (V.toList vec)
+            storeLeaderLane1 <== idx
+            storeLeaderVal1 <== V.map (.val) vec ! idx
+          else do
+            storeLeaderLane1 <== 0
+            storeLeaderVal1 <== (V.head vec).val
     , canStore = \idx ->
         inv $ orList [
                 store1.val .&&. storeIdx1.val .==. idx
@@ -794,3 +920,17 @@ makeSIMTScalarisingRegFile opts = do
                 Nothing -> false
                 Just spad -> loadStallWire.val
     }
+
+-- Check if incrementing by val is compatible with given stride
+affineAlignCheck :: KnownNat n => Bit n -> Stride -> Bit 1
+affineAlignCheck val s = 
+   select [  
+     s .==. stride_0 --> true
+   , s .==. stride_1 --> c1
+   , s .==. stride_2 --> c1 .&&. c2
+   , s .==. stride_4 --> c1 .&&. c2 .&&. c3
+   ]
+  where
+    c1 = truncateCast val .==. (0 :: Bit SIMTLogLanes)
+    c2 = unsafeAt SIMTLogLanes val .==. false
+    c3 = unsafeAt (SIMTLogLanes+1) val .==. false
