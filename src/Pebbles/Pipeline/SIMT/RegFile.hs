@@ -588,6 +588,7 @@ makeSIMTScalarisingRegFile opts = do
       let canStorePartial =
             if opts.usePartial
               then dirE.out.status .==. reg_Scalar
+                     .&&. inv allValid
                      .&&. (partialMaskE.out .==. 0 .||.
                            partialMaskE.out .==. writeMask)
               else false
@@ -655,6 +656,10 @@ makeSIMTScalarisingRegFile opts = do
             dirC.store storeIdx2.val newDirEntry
             dirE.store storeIdx2.val newDirEntry
             evictStatus.store storeIdx2.val false
+          when (not opts.useAffine) do
+            when (fst storeIdx2.val .==. 0) do
+              let mask :: Bit SIMTLanes =
+                    fromBitList $ map (.valid) $ V.toList storeVec2.val
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
                 ( truncateCast storeDirEntry2.val.ptr
@@ -861,10 +866,12 @@ makeSIMTScalarisingRegFile opts = do
         -- Determine leader lane and value for partial scalarisation
         if opts.usePartial
           then do
-            let idx :: Bit SIMTLogLanes =
+            let oneHotIdx :: Bit SIMTLanes =
                   firstHot $ fromBitList $ map (.valid) (V.toList vec)
+            let idx = binaryEncode oneHotIdx
             storeLeaderLane1 <== idx
-            storeLeaderVal1 <== V.map (.val) vec ! idx
+            storeLeaderVal1 <== select (zip (toBitList oneHotIdx)
+                                            (map (.val) $ V.toList vec))
           else do
             storeLeaderLane1 <== 0
             storeLeaderVal1 <== (V.head vec).val
