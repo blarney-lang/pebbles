@@ -117,10 +117,8 @@ data SIMTPipelineConfig tag =
     -- ^ Use scalarising register file?
   , useAffineScalarisation :: Bool
     -- ^ Use affine scalarisation, or plain uniform scalarisation?
-  , usePartialScalarisationInt :: Bool
-    -- ^ Use 2-way partial scalarisation for int reg file?
-  , usePartialScalarisationCap :: Bool
-    -- ^ Use 2-way partial scalarisation for cap meta-data reg file?
+  , usePartialInitScalarisation :: Bool
+    -- ^ Use partial init-value scalarisation for cap meta-data reg file?
   , useCapRegFileScalarisation :: Bool
     -- ^ Use scalarising register file for capabilities?
   , useScalarUnit :: Bool
@@ -285,7 +283,7 @@ makeSIMTPipeline c inputs =
                    SIMTRegFileSize < SIMTWarps * 32
                , useSharedVecSpad = Nothing
                , pipelineActive = pipelineActive.val
-               , usePartial = c.usePartialScalarisationInt
+               , usePartialInit = False
                }
         else makeSIMTRegFile
                SIMTRegFileConfig {
@@ -313,7 +311,7 @@ makeSIMTPipeline c inputs =
                          Nothing
 #endif
                    , pipelineActive = pipelineActive.val
-                   , usePartial = c.usePartialScalarisationCap
+                   , usePartialInit = c.usePartialInitScalarisation
                    }
             else makeSIMTRegFile
                    SIMTRegFileConfig {

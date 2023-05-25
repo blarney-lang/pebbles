@@ -302,8 +302,8 @@ data SIMTScalarisingRegFileConfig t_logSize regWidth =
     -- ^ Use shared vector scratchpad
   , pipelineActive :: Bit 1
     -- ^ Is processor pipeline active?
-  , usePartial :: Bool
-    -- ^ Use partial scalarisation?
+  , usePartialInit :: Bool
+    -- ^ Use partial init scalarisation?
   }
 
 -- | Scalarising implementation
@@ -339,25 +339,17 @@ makeSIMTScalarisingRegFile opts = do
          then makeQuadRAM
          else return (nullRAM, nullRAM)
 
-  -- Partial scalar register file
-  -- (optional extenion of scalar register file)
-  (partialRegFileA, partialRegFileB) ::
-    (RAM SIMTRegFileIdx (ScalarVal regWidth),
-     RAM SIMTRegFileIdx (ScalarVal regWidth)) <-
-       if opts.usePartial
-         then makeQuadRAM
-         else return (nullRAM, nullRAM)
-
+  -- The partial mask indicates which vector elements hold the init value
   (partialMaskA, partialMaskB) ::
     (RAM SIMTRegFileIdx (Bit SIMTLanes),
      RAM SIMTRegFileIdx (Bit SIMTLanes)) <-
-       if opts.usePartial
+       if opts.usePartialInit
          then makeQuadRAM
          else return (nullRAM, nullRAM)
   (partialMaskE, partialMaskF) ::
     (RAM SIMTRegFileIdx (Bit SIMTLanes),
      RAM SIMTRegFileIdx (Bit SIMTLanes)) <-
-       if opts.usePartial
+       if opts.usePartialInit
          then makeQuadRAM
          else return (nullRAM, nullRAM)
 
@@ -442,8 +434,8 @@ makeSIMTScalarisingRegFile opts = do
       dirE.store idx initDirEntry
       scalarRegFileB.store idx initScalarVal
       scalarRegFileD.store idx initScalarVal
-      partialMaskB.store idx 0
-      partialMaskF.store idx 0
+      partialMaskB.store idx ones
+      partialMaskF.store idx ones
       evictStatus.store idx false
       when (not enSharedVecSpad) do
         when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
@@ -532,7 +524,6 @@ makeSIMTScalarisingRegFile opts = do
   storeVec2 <- makeReg dontCare
   storeEvict2 <- makeDReg false
   storeIsScalar2 <- makeReg dontCare
-  storeIsPartial2 <- makeReg dontCare
   storeDirEntry2 <- makeReg dontCare
   storeStride2 <- makeReg dontCare
   storeLeaderVal2 <- makeReg dontCare
@@ -586,11 +577,10 @@ makeSIMTScalarisingRegFile opts = do
              ]
       -- Can store as partial scalar?
       let canStorePartial =
-            if opts.usePartial
-              then dirE.out.status .==. reg_Scalar
-                     .&&. inv allValid
-                     .&&. (partialMaskE.out .==. 0 .||.
-                           partialMaskE.out .==. writeMask)
+            if opts.usePartialInit
+              then (writeMask .|. partialMaskE.out) .==. ones
+              .||. (isStride0 .&&. storeLeaderVal1.val .==. opts.regInitVal
+                              .&&. dirE.out.status .==. reg_Scalar)
               else false
       -- Trigger next stage
       storeIsScalar2 <== andList
@@ -600,7 +590,6 @@ makeSIMTScalarisingRegFile opts = do
             else isStride0
         , allValid .||. canStorePartial
         ]
-      storeIsPartial2 <== canStorePartial
       storeStride2 <==
         if opts.useAffine
           then priorityIf [
@@ -636,6 +625,29 @@ makeSIMTScalarisingRegFile opts = do
                        else inv storeIsScalar2.val
       -- Next free slot
       let slot = freeSlots.top1
+      -- Is it a scalar write of the init val?
+      let writeInitVal = 
+            if not opts.usePartialInit then false else
+              andList
+                [ inv isVector
+                , storeLeaderVal2.val .==. opts.regInitVal
+                , storeStride2.val .==. stride_0 ]
+
+{-
+      when opts.usePartialInit do
+        when (isVector .&&. wasScalar) do
+          display "writeMask=" (formatHex 8 writeMask)
+                  " partialMask=" (formatHex 8 storePartialMask2.val)
+                  " "(V.map (.val) storeVec2.val)
+-}
+
+      -- Update mask
+      when opts.usePartialInit do
+        let mask0 = storePartialMask2.val .&. inv writeMask
+        let mask1 = if writeInitVal then writeMask else 0
+        let newMask = mask0 .|. mask1
+        partialMaskA.store storeIdx2.val newMask
+        partialMaskE.store storeIdx2.val newMask
 
       if isVector .&&. inv storeEvict2.val
         then do
@@ -656,10 +668,6 @@ makeSIMTScalarisingRegFile opts = do
             dirC.store storeIdx2.val newDirEntry
             dirE.store storeIdx2.val newDirEntry
             evictStatus.store storeIdx2.val false
-          when (not opts.useAffine) do
-            when (fst storeIdx2.val .==. 0) do
-              let mask :: Bit SIMTLanes =
-                    fromBitList $ map (.valid) $ V.toList storeVec2.val
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
                 ( truncateCast storeDirEntry2.val.ptr
@@ -690,15 +698,9 @@ makeSIMTScalarisingRegFile opts = do
           dirA.store storeIdx2.val writeEntry
           dirC.store storeIdx2.val writeEntry
           dirE.store storeIdx2.val writeEntry
-          if storeIsPartial2.val
-            then do
-              partialRegFileA.store storeIdx2.val scalarVal
-            else do
-              scalarRegFileA.store storeIdx2.val scalarVal
-              scalarRegFileC.store storeIdx2.val scalarVal
-          let partialMask = storeIsPartial2.val ? (writeMask, 0)
-          partialMaskA.store storeIdx2.val partialMask
-          partialMaskE.store storeIdx2.val partialMask
+          when (storeEvict2.val .||. inv writeInitVal) do
+            scalarRegFileA.store storeIdx2.val scalarVal
+            scalarRegFileC.store storeIdx2.val scalarVal
 
       -- Track vectors
       when opts.useDynRegSpill do
@@ -760,16 +762,17 @@ makeSIMTScalarisingRegFile opts = do
   -- Expand scalar register to vector
   let expandScalar :: forall regWidth. KnownNat regWidth
                    => ScalarVal regWidth
-                   -> ScalarVal regWidth
+                   -> Bit regWidth
                    -> Bit SIMTLanes
                    -> Vec SIMTLanes (Bit regWidth)
-      expandScalar scalarReg partialReg mask =
-        V.fromList [ if opts.usePartial
+      expandScalar scalarReg initVal mask =
+        V.fromList [ if opts.usePartialInit
                        then getLane (fromInteger i)
-                                    (p ? (partialReg, scalarReg))
+                                    (init ? (initScalarVal, scalarReg))
                        else getLane (fromInteger i) scalarReg
-                   | (i, p) <- zip [0..] (toBitList mask) ]
+                   | (i, init) <- zip [0..] (toBitList mask) ]
         where
+          initScalarVal = ScalarVal { val = initVal, stride = stride_0 }
           getLane i s =
             if opts.useAffine then expandAffine i s else s.val
 
@@ -778,13 +781,11 @@ makeSIMTScalarisingRegFile opts = do
       loadA = \idx -> do
         dirA.load idx
         scalarRegFileA.load idx
-        partialRegFileA.load idx
         partialMaskA.load idx
         loadWireA <== true
     , loadB = \idx -> do
         dirB.load idx
         scalarRegFileB.load idx
-        partialRegFileB.load idx
         partialMaskB.load idx
         loadWireB <== true
     , loadScalarC = \idx -> do
@@ -804,7 +805,7 @@ makeSIMTScalarisingRegFile opts = do
                     zip [bank.out | bank <- vecSpadA]
                         (toList $ old $ expandScalar
                            (old scalarRegFileA.out)
-                           (old partialRegFileA.out)
+                           opts.regInitVal
                            (old partialMaskA.out))
                 ]
             else
@@ -814,7 +815,7 @@ makeSIMTScalarisingRegFile opts = do
                     zip [bank.out | bank <- vecSpadA]
                         (toList $ expandScalar
                            (old scalarRegFileA.out)
-                           (old partialRegFileA.out)
+                           opts.regInitVal
                            (old partialMaskA.out))
                 ]
     , outB =
@@ -828,7 +829,7 @@ makeSIMTScalarisingRegFile opts = do
                     zip [bank.out | bank <- vecSpadB]
                         (toList $ old $ expandScalar
                            (old scalarRegFileB.out)
-                           (old partialRegFileB.out)
+                           opts.regInitVal
                            (old partialMaskB.out))
                 ]
             else
@@ -838,7 +839,7 @@ makeSIMTScalarisingRegFile opts = do
                     zip [bank.out | bank <- vecSpadB]
                         (toList $ expandScalar
                            (old scalarRegFileB.out)
-                           (old partialRegFileB.out)
+                           opts.regInitVal
                            (old partialMaskB.out))
                 ]
     , evictedA = iterateN 2 (delay false) (dirA.out.status .==. reg_Evicted)
@@ -864,7 +865,7 @@ makeSIMTScalarisingRegFile opts = do
         dirE.load idx
         partialMaskE.load idx
         -- Determine leader lane and value for partial scalarisation
-        if opts.usePartial
+        if opts.usePartialInit
           then do
             let oneHotIdx :: Bit SIMTLanes =
                   firstHot $ fromBitList $ map (.valid) (V.toList vec)
