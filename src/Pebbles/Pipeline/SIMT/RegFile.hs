@@ -338,6 +338,9 @@ makeSIMTScalarisingRegFile opts = do
        if opts.useScalarUnit
          then makeQuadRAM
          else return (nullRAM, nullRAM)
+  (scalarRegFileE, scalarRegFileF) ::
+    (RAM SIMTRegFileIdx (ScalarVal regWidth),
+     RAM SIMTRegFileIdx (ScalarVal regWidth)) <- makeQuadRAM
 
   -- The partial mask indicates which vector elements hold the init value
   (partialMaskA, partialMaskB) ::
@@ -434,6 +437,7 @@ makeSIMTScalarisingRegFile opts = do
       dirE.store idx initDirEntry
       scalarRegFileB.store idx initScalarVal
       scalarRegFileD.store idx initScalarVal
+      scalarRegFileF.store idx initScalarVal
       partialMaskB.store idx ones
       partialMaskF.store idx ones
       evictStatus.store idx false
@@ -575,12 +579,25 @@ makeSIMTScalarisingRegFile opts = do
              | (x, laneId) <- zip (toList storeVec1.val) [0..]
              , let low = getLower x.val
              ]
+      -- Chosen stride
+      let stride =
+            if opts.useAffine
+              then priorityIf [
+                   isStride0 --> stride_0
+                 , isStride1 --> stride_1
+                 , isStride2 --> stride_2
+                 , isStride4 --> stride_4
+                 ] dontCare
+              else stride_0
       -- Can store as partial scalar?
       let canStorePartial =
             if opts.usePartialInit
               then (writeMask .|. partialMaskE.out) .==. ones
-              .||. (isStride0 .&&. storeLeaderVal1.val .==. opts.regInitVal
-                              .&&. dirE.out.status .==. reg_Scalar)
+              .||. (dirE.out.status .==. reg_Scalar .&&.
+                      isStride0 .&&. storeLeaderVal1.val .==. opts.regInitVal)
+              .||. (dirE.out.status .==. reg_Scalar .&&.
+                      storeLeaderVal1.val .==. scalarRegFileE.out.val .&&.
+                      scalarRegFileE.out.stride .==. stride)
               else false
       -- Trigger next stage
       storeIsScalar2 <== andList
@@ -590,15 +607,7 @@ makeSIMTScalarisingRegFile opts = do
             else isStride0
         , allValid .||. canStorePartial
         ]
-      storeStride2 <==
-        if opts.useAffine
-          then priorityIf [
-                 isStride0 --> stride_0
-               , isStride1 --> stride_1
-               , isStride2 --> stride_2
-               , isStride4 --> stride_4
-               ] dontCare
-          else stride_0
+      storeStride2 <== stride
       storeLeaderVal2 <== storeLeaderVal1.val
       storeDirEntry2 <== dirE.out
       storeIdx2 <== storeIdx1.val
@@ -701,6 +710,7 @@ makeSIMTScalarisingRegFile opts = do
           when (storeEvict2.val .||. inv writeInitVal) do
             scalarRegFileA.store storeIdx2.val scalarVal
             scalarRegFileC.store storeIdx2.val scalarVal
+            scalarRegFileE.store storeIdx2.val scalarVal
 
       -- Track vectors
       when opts.useDynRegSpill do
@@ -724,6 +734,7 @@ makeSIMTScalarisingRegFile opts = do
         let entry = DirEntry { status = reg_Scalar, ptr = 0 }
         scalarRegFileB.store idx storeScalarVal.val
         scalarRegFileD.store idx storeScalarVal.val
+        scalarRegFileF.store idx storeScalarVal.val
         dirB.store idx entry
         dirD.store idx entry
         dirF.store idx entry
@@ -863,6 +874,7 @@ makeSIMTScalarisingRegFile opts = do
         storeIdx1 <== idx
         storeVec1 <== vec
         dirE.load idx
+        scalarRegFileE.load idx
         partialMaskE.load idx
         -- Determine leader lane and value for partial scalarisation
         if opts.usePartialInit
