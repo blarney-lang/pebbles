@@ -44,6 +44,7 @@ data State =
   , opA :: Bit 32
   , opB :: Bit 32
   , opBorImm :: Bit 32
+  , immOrOpB :: Bit 32
     -- ^ Source operands. These contain the values of the two source registers.
 
   , opAIndex :: RegId

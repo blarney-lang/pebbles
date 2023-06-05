@@ -19,6 +19,7 @@ import Blarney.Vector (Vec, fromList, toList)
 
 -- Pebbles imports
 import Pebbles.Util.List
+import Pebbles.Util.SlotManager
 import Pebbles.Pipeline.Interface
 
 -- CHERI imports
@@ -50,7 +51,7 @@ data ScalarisedOperand =
   } deriving (Generic, Interface, Bits)
 
 -- | Vector register file
-data SIMTRegFile regWidth =
+data SIMTRegFile t_logSize regWidth =
   SIMTRegFile {
     loadA :: SIMTRegFileIdx -> Action ()
     -- ^ Issue load for given register on port A
@@ -99,19 +100,37 @@ data SIMTRegFile regWidth =
     -- ^ Trigger initialisation of register file
   , initInProgress :: Bit 1
     -- ^ Don't trigger intialisation while it is already in progress
-  , numVecRegsUnused :: Bit (SIMTLogWarps + 6)
+  , numVecRegsUnused :: Bit (SIMTLogWarps + 7)
     -- ^ Current number of vector registers unused
-  , maxVecRegs :: Bit (SIMTLogWarps + 6)
+  , numVecRegs :: Bit (SIMTLogWarps + 7)
+    -- ^ Current number of vector registers unused
+  , maxVecRegs :: Bit (SIMTLogWarps + 7)
     -- ^ Max number of vector registers used
+  , totalVecRegs :: Bit 32
+    -- ^ Total vector registers, sampled at parameterised rate
   , getVecMasks :: Vec SIMTWarps (Bit 32)
     -- ^ Which registers for each warp are vectors?
+  , sharedVecSpad :: SharedVecSpad t_logSize regWidth
+    -- ^ Use shared vector scratchpad
+  , stall :: Bit 1
+    -- ^ Stall load pipeline
+  }
+
+-- | Vector scratchpad can be shared between register files
+data SharedVecSpad t_logSize regWidth =
+  SharedVecSpad {
+    vecSpadA :: [RAM (Bit t_logSize) (Bit regWidth)]
+  , vecSpadB :: [RAM (Bit t_logSize) (Bit regWidth)]
+  , freeSlots :: SlotManager (Bit t_logSize)
   }
 
 -- Null implementation
 -- ===================
 
 -- | Null implementation
-makeNullSIMTRegFile :: KnownNat regWidth => Module (SIMTRegFile regWidth)
+makeNullSIMTRegFile ::
+     (KnownNat t_logSize, KnownNat regWidth)
+  => Module (SIMTRegFile t_logSize regWidth)
 makeNullSIMTRegFile = do
   return
     SIMTRegFile {
@@ -136,9 +155,13 @@ makeNullSIMTRegFile = do
     , storeLatency = 0
     , init = return ()
     , initInProgress = false
-    , maxVecRegs = ones
+    , maxVecRegs = fromInteger (SIMTWarps * 32)
+    , totalVecRegs = 0
     , numVecRegsUnused = 0
+    , numVecRegs = fromInteger (SIMTWarps * 32)
     , getVecMasks = V.replicate ones
+    , sharedVecSpad = error "Null SIMT regfile does not produce vec spad"
+    , stall = false
     }
 
 -- Plain register file implementation
@@ -154,10 +177,10 @@ data SIMTRegFileConfig regWidth =
   }
 
 -- | Plain implemenation
-makeSIMTRegFile :: KnownNat regWidth =>
+makeSIMTRegFile :: (KnownNat t_logSize, KnownNat regWidth) =>
      SIMTRegFileConfig regWidth
      -- ^ Config options
-  -> Module (SIMTRegFile regWidth)
+  -> Module (SIMTRegFile t_logSize regWidth)
 makeSIMTRegFile opts = do
 
   -- Register file banks, one per lane
@@ -217,8 +240,12 @@ makeSIMTRegFile opts = do
           Just _ -> do initInProgress <== true
     , initInProgress = initInProgress.val
     , maxVecRegs = fromInteger (SIMTWarps * 32)
+    , totalVecRegs = 0
+    , numVecRegs = fromInteger (SIMTWarps * 32)
     , numVecRegsUnused = 0
     , getVecMasks = V.replicate ones
+    , sharedVecSpad = error "SIMT regfile does not produce vec spad"
+    , stall = false
     }
 
 -- Basic scalarising implementation
@@ -245,7 +272,7 @@ type ScalarReg regWidth =
 simtScalarisingRegFile_loadLatency :: Int = 3
 
 -- | SIMTScalarisingRegFile config options
-data SIMTScalarisingRegFileConfig regWidth =
+data SIMTScalarisingRegFileConfig t_logSize regWidth =
   SIMTScalarisingRegFileConfig {
     useAffine :: Bool
     -- ^ Use affine scalarisation?
@@ -258,19 +285,19 @@ data SIMTScalarisingRegFileConfig regWidth =
   , useDynRegSpill :: Bool
     -- ^ Enable features to support dynamic register spilling
     -- e.g. track which registers are vectors and which are evicted
+  , useSharedVecSpad :: Maybe (SharedVecSpad t_logSize regWidth)
+    -- ^ Use shared vector scratchpad
+  , pipelineActive :: Bit 1
+    -- ^ Is processor pipeline active?
   }
 
 -- | Scalarising implementation
-makeSIMTScalarisingRegFile :: forall regWidth. KnownNat regWidth =>
-     SIMTScalarisingRegFileConfig regWidth
+makeSIMTScalarisingRegFile :: forall t_logSize regWidth.
+     (KnownNat t_logSize, KnownNat regWidth)
+  => SIMTScalarisingRegFileConfig t_logSize regWidth
      -- ^ Config options
-  -> Module (SIMTRegFile regWidth)
-makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
- liftNat logSize \(_ :: Proxy t_logSize) -> do
-
-  -- Check size is not larger than maximum
-  staticAssert (opts.size <= SIMTWarps * 32)
-    "ScalarisingRegFile: requested size is larger than maximum!"
+  -> Module (SIMTRegFile t_logSize regWidth)
+makeSIMTScalarisingRegFile opts = do
 
   -- Scalar register file (6 read ports, 2 write ports)
   (scalarRegFileA, scalarRegFileB) ::
@@ -290,15 +317,15 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
   (vecSpadA, vecSpadB) ::
     ([RAM (Bit t_logSize) (Bit regWidth)],
      [RAM (Bit t_logSize) (Bit regWidth)]) <-
-       unzip <$> replicateM SIMTLanes makeQuadRAM
+       case opts.useSharedVecSpad of
+         Nothing -> unzip <$> replicateM SIMTLanes makeQuadRAM
+         Just spad -> return (spad.vecSpadA, spad.vecSpadB)
 
   -- Stack of free space in vector scratchpad
-  freeSlots1 :: Stack (Bit t_logSize) <- makeSizedStack logSize
-  freeSlots2 :: Stack (Bit t_logSize) <- makeSizedStack logSize
-  let freeSlots =
-        if opts.useScalarUnit
-          then toStream freeSlots1 `mergeTwo` toStream freeSlots2
-          else toStream freeSlots1
+  freeSlots :: SlotManager (Bit t_logSize) <-
+    case opts.useSharedVecSpad of
+      Nothing -> makeSlotManager (valueOf @t_logSize)
+      Just spad -> return spad.freeSlots
 
   -- For each warp, maintain a 32-bit mask indicating which
   -- registers are (non-evicted) vectors
@@ -306,11 +333,13 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
     V.replicateM (V.replicateM (makeReg dontCare))
 
   -- Eviction status of each register
-  evictStatus :: RAM SIMTRegFileIdx (Bit 1) <-
-    if opts.useDynRegSpill then makeDualRAM else return nullRAM
+  (evictStatus, evictStatusB) :: (RAM SIMTRegFileIdx (Bit 1),
+                                  RAM SIMTRegFileIdx (Bit 1)) <-
+    if opts.useDynRegSpill then makeQuadRAM
+                           else return (nullRAM, nullRAM)
 
   -- Count number of vectors in use
-  vecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
+  vecCount :: Reg (Bit (SIMTLogWarps + 7)) <- makeReg 0
 
   -- Pulse wires to incr/decr vecCount
   vecCountIncr <- makePulseWire
@@ -318,7 +347,16 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
   vecCountDecr2 <- makePulseWire
 
   -- Track max vector count
-  maxVecCount :: Reg (Bit (SIMTLogWarps + 6)) <- makeReg 0
+  maxVecCount :: Reg (Bit (SIMTLogWarps + 7)) <- makeReg 0
+
+  -- For determining averge vector scratchpad occupancy
+  totalVecCount :: Reg (Bit 32) <- makeReg 0
+  sampleCount :: Reg (Bit 32) <- makeReg 0
+
+  let enSharedVecSpad = 
+        case opts.useSharedVecSpad of
+          Nothing -> False
+          Just spad -> True
 
   -- Initialisation
   -- ==============
@@ -341,15 +379,19 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
       scalarRegFileB.store idx initScalarReg
       scalarRegFileD.store idx initScalarReg
       scalarRegFileF.store idx initScalarReg
-      when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
-        freeSlots1.push (truncateCast initIdx.val)
+      evictStatus.store idx false
+      when (not enSharedVecSpad) do
+        when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
+          freeSlots.push1 (truncateCast initIdx.val)
       when opts.useDynRegSpill do
         sequence_ [ sequence_ [ b <== false | b <- toList mask ]
                   | mask <- toList vecMasks ]
       initIdx <== initIdx.val - 1
       when (initIdx.val .==. 0) do
         vecCount <== 0
+        sampleCount <== 0
         maxVecCount <== 0
+        totalVecCount <== 0
         initInProgress <== false
 
   -- Track max vector count
@@ -362,10 +404,18 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
   -- ============
 
   always do
-    when (vecCountIncr.val .||. vecCountDecr1.val .||. vecCountDecr2.val) do
+    when (orList [vecCountIncr.val, vecCountDecr1.val
+                                  , vecCountDecr2.val]) do
       vecCount <== vecCount.val + zeroExtend vecCountIncr.val
                                 - zeroExtend vecCountDecr1.val
                                 - zeroExtend vecCountDecr2.val
+
+    when (opts.pipelineActive .&&. inv initInProgress.val) do
+      if sampleCount.val .==. SIMTTotalVecCountSampleRate
+        then do
+          sampleCount <== 0
+          totalVecCount <== totalVecCount.val + zeroExtend vecCount.val
+        else sampleCount <== sampleCount.val + 1
 
   -- Load path
   -- =========
@@ -373,6 +423,9 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
   -- Load wires
   loadWireA <- makeWire false
   loadWireB <- makeWire false
+
+  -- Stall load pipeline (to handle shared vector scratchpad)
+  loadStallWire <- makePulseWire
 
   -- Affine offsets
   affineOffsetsA ::
@@ -382,21 +435,31 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
     [Reg (Bit (SIMTAffineScalarisationBits+SIMTLogLanes))] <-
       replicateM SIMTLanes (makeReg 0)
 
+  -- (TODO: don't issue load if not load wire not active?)
   always do
     let goLoad = delay false (loadWireA.val .||. loadWireB.val)
+    let isVectorA = scalarRegFileA.out `is` #vector
+    let isVectorB = scalarRegFileB.out `is` #vector
+    let idxA = truncateCast (untag #vector scalarRegFileA.out)
+    let idxB = truncateCast (untag #vector scalarRegFileB.out)
+    let stall = if enSharedVecSpad
+                  then goLoad .&&. (isVectorA .||. isVectorB)
+                  else false
+    when stall do 
+      loadStallWire.pulse
+
+    if enSharedVecSpad
+      then do
+        when (delay false stall) do
+          sequence_ [ bank.load (old idxA) | bank <- vecSpadA ]
+          sequence_ [ bank.load (old idxB) | bank <- vecSpadB ]
+      else do
+        when goLoad do
+          sequence_ [ bank.load idxA | bank <- vecSpadA ]
+          sequence_ [ bank.load idxB | bank <- vecSpadB ]
+
+    -- Compute affine offsets
     when goLoad do
-      -- If vector, issue load to vector scratchpad
-      let isVectorA = scalarRegFileA.out `is` #vector
-      when isVectorA do
-        sequence_
-          [ bank.load (truncateCast (untag #vector scalarRegFileA.out))
-          | bank <- vecSpadA ]
-      let isVectorB = scalarRegFileB.out `is` #vector
-      when isVectorB do
-        sequence_
-          [ bank.load (truncateCast (untag #vector scalarRegFileB.out))
-          | bank <- vecSpadB ]
-      -- Compute affine offsets
       when opts.useAffine do
         let scalarA = untag #scalar scalarRegFileA.out
         let scalarB = untag #scalar scalarRegFileB.out
@@ -482,19 +545,23 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
       -- Was it a scalar before this write?
       let wasScalar = storeScalarEntry2.val `is` #scalar
       -- Is it a vector after this write?
-      let isVector = inv (storeIsScalar2.val .==. ones)
+      let isVector = if SIMTRegFilePreventScalarDetection == 1
+                       then true
+                       else inv (storeIsScalar2.val .==. ones)
+      -- Next free slot
+      let slot = freeSlots.top1
 
       if isVector .&&. inv storeEvict2.val
         then do
           -- Now a vector. Was it a scalar (or evicted vector) before?
           when (wasScalar .||. wasEvicted) do
             -- We need to allocate space for a new vector
-            dynamicAssert freeSlots.canPeek
+            dynamicAssert freeSlots.notEmpty
               "Scalarising reg file: out of free space"
-            freeSlots.consume
+            freeSlots.pop1
             vecCountIncr.pulse
             -- Tell scalar reg file about new vector
-            let newScalarRegEntry = tag #vector (zeroExtendCast freeSlots.peek)
+            let newScalarRegEntry = tag #vector (zeroExtendCast slot)
             scalarRegFileA.store storeIdx2.val newScalarRegEntry
             scalarRegFileC.store storeIdx2.val newScalarRegEntry
             scalarRegFileE.store storeIdx2.val newScalarRegEntry
@@ -502,7 +569,7 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
           -- Write to vector scratchpad
           let spadAddr = wasVector ?
                 ( truncateCast (untag #vector storeScalarEntry2.val)
-                , freeSlots.peek )
+                , slot )
           let isAffine = storeScalarEntry2.val `is` #scalar
           sequence_
             [ when (item.valid .||. inv wasVector) do
@@ -516,9 +583,10 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
           -- Now a scalar (or evicted vector). Was it a vector before?
           when wasVector do
             -- We need to reclaim the vector
-            dynamicAssert freeSlots1.notFull
+            dynamicAssert freeSlots.notFull
               "Scalarising reg file: free slot overflow"
-            freeSlots1.push (truncateCast (untag #vector storeScalarEntry2.val))
+            freeSlots.push1 (truncateCast
+              (untag #vector storeScalarEntry2.val))
             vecCountDecr1.pulse
           -- Write to scalar reg file
           let scalarVal =
@@ -557,11 +625,12 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
         scalarRegFileB.store idx s
         scalarRegFileD.store idx s
         scalarRegFileF.store idx s
+        evictStatusB.store idx false
         -- Reclaim vector space
         when (scalarRegFileF.out `is` #vector) do
-          dynamicAssert freeSlots2.notFull
-            "Scalarising reg file: freeSlots2 overflow"
-          freeSlots2.push (truncateCast (untag #vector scalarRegFileF.out))
+          dynamicAssert freeSlots.notFull
+            "Scalarising reg file: freeSlots overflow"
+          freeSlots.push2 (truncateCast (untag #vector scalarRegFileF.out))
           vecCountDecr2.pulse
         -- Track vector registers
         when opts.useDynRegSpill do
@@ -589,16 +658,30 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
         scalarRegFileD.load idx
     , outA =
         let isVector = delay false (scalarRegFileA.out `is` #vector) in
-          old $ isVector ?
-            ( V.fromList [bank.out | bank <- vecSpadA]
-            , expandScalar (old $ untag #scalar scalarRegFileA.out)
-                           affineOffsetsA )
+          if enSharedVecSpad
+            then
+              delay false isVector ?
+                ( V.fromList [bank.out | bank <- vecSpadA]
+                , old $ expandScalar (old $ untag #scalar scalarRegFileA.out)
+                                     affineOffsetsA )
+            else
+              old $ isVector ?
+                ( V.fromList [bank.out | bank <- vecSpadA]
+                , expandScalar (old $ untag #scalar scalarRegFileA.out)
+                               affineOffsetsA )
     , outB =
         let isVector = delay false (scalarRegFileB.out `is` #vector) in
-          old $ isVector ?
-            ( V.fromList [bank.out | bank <- vecSpadB]
-            , expandScalar (old $ untag #scalar scalarRegFileB.out)
-                           affineOffsetsB )
+          if enSharedVecSpad
+            then
+              delay false isVector ?
+                ( V.fromList [bank.out | bank <- vecSpadB]
+                , old $ expandScalar (old $ untag #scalar scalarRegFileB.out)
+                                     affineOffsetsB )
+            else
+              old $ isVector ?
+                ( V.fromList [bank.out | bank <- vecSpadB]
+                , expandScalar (old $ untag #scalar scalarRegFileB.out)
+                               affineOffsetsB )
     , evictedA = iterateN 2 (delay false) (scalarRegFileA.out `is` #evicted)
     , evictedB = iterateN 2 (delay false) (scalarRegFileB.out `is` #evicted)
     , loadEvictedStatus = \idx -> evictStatus.load idx
@@ -650,11 +733,37 @@ makeSIMTScalarisingRegFile opts = let logSize = log2ceil opts.size in
     , storeLatency = 2
     , init = do
         initInProgress <== true
-        freeSlots1.clear
-        when opts.useScalarUnit do freeSlots2.clear
+        freeSlots.clear
     , initInProgress = initInProgress.val
     , maxVecRegs = maxVecCount.val
     , numVecRegsUnused = fromIntegral opts.size - vecCount.val
+    , numVecRegs = vecCount.val
+    , totalVecRegs = totalVecCount.val
     , getVecMasks = 
         V.map (\mask -> pack (V.map (.val) mask)) vecMasks
+    , sharedVecSpad =
+        case opts.useSharedVecSpad of
+          Nothing ->
+            SharedVecSpad {
+              vecSpadA = vecSpadB
+            , vecSpadB = vecSpadA
+            , freeSlots =
+                SlotManager {
+                  push1 = freeSlots.push3
+                , push2 = freeSlots.push4
+                , push3 = error "Free slots push method not available"
+                , push4 = error "Free slots push method not available"
+                , top1  = freeSlots.top2
+                , top2  = error "Free slots top method not available"
+                , pop1  = freeSlots.pop2
+                , pop2  = error "Free slots pop method not available"
+                , clear = return ()
+                , notFull = freeSlots.notFull
+                , notEmpty = freeSlots.notEmpty
+                }
+            }
+          Just spad -> spad
+    , stall = case opts.useSharedVecSpad of
+                Nothing -> false
+                Just spad -> loadStallWire.val
     }

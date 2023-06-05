@@ -3,6 +3,7 @@
 module Pebbles.Memory.CoalescingUnit 
   ( makeCoalescingUnit
   , CoalUnitOptions(..)
+  , CoalUnitPerfStats(..)
   ) where
 
 -- SoC parameters
@@ -13,6 +14,7 @@ import Blarney
 import Blarney.Queue
 import Blarney.Stream
 import Blarney.Option
+import Blarney.PulseWire
 import Blarney.SourceSink
 import Blarney.Interconnect
 import qualified Blarney.Vector as V
@@ -71,6 +73,18 @@ data CoalUnitOptions =
     -- ^ If DRAM, are we allowed to buffer the given request?
   }
 
+-- | For performance stats
+data CoalUnitPerfStats =
+  CoalUnitPerfStats {
+    incLoadHit :: Bit 1
+    -- ^ Pulsed on load hit to store buffer
+  , incLoadMiss :: Bit 1
+    -- ^ Pulsed on load miss to store buffer
+  , isCapMetaAccess :: Bit 1
+    -- ^ Pulsed on cap meta data access to store buffer
+  }
+  deriving (Generic, Bits, Interface)
+
 -- Implementation
 -- ==============
 
@@ -126,6 +140,7 @@ makeCoalescingUnit :: Bits t_id =>
                      , V.Vec SIMTLanes (Option MemReq)
                      , Option MemReq )
             , Stream (DRAMReq DRAMReqId)
+            , CoalUnitPerfStats
             )
      -- ^ Outputs:
      --     (1) memory responses per lane;
@@ -181,6 +196,9 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
   leader3 :: Reg (Bit SIMTLanes) <- makeReg 0
   leader4 :: Reg (Bit SIMTLanes) <- makeReg 0
 
+  -- Currently processing multi-flit transaction
+  multiFlit4 <- makeReg false
+
   -- DRAM request queue
   dramReqQueue :: Queue (DRAMReq DRAMReqId) <- makePipelineQueue 1
 
@@ -200,6 +218,11 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
 
   -- Enable store buffer?
   let enStoreBuffer = if opts.enableStoreBuffer then true else false
+
+  -- Performance stats
+  incStoreBufferLoadHit <- makePulseWire
+  incStoreBufferLoadMiss <- makePulseWire
+  isCapMetaAccess <- makePulseWire
 
   -- Stage 0: consume requests and feed pipeline
   -- ===========================================
@@ -500,6 +523,7 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
               let leader = Option useSameAddr (leaderReq4.val)
               enq sramReqs (reqId4.val, reqs, leader)
             else do
+              multiFlit4 <== inv leaderReq4.val.memReqIsFinal
               -- Check that atomics are not in use
               dynamicAssert (leaderReq4.val.memReqOp .!=. memAtomicOp)
                 "Atomics not yet supported on DRAM path"
@@ -515,6 +539,13 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
               -- Check for store buffer load hit
               let isStoreBufferLoadHit = isStoreBufferHit .&&.
                     leaderReq4.val.memReqOp .==. memLoadOp
+              when isStoreBufferLoadHit do
+                incStoreBufferLoadHit.pulse
+              when (inv isStoreBufferLoadHit .&&. canBuffer4.val .&&.
+                      leaderReq4.val.memReqOp .==. memLoadOp) do
+                incStoreBufferLoadMiss.pulse
+              when multiFlit4.val do
+                isCapMetaAccess.pulse
               coalStoreBufferLoadHit <==
                 Option isStoreBufferLoadHit storeBuffer.out.scalarVal
               -- Check store buffer
@@ -920,7 +951,14 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
                   (const true) isFinalVec
                   (toStream dramRespQueue, sramResps)
 
-  return (finalResps, toStream sramReqs, toStream dramReqQueue)
+  let perfStats =
+        CoalUnitPerfStats {
+          incLoadHit = incStoreBufferLoadHit.val
+        , incLoadMiss = incStoreBufferLoadMiss.val
+        , isCapMetaAccess = isCapMetaAccess.val
+        }
+
+  return (finalResps, toStream sramReqs, toStream dramReqQueue, perfStats)
 
 -- Scalarised Vector Store Buffer (SVSB) Types
 -- ===========================================

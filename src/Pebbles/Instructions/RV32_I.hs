@@ -1,8 +1,6 @@
 module Pebbles.Instructions.RV32_I
   ( decodeI
-  , decodeI_NoCap
   , executeI
-  , executeI_NoCap
   ) where
 
 -- Blarney imports
@@ -27,6 +25,7 @@ import Pebbles.Instructions.Units.MulUnit
 
 decodeI =
   [ "imm[31:12] rd<5> 0110111" --> LUI
+  , "imm[31:12] rd<5> 0010111" --> AUIPC
   , "imm[11:0] rs1<5> 000 rd<5> 0010011" --> ADD
   , "imm[11:0] rs1<5> 010 rd<5> 0010011" --> SLT
   , "imm[11:0] rs1<5> 011 rd<5> 0010011" --> SLTU
@@ -48,31 +47,24 @@ decodeI =
   , "0100000 rs2<5> rs1<5> 101 rd<5> 0110011" --> SRA
   , "imm[20] imm[10:1] imm[11] imm[19:12] rd<5> 1101111" --> JAL
   , "imm[11:0] rs1<5> 000 rd<5> 1100111" --> JALR
-  , "off[12] off[10:5] rs2<5> rs1<5> 000 off[4:1] off[11] 1100011" --> BEQ
-  , "off[12] off[10:5] rs2<5> rs1<5> 001 off[4:1] off[11] 1100011" --> BNE
-  , "off[12] off[10:5] rs2<5> rs1<5> 100 off[4:1] off[11] 1100011" --> BLT
-  , "off[12] off[10:5] rs2<5> rs1<5> 110 off[4:1] off[11] 1100011" --> BLTU
-  , "off[12] off[10:5] rs2<5> rs1<5> 101 off[4:1] off[11] 1100011" --> BGE
-  , "off[12] off[10:5] rs2<5> rs1<5> 111 off[4:1] off[11] 1100011" --> BGEU
+  , "imm[12] imm[10:5] rs2<5> rs1<5> 000 imm[4:1] imm[11] 1100011" --> BEQ
+  , "imm[12] imm[10:5] rs2<5> rs1<5> 001 imm[4:1] imm[11] 1100011" --> BNE
+  , "imm[12] imm[10:5] rs2<5> rs1<5> 100 imm[4:1] imm[11] 1100011" --> BLT
+  , "imm[12] imm[10:5] rs2<5> rs1<5> 110 imm[4:1] imm[11] 1100011" --> BLTU
+  , "imm[12] imm[10:5] rs2<5> rs1<5> 101 imm[4:1] imm[11] 1100011" --> BGE
+  , "imm[12] imm[10:5] rs2<5> rs1<5> 111 imm[4:1] imm[11] 1100011" --> BGEU
   , "000000000000 <5> 000 <5> 1110011" --> ECALL
   , "000000000001 <5> 000 <5> 1110011" --> EBREAK
   , "fence<4> pred<4> succ<4> rs1<5> 000 00000 0001111" --> FENCE
   , "csrImm[11:0] rs1<5> csrI<1> 01 rd<5> 1110011" --> CSRRW
   , "csrImm[11:0] rs1<5> csrI<1> 10 rd<5> 1110011" --> CSRRS
   , "csrImm[11:0] rs1<5> csrI<1> 11 rd<5> 1110011" --> CSRRC
-  ]
-
-decodeI_NoCap =
-  [ "imm[31:12] rd<5> 0010111" --> AUIPC
   , "imm[11:0] rs1<5> ul<1> aw<2> rd<5> 0000011" --> LOAD
   , "imm[11:5] rs2<5> rs1<5> 0 aw<2> imm[4:0] 0100011" --> STORE
   ]
 
 -- Field selectors
 -- ===============
-
-getBranchOffset :: Bit 32 -> Bit 13
-getBranchOffset = makeFieldSelector decodeI "off"
 
 getCSRI :: Bit 32 -> Bit 1
 getCSRI = makeFieldSelector decodeI "csrI"
@@ -84,10 +76,10 @@ getFenceFlags :: Bit 32 -> Bit 4
 getFenceFlags = makeFieldSelector decodeI "fence"
 
 getAccessWidth :: Bit 32 -> Bit 2
-getAccessWidth = makeFieldSelector decodeI_NoCap "aw"
+getAccessWidth = makeFieldSelector decodeI "aw"
 
 getIsUnsignedLoad :: Bit 32 -> Bit 1
-getIsUnsignedLoad = makeFieldSelector decodeI_NoCap "ul"
+getIsUnsignedLoad = makeFieldSelector decodeI "ul"
 
 -- Execute stage
 -- =============
@@ -95,14 +87,14 @@ getIsUnsignedLoad = makeFieldSelector decodeI_NoCap "ul"
 executeI ::
      Maybe (Sink MulReq)
      -- ^ Optionally use multiplier to implement shifts
-  -> CSRUnit
+  -> Maybe CSRUnit
      -- ^ Access to CSRs
-  -> Sink MemReq
+  -> Maybe (Sink MemReq)
      -- ^ Access to memory
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeI shiftUnit csrUnit memReqs s = do
+executeI m_shiftUnit m_csrUnit m_memReqs s = do
   -- Add/sub/compare unit
   let AddOuts sum less equal = addUnit 
         AddIns {
@@ -119,22 +111,22 @@ executeI shiftUnit csrUnit memReqs s = do
     s.result <== zeroExtend less
 
   when (s.opcode `is` [AND]) do
-    s.result <== s.opA .&. s.opBorImm
+    s.result <== s.opA .&. s.immOrOpB
 
   when (s.opcode `is` [OR]) do
-    s.result <== s.opA .|. s.opBorImm
+    s.result <== s.opA .|. s.immOrOpB
 
   when (s.opcode `is` [XOR]) do
-    s.result <== s.opA .^. s.opBorImm
+    s.result <== s.opA .^. s.immOrOpB
 
   when (s.opcode `is` [LUI]) do
-    s.result <== s.opBorImm
+    s.result <== s.immOrOpB
 
-  case shiftUnit of
+  case m_shiftUnit of
 
     -- Use barrel shifter
     Nothing -> do
-      let shiftAmount = slice @4 @0 (s.opBorImm)
+      let shiftAmount = slice @4 @0 (s.immOrOpB)
 
       when (s.opcode `is` [SLL]) do
         s.result <== s.opA .<<. shiftAmount
@@ -150,7 +142,7 @@ executeI shiftUnit csrUnit memReqs s = do
         if mulUnit.canPut
           then do
             s.suspend
-            let shiftAmount = slice @4 @0 (s.opBorImm)
+            let shiftAmount = slice @4 @0 (s.immOrOpB)
             let noShift = shiftAmount .==. 0
             mulUnit.put
               MulReq {
@@ -171,14 +163,19 @@ executeI shiftUnit csrUnit memReqs s = do
         , s.opcode `is` [BGE, BGEU] .&. inv less
         ]
 
+  let pcNew = s.pc.val + s.immOrOpB
   when branch do
-    s.pc <== s.pc.val + signExtend (getBranchOffset s.instr)
+    s.pc <== pcNew
+
+  when (s.opcode `is` [AUIPC]) do
+    s.result <== pcNew
 
   when (s.opcode `is` [JAL]) do
-    s.pc <== s.pc.val + s.opBorImm
+    s.pc <== pcNew
 
+  let plus = s.opA + s.immOrOpB
   when (s.opcode `is` [JALR]) do
-    s.pc <== truncateLSB (s.opA + s.opBorImm) # (0 :: Bit 1)
+    s.pc <== truncateLSB plus # (0 :: Bit 1)
 
   when (s.opcode `is` [JAL, JALR]) do
     s.result <== s.pc.val + 4
@@ -189,79 +186,74 @@ executeI shiftUnit csrUnit memReqs s = do
   when (s.opcode `is` [EBREAK]) do
     trap s exc_breakpoint
 
-  -- Memory fence
-  when (s.opcode `is` [FENCE]) do
-    if memReqs.canPut
-      then do
-        s.suspend
-        -- Send request to memory unit
-        put memReqs
-          MemReq {
-            memReqAccessWidth = dontCare
-          , memReqOp = memGlobalFenceOp
-          , memReqAMOInfo = dontCare
-          , memReqAddr = dontCare
-          , memReqData = dontCare
-          , memReqDataTagBit = 0
-          , memReqDataTagBitMask = 0
-          , memReqIsUnsigned = dontCare
-          , memReqIsFinal = true
-          }
-      else s.retry
+  -- CSRs
+  case m_csrUnit of
+    Nothing -> return ()
+    Just csrUnit ->
+      -- Control/status registers
+      when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
+        -- Condition for reading CSR
+        let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
+        -- Read CSR
+        x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
+        s.result <== x
+        -- Condition for writing CSR
+        let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
+        -- Determine operand
+        let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
+        -- Data to write for CSRRS/CSRRC
+        let maskedData = fromBitList
+              [ cond ? (s.opcode `is` [CSRRS], old)
+              | (old, cond) <- zip (toBitList x) (toBitList operand) ]
+        -- Data to write
+        let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
+        -- Write CSR
+        when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
 
-  -- Control/status registers
-  when (s.opcode `is` [CSRRW, CSRRS, CSRRC]) do
-    -- Condition for reading CSR
-    let doRead = s.opcode `is` [CSRRW] ? (s.resultIndex .!=. 0, true)
-    -- Read CSR
-    x <- whenAction doRead do csrUnitRead csrUnit (getCSRImm s.instr)
-    s.result <== x
-    -- Condition for writing CSR
-    let doWrite = s.opcode `is` [CSRRS, CSRRC] ? (s.opAIndex .!=. 0, true)
-    -- Determine operand
-    let operand = getCSRI s.instr ? (zeroExtend s.opAIndex, s.opA)
-    -- Data to write for CSRRS/CSRRC
-    let maskedData = fromBitList
-          [ cond ? (s.opcode `is` [CSRRS], old)
-          | (old, cond) <- zip (toBitList x) (toBitList operand) ]
-    -- Data to write
-    let writeData = s.opcode `is` [CSRRW] ? (operand, maskedData)
-    -- Write CSR
-    when doWrite do csrUnitWrite csrUnit (getCSRImm s.instr) writeData
+  -- Memory
+  case m_memReqs of
+    Nothing -> return ()
+    Just memReqs -> do
+      -- Memory fence
+      when (s.opcode `is` [FENCE]) do
+        if memReqs.canPut
+          then do
+            s.suspend
+            -- Send request to memory unit
+            put memReqs
+              MemReq {
+                memReqAccessWidth = dontCare
+              , memReqOp = memGlobalFenceOp
+              , memReqAMOInfo = dontCare
+              , memReqAddr = dontCare
+              , memReqData = dontCare
+              , memReqDataTagBit = 0
+              , memReqDataTagBitMask = 0
+              , memReqIsUnsigned = dontCare
+              , memReqIsFinal = true
+              }
+          else s.retry
 
-executeI_NoCap ::
-     CSRUnit
-     -- ^ Access to CSRs
-  -> Sink MemReq
-     -- ^ Access to memory
-  -> State
-     -- ^ Pipeline state
-  -> Action ()
-executeI_NoCap csrUnit memReqs s = do
-
-  when (s.opcode `is` [AUIPC]) do
-    s.result <== s.pc.val + s.opBorImm
-
-  -- Memory access
-  when (s.opcode `is` [LOAD, STORE]) do
-    if memReqs.canPut
-      then do
-        -- Currently the memory subsystem doesn't issue store responses
-        -- so we make sure to only suspend on a load
-        let hasResp = s.opcode `is` [LOAD]
-        when hasResp do s.suspend
-        -- Send request to memory unit
-        put memReqs
-          MemReq {
-            memReqAccessWidth = getAccessWidth s.instr
-          , memReqOp =
-              if s.opcode `is` [LOAD] then memLoadOp else memStoreOp
-          , memReqAMOInfo = dontCare
-          , memReqAddr = s.opA + s.opBorImm
-          , memReqData = s.opB
-          , memReqDataTagBit = 0
-          , memReqDataTagBitMask = 0
-          , memReqIsUnsigned = getIsUnsignedLoad s.instr
-          , memReqIsFinal = true
-          }
-      else s.retry
+      -- Memory access
+      when (s.opcode `is` [LOAD, STORE]) do
+        if memReqs.canPut
+          then do
+            -- Currently the memory subsystem doesn't issue store responses
+            -- so we make sure to only suspend on a load
+            let hasResp = s.opcode `is` [LOAD]
+            when hasResp do s.suspend
+            -- Send request to memory unit
+            put memReqs
+              MemReq {
+                memReqAccessWidth = getAccessWidth s.instr
+              , memReqOp =
+                  if s.opcode `is` [LOAD] then memLoadOp else memStoreOp
+              , memReqAMOInfo = dontCare
+              , memReqAddr = plus
+              , memReqData = s.opB
+              , memReqDataTagBit = 0
+              , memReqDataTagBitMask = 0
+              , memReqIsUnsigned = getIsUnsignedLoad s.instr
+              , memReqIsFinal = true
+              }
+          else s.retry

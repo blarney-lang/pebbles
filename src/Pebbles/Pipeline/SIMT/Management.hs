@@ -56,6 +56,18 @@ simtStat_ScalarAborts = SIMTStatId 8
 -- | DRAM accesses (loads and stores)
 simtStat_DRAMAccesses = SIMTStatId 9
 
+-- | Total vector register count
+simtStat_TotalVecRegs = SIMTStatId 10
+
+-- | Total capability vector register count
+simtStat_TotalCapVecRegs = SIMTStatId 11
+
+-- | Store buffer hit/miss counters
+simtStat_SBLoadHit = SIMTStatId 12
+simtStat_SBLoadMiss = SIMTStatId 13
+simtStat_SBCapLoadHit = SIMTStatId 14
+simtStat_SBCapLoadMiss = SIMTStatId 15
+
 -- | SIMT pipeline management request (from CPU)
 data SIMTReq =
   SIMTReq {

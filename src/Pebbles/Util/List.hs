@@ -84,3 +84,7 @@ countSatTwo bs = tree1 add (map zeroExtend bs)
 -- | Is the number of ones more than one?
 moreThanOne :: [Bit 1] -> Bit 1
 moreThanOne bs = at @1 (countSatTwo bs)
+
+-- | Reverse a bit vector
+reverseBits :: Bit n -> Bit n
+reverseBits = unsafeFromBitList . reverse . unsafeToBitList
