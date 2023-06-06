@@ -444,7 +444,7 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
           -- Write vector is scalarisable
         , scalarVal3.val.valid
           -- Write vector is uniform
-        , scalarVal3.val.val.stride .==. 0
+        , scalarVal3.val.val.stride .==. stride_0
           -- Is the access bufferable?
         , canBuffer
           -- SameBlock strategy, with all lanes active
