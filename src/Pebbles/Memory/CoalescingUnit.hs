@@ -27,6 +27,7 @@ import Pebbles.Pipeline.SIMT.RegFile
 import Pebbles.Memory.Interface
 import Pebbles.Memory.Alignment
 import Pebbles.Memory.DRAM.Interface
+import Pebbles.Pipeline.SIMT.RegFile
 
 -- Haskell imports
 import Data.List
@@ -223,6 +224,9 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
   incStoreBufferLoadHit <- makePulseWire
   incStoreBufferLoadMiss <- makePulseWire
   isCapMetaAccess <- makePulseWire
+
+  -- Is affine detection enabled?
+  let useAffine = SIMTEnableAffineScalarisation == 1
 
   -- Stage 0: consume requests and feed pipeline
   -- ===========================================
@@ -443,8 +447,6 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
         , leaderReq3.val.memReqOp .==. memStoreOp
           -- Write vector is scalarisable
         , scalarVal3.val.valid
-          -- Write vector is uniform
-        , scalarVal3.val.val.stride .==. stride_0
           -- Is the access bufferable?
         , canBuffer
           -- SameBlock strategy, with all lanes active
@@ -591,24 +593,25 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
                   coalSameBlockStrategy <== true
                   coalSameBlockMode <== 2
                   coalMask <== ones
-                  let evictReq = MemReq {
-                          memReqAccessWidth = 2   -- 2^2=4 bytes
-                        , memReqOp = memStoreOp
-                        , memReqAMOInfo = dontCare
-                        , memReqAddr = storeBuffer.out.tag #
-                            storeBufferIdx4.val # 0
-                        , memReqData =
-                            lower storeBuffer.out.scalarVal.val
-                        , memReqDataTagBit =
-                            upper storeBuffer.out.scalarVal.val
-                        , memReqDataTagBitMask = dontCare
-                        , memReqIsUnsigned = dontCare
-                        , memReqIsFinal = true
-                        } 
-                  leaderReq5 <== evictReq
+                  let expandedReqs =
+                        [ MemReq {
+                            memReqAccessWidth = 2   -- 4 bytes
+                          , memReqOp = memStoreOp
+                          , memReqAMOInfo = dontCare
+                          , memReqAddr = storeBuffer.out.tag #
+                              storeBufferIdx4.val # 0
+                          , memReqData = lower scal
+                          , memReqDataTagBit = upper scal
+                          , memReqDataTagBitMask = dontCare
+                          , memReqIsUnsigned = dontCare
+                          , memReqIsFinal = true
+                          }
+                        | scal <- V.toList (expandScalar useAffine
+                                              storeBuffer.out.scalarVal) ]
+                  leaderReq5 <== head expandedReqs
                   reqId5 <== dontCare
-                  forM_ memReqs5 \r5 -> do
-                    r5 <== evictReq
+                  forM_ (zip memReqs5 expandedReqs) \(r5, req) -> do
+                    r5 <== req
                 else do
                   coalSameBlockStrategy <== useSameBlock
                   coalSameBlockMode <== sameBlockMode4.val
@@ -874,17 +877,19 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
         when opts.enableStoreBuffer do
           -- Note: store buffer currently restricted to uniform vectors
           when dramRespQueue.notFull do
-            let vec = V.fromList
-                        [ Option valid
-                            MemResp {
-                              memRespData = lower hit.val.val
-                            , memRespDataTagBit =
-                                tMask .&&. upper hit.val.val
-                            , memRespIsFinal = info.coalInfoIsFinal
-                            }
-                        | (valid, tMask) <-
-                            zip (toBitList mask)
-                                (toBitList info.coalInfoTagBitMask) ]
+            let vec =
+                  V.fromList
+                    [ Option valid
+                        MemResp {
+                          memRespData = lower scal
+                        , memRespDataTagBit =
+                            tMask .&&. upper scal
+                        , memRespIsFinal = info.coalInfoIsFinal
+                        }
+                    | (valid, tMask, scal) <-
+                        zip3 (toBitList mask)
+                             (toBitList info.coalInfoTagBitMask)
+                             (V.toList (expandScalar useAffine hit.val)) ]
             dramRespQueue.enq (info.coalInfoReqId, vec)
             inflightQueue.deq
       else do

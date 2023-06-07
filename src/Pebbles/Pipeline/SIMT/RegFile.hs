@@ -376,37 +376,6 @@ makeSIMTScalarisingRegFile opts = do
   -- Helper functions
   -- ================
 
-  -- Expand compressed affine vector using lane id
-  let expandAffine :: forall regWidth. KnownNat regWidth
-                   => Bit SIMTLogLanes
-                   -> ScalarVal regWidth
-                   -> Bit regWidth
-      expandAffine i s = unsafeBitCast
-        (unsafeSlice ( valueOf @regWidth - 1
-                     , SIMTLogLanes+2 ) s.val # expanded)
-        where
-          expanded :: Bit (SIMTLogLanes+2) =
-            select
-              [ s.stride .==. stride_0 -->
-                  unsafeSlice (SIMTLogLanes+1, 0) s.val
-              , s.stride .==. stride_1 -->
-                  unsafeSlice (SIMTLogLanes+1, SIMTLogLanes) s.val # i
-              , s.stride .==. stride_2 -->
-                  unsafeAt (SIMTLogLanes+1) s.val # i # (0 :: Bit 1)
-              , s.stride .==. stride_4 -->
-                  i # (0 :: Bit 2) ]
-
-  -- Expand scalar register to vector
-  let expandScalar :: forall regWidth. KnownNat regWidth
-                   => ScalarVal regWidth
-                   -> Vec SIMTLanes (Bit regWidth)
-      expandScalar scalarReg =
-        V.fromList [ getLane (fromInteger i) scalarReg
-                   | i <- [0 .. SIMTLanes-1] ]
-        where
-          getLane i s =
-            if opts.useAffine then expandAffine i s else s.val
-
   -- Initialisation
   -- ==============
 
@@ -598,8 +567,9 @@ makeSIMTScalarisingRegFile opts = do
       -- Compute new vector to write
       let writeVals :: Vec SIMTLanes (Bit regWidth) = fromList
             [ item.valid ? (item.val, scal)
-            | (item, scal) <- zip (toList storeVec1.val)
-                                  (toList (expandScalar scalarReg)) ]
+            | (item, scal) <-
+                zip (toList storeVec1.val)
+                    (toList (expandScalar opts.useAffine scalarReg)) ]
       -- Trigger next stage
       storeScalarEntry2 <== scalarRegFileE.out
       storeIdx2 <== storeIdx1.val
@@ -727,22 +697,26 @@ makeSIMTScalarisingRegFile opts = do
             then
               delay false isVector ?
                 ( V.fromList [bank.out | bank <- vecSpadA]
-                , old $ expandScalar (old $ untag #scalar scalarRegFileA.out))
+                , old $ expandScalar opts.useAffine
+                          (old $ untag #scalar scalarRegFileA.out))
             else
               old $ isVector ?
                 ( V.fromList [bank.out | bank <- vecSpadA]
-                , expandScalar (old $ untag #scalar scalarRegFileA.out))
+                , expandScalar opts.useAffine
+                    (old $ untag #scalar scalarRegFileA.out))
     , outB =
         let isVector = delay false (scalarRegFileB.out `is` #vector) in
           if enSharedVecSpad
             then
               delay false isVector ?
                 ( V.fromList [bank.out | bank <- vecSpadB]
-                , old $ expandScalar (old $ untag #scalar scalarRegFileB.out))
+                , old $ expandScalar opts.useAffine
+                    (old $ untag #scalar scalarRegFileB.out))
             else
               old $ isVector ?
                 ( V.fromList [bank.out | bank <- vecSpadB]
-                , expandScalar (old $ untag #scalar scalarRegFileB.out))
+                , expandScalar opts.useAffine
+                    (old $ untag #scalar scalarRegFileB.out))
     , evictedA = iterateN 2 (delay false) (scalarRegFileA.out `is` #evicted)
     , evictedB = iterateN 2 (delay false) (scalarRegFileB.out `is` #evicted)
     , loadEvictedStatus = \idx -> evictStatus.load idx
@@ -826,6 +800,9 @@ makeSIMTScalarisingRegFile opts = do
                 Just spad -> loadStallWire.val
     }
 
+-- Helper functions
+-- ================
+
 -- Check if incrementing by val is compatible with given stride
 affineAlignCheck :: KnownNat n => Bit n -> Stride -> Bit 1
 affineAlignCheck val s = 
@@ -839,3 +816,35 @@ affineAlignCheck val s =
     c1 = truncateCast val .==. (0 :: Bit SIMTLogLanes)
     c2 = unsafeAt SIMTLogLanes val .==. false
     c3 = unsafeAt (SIMTLogLanes+1) val .==. false
+
+-- Expand compressed affine vector using lane id
+expandAffine :: forall regWidth. KnownNat regWidth
+             => Bit SIMTLogLanes
+             -> ScalarVal regWidth
+             -> Bit regWidth
+expandAffine i s = unsafeBitCast
+  (unsafeSlice ( valueOf @regWidth - 1
+               , SIMTLogLanes+2 ) s.val # expanded)
+  where
+    expanded :: Bit (SIMTLogLanes+2) =
+      select
+        [ s.stride .==. stride_0 -->
+            unsafeSlice (SIMTLogLanes+1, 0) s.val
+        , s.stride .==. stride_1 -->
+            unsafeSlice (SIMTLogLanes+1, SIMTLogLanes) s.val # i
+        , s.stride .==. stride_2 -->
+            unsafeAt (SIMTLogLanes+1) s.val # i # (0 :: Bit 1)
+        , s.stride .==. stride_4 -->
+            i # (0 :: Bit 2) ]
+
+-- Expand scalar register to vector
+expandScalar :: forall regWidth. KnownNat regWidth
+             => Bool
+             -> ScalarVal regWidth
+             -> Vec SIMTLanes (Bit regWidth)
+expandScalar useAffine scalarReg =
+  V.fromList [ getLane (fromInteger i) scalarReg
+             | i <- [0 .. SIMTLanes-1] ]
+  where
+    getLane i s =
+      if useAffine then expandAffine i s else s.val
