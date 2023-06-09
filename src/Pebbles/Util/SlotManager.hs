@@ -51,6 +51,8 @@ makeSlotManager size = do
   let stkPopNext1 = stkPopNext.val
   let stkPopNext2 = stkPopNext1 + zeroExtend stkPop1.val
 
+  clearWire <- makePulseWire
+
   always do
     when stkPush1.active do (stks!stkPushNext1).push stkPush1.val
     when stkPush2.active do (stks!stkPushNext2).push stkPush2.val
@@ -60,10 +62,15 @@ makeSlotManager size = do
                            zeroExtend stkPush2.active +
                            zeroExtend stkPush3.active +
                            zeroExtend stkPush4.active
-    stkPushNext <== stkPushNext.val + pushInc
     let popInc :: Bit 2 = zeroExtend stkPop1.val +
                           zeroExtend stkPop2.val
-    stkPopNext <== stkPopNext.val + popInc
+    if clearWire.val
+      then do
+        stkPushNext <== 0
+        stkPopNext <== 0
+      else do
+        stkPushNext <== stkPushNext.val + pushInc
+        stkPopNext <== stkPopNext.val + popInc
 
   return
     SlotManager {
@@ -79,7 +86,25 @@ makeSlotManager size = do
     , pop2 = do
         stkPop2.pulse
         (stks!stkPopNext2).pop
-    , clear = mapM_ (.clear) stks
+    , clear = do
+        mapM_ (.clear) stks
+        clearWire.pulse
     , notFull = orList (map (.notFull) stks)
     , notEmpty = orList (map (.notEmpty) stks)
     }
+
+nullSlotManager :: Bits slot => SlotManager slot
+nullSlotManager =
+  SlotManager {
+    push1 = \slot -> return ()
+  , push2 = \slot -> return ()
+  , push3 = \slot -> return ()
+  , push4 = \slot -> return ()
+  , top1 = dontCare
+  , top2 = dontCare
+  , pop1 = return ()
+  , pop2 = return ()
+  , clear = return ()
+  , notFull = true
+  , notEmpty = false
+  }

@@ -447,6 +447,8 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
         , leaderReq3.val.memReqOp .==. memStoreOp
           -- Write vector is scalarisable
         , scalarVal3.val.valid
+          -- And not partially scalarisable
+        , inv scalarVal3.val.val.partial.valid
           -- Is the access bufferable?
         , canBuffer
           -- SameBlock strategy, with all lanes active
@@ -606,7 +608,7 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
                           , memReqIsUnsigned = dontCare
                           , memReqIsFinal = true
                           }
-                        | scal <- V.toList (expandScalar useAffine
+                        | scal <- V.toList (expandScalar useAffine Nothing
                                               storeBuffer.out.scalarVal) ]
                   leaderReq5 <== head expandedReqs
                   reqId5 <== dontCare
@@ -889,7 +891,8 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
                     | (valid, tMask, scal) <-
                         zip3 (toBitList mask)
                              (toBitList info.coalInfoTagBitMask)
-                             (V.toList (expandScalar useAffine hit.val)) ]
+                             (V.toList
+                               (expandScalar useAffine Nothing hit.val)) ]
             dramRespQueue.enq (info.coalInfoReqId, vec)
             inflightQueue.deq
       else do

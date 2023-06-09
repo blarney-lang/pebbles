@@ -39,6 +39,9 @@ stride_1 = Stride 1
 stride_2 = Stride 2
 stride_4 = Stride 3
 
+-- | Index to partial mask memory
+type PartialMaskIdx = Bit SIMTCapRFLogNumPartialMasks
+
 -- | This structure represents a unform or affine vector
 data ScalarVal n =
   ScalarVal {
@@ -47,6 +50,8 @@ data ScalarVal n =
   , stride :: Stride
     -- ^ Stride between values of an affine vector;
     -- if stride is 0 then the vector is uniform
+  , partial :: Option PartialMaskIdx
+    -- ^ Pointer to mask (for partial scalarisation)
   }
   deriving (Generic, Interface, Bits)
 
@@ -296,6 +301,8 @@ data SIMTScalarisingRegFileConfig t_logSize regWidth =
     -- ^ Use shared vector scratchpad
   , pipelineActive :: Bit 1
     -- ^ Is processor pipeline active?
+  , useInitValOpt :: Bool
+    -- ^ Use initial value optimisation
   }
 
 -- | Scalarising implementation
@@ -333,6 +340,26 @@ makeSIMTScalarisingRegFile opts = do
     case opts.useSharedVecSpad of
       Nothing -> makeSlotManager (valueOf @t_logSize)
       Just spad -> return spad.freeSlots
+
+  -- Partial mask RAMs
+  (partialRegFileA, partialRegFileB) ::
+    (RAM PartialMaskIdx (Bit SIMTLanes),
+     RAM PartialMaskIdx (Bit SIMTLanes)) <-
+       if opts.useInitValOpt
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+  (partialRegFileE, partialRegFileF) ::
+    (RAM PartialMaskIdx (Bit SIMTLanes),
+     RAM PartialMaskIdx (Bit SIMTLanes)) <-
+       if opts.useInitValOpt
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+
+  -- Partial mask slots
+  partialSlots :: SlotManager PartialMaskIdx <-
+    if opts.useInitValOpt
+      then makeSlotManager SIMTCapRFLogNumPartialMasks
+      else return nullSlotManager
 
   -- For each warp, maintain a 32-bit mask indicating which
   -- registers are (non-evicted) vectors
@@ -392,6 +419,7 @@ makeSIMTScalarisingRegFile opts = do
             ScalarVal {
               val = opts.regInitVal
             , stride = stride_0
+            , partial = none
             }
       let idx = unpack initIdx.val
       scalarRegFileB.store idx initScalarReg
@@ -401,6 +429,11 @@ makeSIMTScalarisingRegFile opts = do
       when (not enSharedVecSpad) do
         when (initIdx.val .<=. fromIntegral (opts.size - 1)) do
           freeSlots.push1 (truncateCast initIdx.val)
+      when opts.useInitValOpt do
+        when (initIdx.val .<=.
+                fromIntegral (2^SIMTCapRFLogNumPartialMasks-1)) do
+          let slot = truncateCast initIdx.val
+          partialSlots.push1 slot
       when opts.useDynRegSpill do
         sequence_ [ sequence_ [ b <== false | b <- toList mask ]
                   | mask <- toList vecMasks ]
@@ -468,6 +501,12 @@ makeSIMTScalarisingRegFile opts = do
           sequence_ [ bank.load idxA | bank <- vecSpadA ]
           sequence_ [ bank.load idxB | bank <- vecSpadB ]
 
+    when opts.useInitValOpt do
+      let scalarA = untag #scalar scalarRegFileA.out
+      let scalarB = untag #scalar scalarRegFileB.out
+      partialRegFileA.load scalarA.partial.val
+      partialRegFileB.load scalarB.partial.val
+
   -- Store path
   -- ==========
 
@@ -488,6 +527,9 @@ makeSIMTScalarisingRegFile opts = do
   storeScalarEntry2 <- makeReg dontCare
   storeStride2 <- makeReg dontCare
   storeLeaderVal2 <- makeReg dontCare
+  storeInitVal2 :: Reg (Bit 1) <- makeReg false
+  storePartialSlot2 :: Reg (Option PartialMaskIdx) <- makeReg none
+  storePartialAllocated2 :: Reg (Bit 1) <- makeReg false
 
   always do
     -- Stage 1
@@ -498,7 +540,8 @@ makeSIMTScalarisingRegFile opts = do
       -- Scalar reg before write
       let scalarReg = untag #scalar scalarRegFileE.out
       -- Is it a uniform vector?
-      let isUniform = scalarRegFileE.out `is` #scalar .&&.
+      let isScalar = scalarRegFileE.out `is` #scalar
+      let isUniform = isScalar .&&.
                         (if opts.useAffine
                            then scalarReg.stride .==. stride_0
                            else true)
@@ -557,20 +600,66 @@ makeSIMTScalarisingRegFile opts = do
             isUniform .&&. scalarReg.val .==. storeLeaderVal1.val
                       .&&. isStride0
       -- Is it a scalar write?
-      storeIsScalar2 <== andList
-        [ isBaseEq
-        , if opts.useAffine
-            then orList [isStride0, isStride1, isStride2, isStride4]
-            else isStride0
-        , allValid .||. idempotent
-        ]
+      let scalarisable = andList
+            [ inv storeEvict1.val
+            , isBaseEq
+            , if opts.useAffine
+                then orList [isStride0, isStride1, isStride2, isStride4]
+                else isStride0
+            , anyValid
+            ]
+      -- Handle partial masks for initial value optimisation
+      let writeInitVal =
+            isStride0 .&&. storeLeaderVal1.val .==. opts.regInitVal
+      let allocatePartialMask = andList
+            [ isScalar
+            , scalarisable
+            , inv allValid
+            , inv scalarReg.partial.valid
+            , partialSlots.notEmpty
+            , if writeInitVal
+                then true
+                else scalarReg.stride .==. stride_0 .&&.
+                       scalarReg.val .==. opts.regInitVal
+            ]
+      let maintainPartialMask = andList
+            [ isScalar
+            , scalarisable
+            , scalarReg.partial.valid
+            , inv allValid
+            , writeInitVal .||. idempotent ]
+      let releasePartialMask = andList
+            [ isScalar
+            , scalarReg.partial.valid
+            , inv maintainPartialMask
+            ]
+      when opts.useInitValOpt do
+        partialRegFileE.load scalarReg.partial.val
+        when allocatePartialMask do
+          partialSlots.pop1
+        when releasePartialMask do
+          partialSlots.push1 scalarReg.partial.val
+        storePartialSlot2 <==
+          if allocatePartialMask
+            then Option true partialSlots.top1
+            else Option (isScalar .&&. scalarReg.partial.valid .&&.
+                           maintainPartialMask)
+                        scalarReg.partial.val
+        storePartialAllocated2 <== allocatePartialMask
+        storeInitVal2 <== writeInitVal
       -- Compute new vector to write
       let writeVals :: Vec SIMTLanes (Bit regWidth) = fromList
             [ item.valid ? (item.val, scal)
-            | (item, scal) <-
-                zip (toList storeVec1.val)
-                    (toList (expandScalar opts.useAffine scalarReg)) ]
+            | (item, scal) <- zip
+                (toList storeVec1.val)
+                (toList (expandScalar opts.useAffine Nothing scalarReg)) ]
       -- Trigger next stage
+      storeIsScalar2 <== andList 
+        [ scalarisable
+        , allValid .||. idempotent .||.
+            (if opts.useInitValOpt
+               then allocatePartialMask .||. maintainPartialMask
+               else false) ]
       storeScalarEntry2 <== scalarRegFileE.out
       storeIdx2 <== storeIdx1.val
       storeVec2 <== V.zipWith (\item writeVal -> Option item.valid writeVal)
@@ -583,6 +672,9 @@ makeSIMTScalarisingRegFile opts = do
  
     -- Stage 2
     when store2.val do
+      -- Write mask
+      let writeMask :: Bit SIMTLanes =
+            fromBitList [item.valid | item <- toList storeVec2.val]
       -- Was it a vector before this write?
       let wasVector = storeScalarEntry2.val `is` #vector
       -- Was it an evicted vector before this write?
@@ -615,12 +707,19 @@ makeSIMTScalarisingRegFile opts = do
           let spadAddr = wasVector ?
                 ( truncateCast (untag #vector storeScalarEntry2.val)
                 , slot )
-          let isAffine = storeScalarEntry2.val `is` #scalar
+          let scalar = untag #scalar storeScalarEntry2.val
           sequence_
             [ when (item.valid .||. inv wasVector) do
-                bank.store spadAddr item.val
-            | (bank, item) <-
-                zip vecSpadA (toList storeVec2.val) ]
+                let writeVal =
+                      if opts.useInitValOpt
+                        then (inv item.valid .&&. wasScalar .&&.
+                                scalar.partial.valid .&&. useInit) ?
+                                  (opts.regInitVal, item.val)
+                        else item.val
+                 in bank.store spadAddr writeVal
+            | (bank, item, useInit) <-
+                zip3 vecSpadA (toList storeVec2.val)
+                              (toBitList partialRegFileE.out) ]
         else do
           -- Now a scalar (or evicted vector). Was it a vector before?
           when wasVector do
@@ -631,10 +730,22 @@ makeSIMTScalarisingRegFile opts = do
               (untag #vector storeScalarEntry2.val))
             vecCountDecr1.pulse
           -- Write to scalar reg file
+          let currentScalar = untag #scalar storeScalarEntry2.val
+          let writeStride =
+                if opts.useInitValOpt
+                  then (if storePartialSlot2.val.valid .&&. storeInitVal2.val
+                          then currentScalar.stride else storeStride2.val)
+                  else storeStride2.val
+          let writeBase = 
+                if opts.useInitValOpt
+                  then (if storePartialSlot2.val.valid .&&. storeInitVal2.val
+                          then currentScalar.val else storeLeaderVal2.val)
+                  else storeLeaderVal2.val
           let scalarVal =
                 ScalarVal {
-                  val = storeLeaderVal2.val
-                , stride = storeStride2.val
+                  val = writeBase
+                , stride = writeStride
+                , partial = storePartialSlot2.val
                 }
           let writeVal = storeEvict2.val ?
                 (tag #evicted (), tag #scalar scalarVal)
@@ -643,6 +754,19 @@ makeSIMTScalarisingRegFile opts = do
           scalarRegFileC.store storeIdx2.val writeVal
           scalarRegFileE.store storeIdx2.val writeVal
           evictStatus.store storeIdx2.val storeEvict2.val
+
+          when opts.useInitValOpt do
+            let currentMask =
+                  if storePartialAllocated2.val
+                    then 0
+                    else partialRegFileE.out
+            let newMask =
+                  if storeInitVal2.val
+                    then currentMask .|. writeMask
+                    else currentMask .&. inv writeMask
+            when storePartialSlot2.val.valid do
+              partialRegFileA.store storePartialSlot2.val.val newMask
+              partialRegFileE.store storePartialSlot2.val.val newMask
 
       -- Track vectors
       when opts.useDynRegSpill do
@@ -662,6 +786,8 @@ makeSIMTScalarisingRegFile opts = do
     when opts.useScalarUnit do
       when storeScalarGo.val do
         -- Update scalar reg file
+        dynamicAssert (inv storeScalarVal.val.partial.valid)
+          "storeScalar does not support partial vectors"
         let s = tag #scalar storeScalarVal.val
         let idx = storeScalarIdx.val
         scalarRegFileB.store idx s
@@ -674,6 +800,12 @@ makeSIMTScalarisingRegFile opts = do
             "Scalarising reg file: freeSlots overflow"
           freeSlots.push2 (truncateCast (untag #vector scalarRegFileF.out))
           vecCountDecr2.pulse
+        -- Reclaim partial scalar space
+        when opts.useInitValOpt do
+          when (scalarRegFileF.out `is` #scalar) do
+            let scalar = untag #scalar scalarRegFileF.out
+            when scalar.partial.valid do
+              partialSlots.push2 scalar.partial.val
         -- Track vector registers
         when opts.useDynRegSpill do
           let (warpId, regId) = storeScalarIdx.val
@@ -692,31 +824,37 @@ makeSIMTScalarisingRegFile opts = do
     , loadScalarD = \idx -> do
         scalarRegFileD.load idx
     , outA =
-        let isVector = delay false (scalarRegFileA.out `is` #vector) in
-          if enSharedVecSpad
-            then
-              delay false isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadA]
-                , old $ expandScalar opts.useAffine
-                          (old $ untag #scalar scalarRegFileA.out))
-            else
-              old $ isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadA]
-                , expandScalar opts.useAffine
-                    (old $ untag #scalar scalarRegFileA.out))
+        let isVector = delay false (scalarRegFileA.out `is` #vector)
+            scalar = old (untag #scalar scalarRegFileA.out)
+            mask = scalar.partial.valid ? (partialRegFileA.out, 0)
+            mb_mask = if opts.useInitValOpt
+                        then Just (mask, opts.regInitVal)
+                        else Nothing
+        in if enSharedVecSpad
+             then
+               delay false isVector ?
+                 ( V.fromList [bank.out | bank <- vecSpadA]
+                 , old $ expandScalar opts.useAffine mb_mask scalar )
+             else
+               old $ isVector ?
+                 ( V.fromList [bank.out | bank <- vecSpadA]
+                 , expandScalar opts.useAffine mb_mask scalar )
     , outB =
-        let isVector = delay false (scalarRegFileB.out `is` #vector) in
-          if enSharedVecSpad
-            then
-              delay false isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadB]
-                , old $ expandScalar opts.useAffine
-                    (old $ untag #scalar scalarRegFileB.out))
-            else
-              old $ isVector ?
-                ( V.fromList [bank.out | bank <- vecSpadB]
-                , expandScalar opts.useAffine
-                    (old $ untag #scalar scalarRegFileB.out))
+        let isVector = delay false (scalarRegFileB.out `is` #vector)
+            scalar = old (untag #scalar scalarRegFileB.out)
+            mask = scalar.partial.valid ? (partialRegFileB.out, 0)
+            mb_mask = if opts.useInitValOpt
+                        then Just (mask, opts.regInitVal)
+                        else Nothing
+        in if enSharedVecSpad
+             then
+               delay false isVector ?
+                 ( V.fromList [bank.out | bank <- vecSpadB]
+                 , old $ expandScalar opts.useAffine mb_mask scalar )
+             else
+               old $ isVector ?
+                 ( V.fromList [bank.out | bank <- vecSpadB]
+                 , expandScalar opts.useAffine mb_mask scalar )
     , evictedA = iterateN 2 (delay false) (scalarRegFileA.out `is` #evicted)
     , evictedB = iterateN 2 (delay false) (scalarRegFileB.out `is` #evicted)
     , loadEvictedStatus = \idx -> evictStatus.load idx
@@ -766,6 +904,7 @@ makeSIMTScalarisingRegFile opts = do
     , init = do
         initInProgress <== true
         freeSlots.clear
+        partialSlots.clear
     , initInProgress = initInProgress.val
     , maxVecRegs = maxVecCount.val
     , numVecRegsUnused = fromIntegral opts.size - vecCount.val
@@ -840,11 +979,20 @@ expandAffine i s = unsafeBitCast
 -- Expand scalar register to vector
 expandScalar :: forall regWidth. KnownNat regWidth
              => Bool
+             -> Maybe (Bit SIMTLanes, Bit regWidth)
              -> ScalarVal regWidth
              -> Vec SIMTLanes (Bit regWidth)
-expandScalar useAffine scalarReg =
-  V.fromList [ getLane (fromInteger i) scalarReg
-             | i <- [0 .. SIMTLanes-1] ]
+expandScalar useAffine useMask scalarReg =
+  case useMask of
+    Nothing -> V.fromList [ getLane (fromInteger i) scalarReg
+                          | i <- [0 .. SIMTLanes-1 ] ]
+    Just (mask, initVal) ->
+      let initScalarVal = ScalarVal { val = initVal
+                                    , stride = stride_0
+                                    , partial = none  }
+       in V.fromList [ getLane (fromInteger i)
+                               (if scalarReg.partial.valid .&&. init
+                                  then initScalarVal else scalarReg)
+                     | (i, init) <- zip [0..] (toBitList mask) ]
   where
-    getLane i s =
-      if useAffine then expandAffine i s else s.val
+    getLane i s = if useAffine then expandAffine i s else s.val
