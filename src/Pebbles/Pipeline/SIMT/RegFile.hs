@@ -33,7 +33,7 @@ type SIMTRegFileIdx = (Bit SIMTLogWarps, RegId)
 type SIMTRegFileAddr = Bit (SIMTLogWarps + 5)
 
 -- | Affine stride
-data Stride = Stride (Bit 2) deriving (Generic, Bits, Interface, Cmp)
+data Stride = Stride (Bit 2) deriving (Generic, Bits, Interface, Cmp, FShow)
 stride_0 = Stride 0
 stride_1 = Stride 1
 stride_2 = Stride 2
@@ -528,8 +528,6 @@ makeSIMTScalarisingRegFile opts = do
   storeStride2 <- makeReg dontCare
   storeLeaderVal2 <- makeReg dontCare
   storeInitVal2 :: Reg (Bit 1) <- makeReg false
-  storePartialSlot2 :: Reg (Option PartialMaskIdx) <- makeReg none
-  storePartialAllocated2 :: Reg (Bit 1) <- makeReg false
 
   always do
     -- Stage 1
@@ -539,12 +537,6 @@ makeSIMTScalarisingRegFile opts = do
             fromBitList [item.valid | item <- toList storeVec1.val]
       -- Scalar reg before write
       let scalarReg = untag #scalar scalarRegFileE.out
-      -- Is it a uniform vector?
-      let isScalar = scalarRegFileE.out `is` #scalar
-      let isUniform = isScalar .&&.
-                        (if opts.useAffine
-                           then scalarReg.stride .==. stride_0
-                           else true)
       -- Validity of writes
       let anyValid = writeMask .!=. 0
       let allValid = writeMask .==. ones
@@ -595,58 +587,10 @@ makeSIMTScalarisingRegFile opts = do
                    , isStride4 --> stride_4
                    ] dontCare
               else stride_0
-      -- Is the value being stored equal to the value already there?
-      let idempotent =
-            isUniform .&&. scalarReg.val .==. storeLeaderVal1.val
-                      .&&. isStride0
-      -- Is it a scalar write?
-      let scalarisable = andList
-            [ inv storeEvict1.val
-            , isBaseEq
-            , if opts.useAffine
-                then orList [isStride0, isStride1, isStride2, isStride4]
-                else isStride0
-            , anyValid
-            ]
-      -- Handle partial masks for initial value optimisation
-      let writeInitVal =
-            isStride0 .&&. storeLeaderVal1.val .==. opts.regInitVal
-      let allocatePartialMask = andList
-            [ isScalar
-            , scalarisable
-            , inv allValid
-            , inv scalarReg.partial.valid
-            , partialSlots.notEmpty
-            , if writeInitVal
-                then true
-                else scalarReg.stride .==. stride_0 .&&.
-                       scalarReg.val .==. opts.regInitVal
-            ]
-      let maintainPartialMask = andList
-            [ isScalar
-            , scalarisable
-            , scalarReg.partial.valid
-            , inv allValid
-            , writeInitVal .||. idempotent ]
-      let releasePartialMask = andList
-            [ isScalar
-            , scalarReg.partial.valid
-            , inv maintainPartialMask
-            ]
       when opts.useInitValOpt do
         partialRegFileE.load scalarReg.partial.val
-        when allocatePartialMask do
-          partialSlots.pop1
-        when releasePartialMask do
-          partialSlots.push1 scalarReg.partial.val
-        storePartialSlot2 <==
-          if allocatePartialMask
-            then Option true partialSlots.top1
-            else Option (isScalar .&&. scalarReg.partial.valid .&&.
-                           maintainPartialMask)
-                        scalarReg.partial.val
-        storePartialAllocated2 <== allocatePartialMask
-        storeInitVal2 <== writeInitVal
+        storeInitVal2 <== isStride0 .&&.
+          storeLeaderVal1.val .==. opts.regInitVal
       -- Compute new vector to write
       let writeVals :: Vec SIMTLanes (Bit regWidth) = fromList
             [ item.valid ? (item.val, scal)
@@ -654,12 +598,14 @@ makeSIMTScalarisingRegFile opts = do
                 (toList storeVec1.val)
                 (toList (expandScalar opts.useAffine Nothing scalarReg)) ]
       -- Trigger next stage
-      storeIsScalar2 <== andList 
-        [ scalarisable
-        , allValid .||. idempotent .||.
-            (if opts.useInitValOpt
-               then allocatePartialMask .||. maintainPartialMask
-               else false) ]
+      storeIsScalar2 <== andList
+        [ inv storeEvict1.val
+        , isBaseEq
+        , if opts.useAffine
+              then orList [isStride0, isStride1, isStride2, isStride4]
+              else isStride0
+        , anyValid
+        ]
       storeScalarEntry2 <== scalarRegFileE.out
       storeIdx2 <== storeIdx1.val
       storeVec2 <== V.zipWith (\item writeVal -> Option item.valid writeVal)
@@ -681,13 +627,88 @@ makeSIMTScalarisingRegFile opts = do
       let wasEvicted = storeScalarEntry2.val `is` #evicted
       -- Was it a scalar before this write?
       let wasScalar = storeScalarEntry2.val `is` #scalar
-      -- Is it a vector after this write?
-      let isVector = if SIMTRegFilePreventScalarDetection == 1
-                       then true
-                       else inv storeIsScalar2.val
       -- Next free slot
       let slot = freeSlots.top1
 
+      -- For partial (init value) optimisation
+      let scalarReg = untag #scalar storeScalarEntry2.val
+      let allValid = writeMask .==. ones
+      let wasUniform = wasScalar .&&.
+                         (if opts.useAffine
+                            then scalarReg.stride .==. stride_0
+                            else true)
+      let idempotent =
+            wasUniform .&&. scalarReg.val .==. storeLeaderVal2.val
+                       .&&. storeStride2.val .==. stride_0
+      let allocatePartialMask = andList
+            [ wasScalar
+            , storeIsScalar2.val
+            , inv allValid
+            , inv idempotent
+            , inv scalarReg.partial.valid
+            , partialSlots.notEmpty
+            , if storeInitVal2.val
+                then true
+                else scalarReg.stride .==. stride_0 .&&.
+                       scalarReg.val .==. opts.regInitVal
+            ]
+      let maintainPartialMask = andList
+            [ wasScalar
+            , storeIsScalar2.val
+            , scalarReg.partial.valid
+            , inv allValid
+            , storeInitVal2.val .||. idempotent
+            {- We can transition from partial scalar to total scalar using
+               the following conditions, but then need to change the
+               definition of isScalar below
+            , orList [
+                storeInitVal2.val .&&.
+                  ((writeMask .|. partialRegFileE.out) .!=. ones)
+              , idempotent .&&. 
+                  ((writeMask .|. inv partialRegFileE.out) .!=. ones)
+              ]
+            -}
+            ]
+      let releasePartialMask = andList
+            [ wasScalar
+            , scalarReg.partial.valid
+            , inv maintainPartialMask
+            ]
+      when opts.useInitValOpt do
+        when allocatePartialMask do
+          partialSlots.pop1
+        when releasePartialMask do
+          partialSlots.push1 scalarReg.partial.val
+
+      -- Is it a scalar or vector after this write?
+      let isScalar = andList
+            [ storeIsScalar2.val
+            , allValid .||. idempotent .||.
+                (if opts.useInitValOpt
+                   then allocatePartialMask .||. maintainPartialMask
+                   else false) ]
+      let isVector = if SIMTRegFilePreventScalarDetection == 1
+                       then true
+                       else inv isScalar
+
+{-
+      when opts.useInitValOpt do
+        when (fst storeIdx2.val .==. 0 .&&. isVector .&&. wasScalar) do
+          display "writeMask=" (formatHex 8 writeMask)
+                  " partialMask.valid=" scalarReg.partial.valid
+                  " partialMask=" (formatHex 8 partialRegFileE.out)
+                  " storeIsScalar=" storeIsScalar2.val
+                  " storeInitVal=" storeInitVal2.val
+                  " scalarVal=" (scalarReg.val)
+                  " scalarStride=" (scalarReg.stride)
+                  " initVal=" opts.regInitVal
+                  " "(V.map (.val) storeVec2.val)
+                  " maintainPartialMask=" maintainPartialMask
+                  " storeLeaderVal=" storeLeaderVal2.val
+                  " write stride=" storeStride2.val
+-}
+
+      -- Scalar <-> vector transitions
       if isVector .&&. inv storeEvict2.val
         then do
           -- Now a vector. Was it a scalar (or evicted vector) before?
@@ -730,22 +751,27 @@ makeSIMTScalarisingRegFile opts = do
               (untag #vector storeScalarEntry2.val))
             vecCountDecr1.pulse
           -- Write to scalar reg file
-          let currentScalar = untag #scalar storeScalarEntry2.val
+          let storePartialSlot =
+                if allocatePartialMask
+                  then Option true partialSlots.top1
+                  else Option (wasScalar .&&. scalarReg.partial.valid .&&.
+                                 maintainPartialMask)
+                              scalarReg.partial.val
           let writeStride =
                 if opts.useInitValOpt
-                  then (if storePartialSlot2.val.valid .&&. storeInitVal2.val
-                          then currentScalar.stride else storeStride2.val)
+                  then (if storePartialSlot.valid .&&. storeInitVal2.val
+                          then scalarReg.stride else storeStride2.val)
                   else storeStride2.val
           let writeBase = 
                 if opts.useInitValOpt
-                  then (if storePartialSlot2.val.valid .&&. storeInitVal2.val
-                          then currentScalar.val else storeLeaderVal2.val)
+                  then (if storePartialSlot.valid .&&. storeInitVal2.val
+                          then scalarReg.val else storeLeaderVal2.val)
                   else storeLeaderVal2.val
           let scalarVal =
                 ScalarVal {
                   val = writeBase
                 , stride = writeStride
-                , partial = storePartialSlot2.val
+                , partial = storePartialSlot
                 }
           let writeVal = storeEvict2.val ?
                 (tag #evicted (), tag #scalar scalarVal)
@@ -757,16 +783,16 @@ makeSIMTScalarisingRegFile opts = do
 
           when opts.useInitValOpt do
             let currentMask =
-                  if storePartialAllocated2.val
+                  if allocatePartialMask
                     then 0
                     else partialRegFileE.out
             let newMask =
                   if storeInitVal2.val
                     then currentMask .|. writeMask
                     else currentMask .&. inv writeMask
-            when storePartialSlot2.val.valid do
-              partialRegFileA.store storePartialSlot2.val.val newMask
-              partialRegFileE.store storePartialSlot2.val.val newMask
+            when storePartialSlot.valid do
+              partialRegFileA.store storePartialSlot.val newMask
+              partialRegFileE.store storePartialSlot.val newMask
 
       -- Track vectors
       when opts.useDynRegSpill do
