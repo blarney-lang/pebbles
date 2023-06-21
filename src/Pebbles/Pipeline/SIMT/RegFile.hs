@@ -692,6 +692,7 @@ makeSIMTScalarisingRegFile opts = do
                        then true
                        else inv isScalar
 
+{-
       when opts.useInitValOpt do
         when (fst storeIdx2.val .==. 0 .&&. isVector .&&. wasScalar) do
           display "writeMask=" (formatHex 8 writeMask)
@@ -706,6 +707,7 @@ makeSIMTScalarisingRegFile opts = do
                   " maintainPartialMask=" maintainPartialMask
                   " storeLeaderVal=" storeLeaderVal2.val
                   " write stride=" storeStride2.val
+-}
 
       -- Scalar <-> vector transitions
       if isVector .&&. inv storeEvict2.val
