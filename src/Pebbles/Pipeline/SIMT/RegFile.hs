@@ -657,7 +657,8 @@ makeSIMTScalarisingRegFile opts = do
             , storeIsScalar2.val
             , scalarReg.partial.valid
             , inv allValid
-            , storeInitVal2.val .||. idempotent
+            , storeInitVal2.val .||. idempotent .||.
+                partialRegFileE.out .==. ones
             {- We can transition from partial scalar to total scalar using
                the following conditions, but then need to change the
                definition of isScalar below
@@ -691,7 +692,6 @@ makeSIMTScalarisingRegFile opts = do
                        then true
                        else inv isScalar
 
-{-
       when opts.useInitValOpt do
         when (fst storeIdx2.val .==. 0 .&&. isVector .&&. wasScalar) do
           display "writeMask=" (formatHex 8 writeMask)
@@ -706,7 +706,6 @@ makeSIMTScalarisingRegFile opts = do
                   " maintainPartialMask=" maintainPartialMask
                   " storeLeaderVal=" storeLeaderVal2.val
                   " write stride=" storeStride2.val
--}
 
       -- Scalar <-> vector transitions
       if isVector .&&. inv storeEvict2.val
@@ -789,7 +788,10 @@ makeSIMTScalarisingRegFile opts = do
             let newMask =
                   if storeInitVal2.val
                     then currentMask .|. writeMask
-                    else currentMask .&. inv writeMask
+                    else if allocatePartialMask
+                           then inv writeMask
+                           else currentMask .&. inv writeMask
+
             when storePartialSlot.valid do
               partialRegFileA.store storePartialSlot.val newMask
               partialRegFileE.store storePartialSlot.val newMask
