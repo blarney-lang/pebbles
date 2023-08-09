@@ -73,7 +73,8 @@ makeCapMemReqSerialiser memReqSink = do
                 | r <- toList reqs ]
           let stdScal = fmap (\s ->
                           ScalarVal { val = scalTagBit # s.val
-                                    , stride = s.stride })
+                                    , stride = s.stride
+                                    , partial = s.partial })
                             scal.scalarisedVal
           -- Produce output request
           memReqSink.put (id, fromList stdReqs, stdScal)
