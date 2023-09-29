@@ -311,24 +311,40 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
       $ cA )
 
   -- Address-setting logic
-  let oldCap = if s.opcode `is` [CSetAddr, CIncOffset, JALR]
-                 then cA else s.pcc.capPipe
+  -- =====================
+
+  -- Determine access width for memory request
+  let accessWidth = getAccessWidth s.instr
+  -- Is it a capability load/store?
+  let isCapAccess = accessWidth .==. 3
+  -- Number of bytes being accessed (for bounds check)
+  let numBytes :: Bit 4 = 1 .<<. accessWidth
+
+  -- Compute new address and check in bounds
+  let useOpA = s.opcode `is` [CSetAddr, CIncOffset, JALR, LOAD, STORE, AMO]
+  let base   = if useOpA then s.capA.capBase else s.pcc.capBase 
+  let top    = if useOpA then s.capA.capTop  else s.pcc.capTop
+  let oldCap = if useOpA then s.capA.capPipe else s.pcc.capPipe
   let newAddr0 = s.immOrOpB +
         (if s.opcode `is` [CSetAddr] then 0 else getAddr oldCap)
   let newAddr1 = upper newAddr0 #
                    (if s.opcode `is` [JALR]
                       then 0 :: Bit 1 else lower newAddr0)
-  let newCap = setAddr oldCap newAddr1
+  let addBytes = if s.opcode `is` [LOAD, STORE, AMO] then numBytes else 0
+  let oob = newAddr1 .<. base .||.
+              (zeroExtend newAddr1 + zeroExtend addBytes) .>. top
+  let newCap = setValidCap (setAddrUnsafe oldCap newAddr1)
+                           (isValidCap oldCap .&&. inv oob)
 
   when (s.opcode `is` [CSetAddr, CIncOffset, AUIPC]) do
-    s.resultCap <== newCap.value
+    s.resultCap <== newCap
 
   -- Capability jumps/branches
   -- -------------------------
 
   when (s.opcode `is` [JAL, JALR]) do
     -- Exception path
-    when (isSealed newCap.value .&&. inv (isSentry newCap.value)) do
+    when (isSealed newCap .&&. inv (isSentry newCap)) do
       trap s cheri_exc_sealViolation
 
     -- Result path
@@ -337,8 +353,8 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
     s.resultCap <== setType linkCap (-2) {- Seal as sentry -}
 
   when ((s.opcode `is` [JAL, JALR]) .||. branch) do
-    let newType = if s.opcode `is` [JALR] then -1 else getType newCap.value
-    s.pccNew <== setType newCap.value newType {- Unseal -}
+    let newType = if s.opcode `is` [JALR] then -1 else getType newCap
+    s.pccNew <== setType newCap newType {- Unseal -}
 
   -- Memory access
   -- -------------
@@ -351,7 +367,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
           then s.retry
           else do
             -- Address being accessed
-            let memAddr = s.opA + s.immOrOpB
+            let memAddr = newAddr1
             -- Determine access width for memory request
             let accessWidth = getAccessWidth s.instr
             -- Is it a capability load/store?
@@ -396,9 +412,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
                       --> if s.opcode `is` [LOAD]
                             then exc_loadAddrMisaligned
                             else exc_storeAMOAddrMisaligned
-                  , memAddr .<. baseA
-                     .||. zeroExtend memAddr + zeroExtend numBytes .>. topA
-                      --> cheri_exc_lengthViolation
+                  , oob --> cheri_exc_lengthViolation
                   ]
             -- Check for exception
             let isException = orList [cond | (cond, _) <- exceptionTable]

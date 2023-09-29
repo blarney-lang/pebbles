@@ -346,6 +346,8 @@ makeScalarPipeline c pipeIns =
                   " code=" trapCode
                   " pc=" (formatHex 0 $ pc2.val)
                   " capPipe=" (formatHex 0 $ pcc2.val.capPipe)
+                  " base=" (formatHex 0 $ pcc2.val.capBase)
+                  " top=" (formatHex 0 $ pcc2.val.capTop)
                 finish
 
     -- Stage 3: Execute

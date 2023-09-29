@@ -376,12 +376,9 @@ makeSIMTPipeline c inputs =
     -- Track kernel success/failure
     kernelSuccess :: Reg (Bit 1) <- makeReg true
 
-    -- Per-warp program counter capability registers, if shared PCC enabled
-    (pccSharedA, pccSharedB) :: (RAM (Bit SIMTLogWarps) CapPipe,
-                                 RAM (Bit SIMTLogWarps) CapPipe) <-
-      if enableCHERI && c.useSharedPCC
-        then makeQuadRAM
-        else return (nullRAM, nullRAM)
+    -- Shared program counter capability registers, if shared PCC enabled
+    -- TODO: constrain, or take as param
+    pccShared :: Reg CapPipe <- makeReg almightyCapPipeVal
 
     -- Basic stat counters
     cycleCount :: Reg (Bit 32) <- makeReg 0
@@ -489,10 +486,6 @@ makeSIMTPipeline c inputs =
                  then pccMem.store (warpIdCounter.val) (upper initPCC)
                  else return ()
           | (stateMem, pccMem) <- zip stateMemsA pccMemsA ]
-
-        -- Intialise PCC per warp
-        -- TODO: constrain, or take as param
-        pccSharedA.store warpIdCounter.val almightyCapPipeVal
 
         when (warpIdCounter.val .==. 0) do
           -- Register file initialisation
@@ -793,10 +786,6 @@ makeSIMTPipeline c inputs =
       let pc = state2.simtPC
       instrMemA.load (toInstrAddr pc)
 
-      -- Load per-warp PCC
-      when c.useSharedPCC do
-        pccSharedA.load warpId2
-
       -- Get vector register mask for current warp
       when enableSpill do
         let chooseRF i c =
@@ -862,7 +851,7 @@ makeSIMTPipeline c inputs =
     let state3 = stage2Delay state2
     let pcc3 = stage2Delay $ decodeCapPipe $
           if c.useSharedPCC
-            then (setAddr pccSharedA.out state2.simtPC).value
+            then (setAddr pccShared.val state2.simtPC).value
             else fromMem $ unpack (pcc2 # state2.simtPC)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
@@ -1582,9 +1571,8 @@ makeSIMTPipeline c inputs =
         (head stateMemsB).load warpId
 
         -- Lookup warp's PCC
-        if c.useSharedPCC
-          then do pccSharedB.load warpId
-          else do (head pccMemsB).load warpId
+        when (not c.useSharedPCC) do
+          (head pccMemsB).load warpId
 
         -- Trigger stage 1
         when scalarGo0.val do
@@ -1598,7 +1586,7 @@ makeSIMTPipeline c inputs =
         let state = (head stateMemsB).out
         let pcc =
               if c.useSharedPCC
-                then (setAddr pccSharedB.out state.simtPC).value
+                then (setAddr pccShared.val state.simtPC).value
                 else fromMem $ unpack ((head pccMemsB).out # state.simtPC)
 
         -- Load next instruction
