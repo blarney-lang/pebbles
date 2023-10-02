@@ -19,6 +19,17 @@ import CHERI.CapLib
 -- Interface
 -- =========
 
+-- | Capability field for CGet* instructions
+type CapFieldId = Bit 3
+fieldPerm   = 0 :: CapFieldId
+fieldType   = 1 :: CapFieldId
+fieldBase   = 2 :: CapFieldId
+fieldLen    = 3 :: CapFieldId
+fieldTag    = 4 :: CapFieldId
+fieldSealed = 5 :: CapFieldId
+fieldFlags  = 6 :: CapFieldId
+fieldAddr   = 7 :: CapFieldId
+
 -- | Bounds unit request
 data BoundsReq =
   BoundsReq {
@@ -27,6 +38,9 @@ data BoundsReq =
   , isSetBoundsExact :: Bit 1
   , isCRAM :: Bit 1
   , isCRRL :: Bit 1
+  , isCGet :: Bit 1
+    -- Field to get
+  , field :: CapFieldId
     -- Instruction operands
   , cap :: CapPipe
   , len :: Bit 32
@@ -40,7 +54,8 @@ boundsUnit req =
       select
         [ req.isSetBounds .||. req.isSetBoundsExact --> lower finalCap
         , req.isCRAM --> sbres.mask
-        , req.isCRRL --> sbres.length ]
+        , req.isCRRL --> sbres.length
+        , req.isCGet --> fields ! req.field ]
     , resumeReqDataTagBit =
         if req.isSetBounds .||. req.isSetBoundsExact
           then validCap else false
@@ -62,6 +77,25 @@ boundsUnit req =
        ]
    validCap = isValidCap req.cap .&&. inv invalidate
    (finalCapTag, finalCap) = toMem (setValidCap sbres.cap validCap)
+   fields =
+     [ -- CGetPerms
+       zeroExtend (getPerms req.cap)
+       -- CGetType
+     , let t = getType req.cap in
+         if isSealedWithType req.cap then zeroExtend t else signExtend t
+       -- CGetBase
+     , getBase req.cap
+       -- CGetLen
+     , let len = getLength req.cap in
+         if at @32 len then ones else lower len
+       -- CGetTag
+     , zeroExtend (isValidCap req.cap)
+       -- CGetSealed
+     , zeroExtend (isSealed req.cap)
+       -- CGetFlags
+     , zeroExtend (getFlags req.cap)
+       -- CGetAddr
+     , addr ]
 
 -- | Vector Bounds unit interface
 type VecBoundsUnit n t_id =

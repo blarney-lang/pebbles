@@ -241,30 +241,6 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
   let permsA = getHardPerms cA
   let permsB = getHardPerms cB
 
-  -- Capability inspection instructions
-  -- ----------------------------------
-
-  let isInspect = s.opcode `is`
-        [ CGetPerm, CGetType, CGetBase, CGetLen, CGetTag
-        , CGetSealed, CGetFlags, CGetAddr
-        ]
-
-  when isInspect do
-    s.result <==
-      select
-        [ s.opcode `is` [CGetPerm] --> zeroExtend (getPerms cA)
-        , s.opcode `is` [CGetType] -->
-            let t = getType cA in
-              if isSealedWithType cA then zeroExtend t else signExtend t
-        , s.opcode `is` [CGetBase] --> baseA
-        , s.opcode `is` [CGetLen] -->
-              if at @32 lenA then ones else lower lenA
-        , s.opcode `is` [CGetTag] --> zeroExtend (isValidCap cA)
-        , s.opcode `is` [CGetSealed] --> zeroExtend (isSealed cA)
-        , s.opcode `is` [CGetFlags] --> zeroExtend (getFlags cA)
-        , s.opcode `is` [CGetAddr] --> addrA
-        ]
-
   -- Special capability registers
   -- ----------------------------
 
@@ -495,6 +471,7 @@ executeSetBounds s = do
   let cA = s.capA.capPipe
   let topA = s.capA.capTop
   let baseA = s.capA.capBase
+  let lenA = s.capA.capLength
   let addrA = getAddr cA
 
   -- Bounds setting instructions
@@ -523,6 +500,30 @@ executeSetBounds s = do
     let result = setBoundsCombined nullCapPipe s.opA
     s.result <== s.opcode `is` [CRRL] ? (result.length, result.mask)
 
+  -- Capability inspection instructions
+  -- ----------------------------------
+
+  let isInspect = s.opcode `is`
+        [ CGetPerm, CGetType, CGetBase, CGetLen, CGetTag
+        , CGetSealed, CGetFlags, CGetAddr
+        ]
+
+  when isInspect do
+    s.result <==
+      select
+        [ s.opcode `is` [CGetPerm] --> zeroExtend (getPerms cA)
+        , s.opcode `is` [CGetType] -->
+            let t = getType cA in
+              if isSealedWithType cA then zeroExtend t else signExtend t
+        , s.opcode `is` [CGetBase] --> baseA
+        , s.opcode `is` [CGetLen] -->
+              if at @32 lenA then ones else lower lenA
+        , s.opcode `is` [CGetTag] --> zeroExtend (isValidCap cA)
+        , s.opcode `is` [CGetSealed] --> zeroExtend (isSealed cA)
+        , s.opcode `is` [CGetFlags] --> zeroExtend (getFlags cA)
+        , s.opcode `is` [CGetAddr] --> addrA
+        ]
+
 -- | Bounds setting instructions using (possibly shared) bounds unit
 executeBoundsUnit ::
      Sink BoundsReq
@@ -541,6 +542,19 @@ executeBoundsUnit boundsUnit s = do
           , isSetBoundsExact = s.opcode `is` [CSetBoundsExact]
           , isCRAM = s.opcode `is` [CRAM]
           , isCRRL = s.opcode `is` [CRRL]
+          , isCGet = s.opcode `is` 
+              [ CGetPerm, CGetType, CGetBase, CGetLen, CGetTag
+              , CGetSealed, CGetFlags, CGetAddr ]
+          , field = select
+              [ s.opcode `is` [CGetPerm]   --> fieldPerm
+              , s.opcode `is` [CGetType]   --> fieldType
+              , s.opcode `is` [CGetBase]   --> fieldBase
+              , s.opcode `is` [CGetLen]    --> fieldLen
+              , s.opcode `is` [CGetTag]    --> fieldTag
+              , s.opcode `is` [CGetSealed] --> fieldSealed
+              , s.opcode `is` [CGetFlags]  --> fieldFlags
+              , s.opcode `is` [CGetAddr]   --> fieldAddr
+              ]
           , cap = s.capA.capPipe
           , len = if s.opcode `is` [CSetBounds, CSetBoundsExact]
                     then s.immOrOpB else s.opA
