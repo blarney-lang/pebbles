@@ -849,10 +849,11 @@ makeSIMTPipeline c inputs =
                                        else delay zero x
     let warpId3 = stage2Delay warpId2
     let state3 = stage2Delay state2
-    let pcc3 = stage2Delay $ decodeCapPipe $
+    let pcc3 = stage2Delay $
           if c.useSharedPCC
-            then (setAddr pccShared.val state2.simtPC).value
-            else fromMem $ unpack (pcc2 # state2.simtPC)
+            then let cap = (setAddr pccShared.val state2.simtPC).value in
+              decodeCapMemPipe (pack (toMem cap)) cap
+            else decodeCapMem (pcc2 # state2.simtPC)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
     let spillFail3 = if enableSpill then spillFail3Reg.val else false
@@ -1083,6 +1084,7 @@ makeSIMTPipeline c inputs =
       scalarTableA.load (toInstrAddr (state5.simtPC + 4))
 
       when go5 do
+
         -- Maintain approximate rolling average of register usage
         when (enableSpill && c.useLRUSpill) do
           let anyFull = orList (map (.==. ones) (map (.val) (toList regUsage)))
@@ -1107,6 +1109,7 @@ makeSIMTPipeline c inputs =
         when (inv known) do
           display "Instruction not recognised @ PC="
             (formatHex 8 state5.simtPC)
+          finish
 
         -- Reschedule warp if any thread suspended, or the instruction
         -- is not a warp command and an exception has not occurred
@@ -1176,7 +1179,7 @@ makeSIMTPipeline c inputs =
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <- makeWire pcPlusFour
-          pccNextWire :: Wire CapPipe <- makeWire dontCare
+          pccNextWire :: Wire CapMem <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
 
@@ -1214,13 +1217,19 @@ makeSIMTPipeline c inputs =
             , capB = capRegB
             , pcc = pcc5
             , pccNew = WriteOnly \pccNew -> do
-                pcNextWire <== getAddr pccNew
+                display "pccNew not used by SIMTPipeline"
+                finish
+            , pccNewCapMem = WriteOnly \pccNew -> do
+                pcNextWire <== getAddrCapMem pccNew
                 pccNextWire <== pccNew
-            , resultCap = WriteOnly \cap ->
-                            when destNonZero do
-                              let capMem = pack (toMem cap)
-                              resultWire <== lower capMem
-                              resultCapWire <== upper capMem
+            , resultCap = WriteOnly \cap -> do
+                display "resultCap not used by SIMTPipeline"
+                finish
+            , resultCapMem = WriteOnly \capMem -> do
+                               when destNonZero do
+                                 resultWire <== lower capMem
+                                 resultCapWire <== upper capMem
+
             }
 
           always do
@@ -1254,7 +1263,7 @@ makeSIMTPipeline c inputs =
                   }
               when (delay false pccNextWire.active) do
                 pccMem.store (old warpId5)
-                             (old $ upper $ pack $ toMem pccNextWire.val)
+                             (old $ upper $ pccNextWire.val)
 
               -- Increment instruction count
               when (inv retryWire.val) do
@@ -1615,7 +1624,8 @@ makeSIMTPipeline c inputs =
         scalarGo3 <== scalarGo2.val
         scalarWarpId3 <== scalarWarpId2.val
         scalarState3 <== scalarState2.val
-        scalarPCC3 <== decodeCapPipe scalarPCC2.val
+        scalarPCC3 <== decodeCapMemPipe (pack $ toMem scalarPCC2.val)
+                                        scalarPCC2.val
         scalarInstr3 <== instrMemB.out
 
       -- Stage 3: Operand Latch
@@ -1766,11 +1776,17 @@ makeSIMTPipeline c inputs =
         , pccNew = WriteOnly \pccNew -> do
             scalarPCNextWire <== getAddr pccNew
             scalarPCCNextWire <== pccNew
+        , pccNewCapMem = WriteOnly \pccNew -> do
+            display "pccNewCapMem not used by SIMT scalar unit"
+            finish
         , resultCap = WriteOnly \cap ->
             when (dst scalarInstr4.val .!=. 0) do
               let capMem = pack (toMem cap)
               scalarResultWire <== lower capMem
               scalarResultCapWire <== upper capMem
+        , resultCapMem = WriteOnly \cap -> do
+            display "resultCapMem not used by SIMT scalar unit"
+            finish
         }
 
       -- For aborting built-in affine operation

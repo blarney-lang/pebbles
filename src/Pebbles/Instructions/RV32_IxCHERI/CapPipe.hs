@@ -1,6 +1,6 @@
 -- Subset of CHERI (capability mode only)
 
-module Pebbles.Instructions.RV32_IxCHERI where
+module Pebbles.Instructions.RV32_IxCHERI.CapPipe where
 
 -- Blarney imports
 import Blarney
@@ -523,43 +523,6 @@ executeSetBounds s = do
         , s.opcode `is` [CGetFlags] --> zeroExtend (getFlags cA)
         , s.opcode `is` [CGetAddr] --> addrA
         ]
-
--- | Bounds setting instructions using (possibly shared) bounds unit
-executeBoundsUnit ::
-     Sink BoundsReq
-     -- ^ Bounds unit
-  -> State
-     -- ^ Pipeline state
-  -> Action ()
-executeBoundsUnit boundsUnit s = do
-  when (s.opcode `is` [CSetBounds, CSetBoundsExact, CRRL, CRAM]) do
-    if boundsUnit.canPut
-      then do
-        s.suspend
-        boundsUnit.put
-          BoundsReq {
-            isSetBounds = s.opcode `is` [CSetBounds]
-          , isSetBoundsExact = s.opcode `is` [CSetBoundsExact]
-          , isCRAM = s.opcode `is` [CRAM]
-          , isCRRL = s.opcode `is` [CRRL]
-          , isCGet = s.opcode `is` 
-              [ CGetPerm, CGetType, CGetBase, CGetLen, CGetTag
-              , CGetSealed, CGetFlags, CGetAddr ]
-          , field = select
-              [ s.opcode `is` [CGetPerm]   --> fieldPerm
-              , s.opcode `is` [CGetType]   --> fieldType
-              , s.opcode `is` [CGetBase]   --> fieldBase
-              , s.opcode `is` [CGetLen]    --> fieldLen
-              , s.opcode `is` [CGetTag]    --> fieldTag
-              , s.opcode `is` [CGetSealed] --> fieldSealed
-              , s.opcode `is` [CGetFlags]  --> fieldFlags
-              , s.opcode `is` [CGetAddr]   --> fieldAddr
-              ]
-          , cap = s.capA.capPipe
-          , len = if s.opcode `is` [CSetBounds, CSetBoundsExact]
-                    then s.immOrOpB else s.opA
-          }
-      else s.retry
 
 -- Program counter capability
 -- ==========================

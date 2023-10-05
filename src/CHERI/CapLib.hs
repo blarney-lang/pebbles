@@ -10,6 +10,7 @@ module CHERI.CapLib
   , Cap(..)
   , decodeCapPipe
   , decodeCapMem
+  , decodeCapMemPipe
   , almightyCapPipeVal
   , nullCapPipeVal
   , nullCapPipeMetaVal
@@ -47,7 +48,8 @@ nullCapPipeVal = fromInteger nullCapPipeInteger
 
 -- | Null capability meta-data
 nullCapPipeMetaVal :: CapPipeMeta
-nullCapPipeMetaVal = upper nullCapPipeVal
+nullCapPipeMetaVal = meta
+  where (meta, addr) = splitCapPipe nullCapPipeVal
 
 -- | Null capability meta-data as an integer
 nullCapPipeMetaInteger :: Integer
@@ -85,7 +87,8 @@ nullCapMemMetaInteger = nullCapMemInteger `B.shiftR` valueOf @CapAddrWidth
 -- | Partially decoded capability
 data Cap =
   Cap {
-      capPipe     :: CapPipe
+      capMem      :: CapMem
+    , capPipe     :: CapPipe
     , capBase     :: CapAddr
     , capLength   :: Bit (CapAddrWidth+1)
     , capTop      :: Bit (CapAddrWidth+1)
@@ -94,18 +97,23 @@ data Cap =
 
 -- | Partially decode given capability
 decodeCapPipe :: CapPipe -> Cap
-decodeCapPipe c =
+decodeCapPipe = decodeCapMemPipe dontCare
+
+decodeCapMemPipe :: CapMem -> CapPipe -> Cap
+decodeCapMemPipe cm cp =
   Cap {
-      capPipe    = c
+      capMem     = cm
+    , capPipe    = cp
     , capBase    = base
     , capLength  = len
     , capTop     = zeroExtend base + len
   }
   where
-    info = getBoundsInfo c
+    info = getBoundsInfo cp
     len  = info.length
     base = info.base
 
 -- | Partially decode given capability
 decodeCapMem :: CapMem -> Cap
-decodeCapMem cm = decodeCapPipe $ fromMem $ unpack cm
+decodeCapMem cm = decodeCapMemPipe cm cp
+  where cp = fromMem (unpack cm)

@@ -88,12 +88,18 @@ data State =
     -- ^ Read access to PCC.
 
   , pccNew :: WriteOnly CapPipe
+  , pccNewCapMem :: WriteOnly CapMem
     -- ^ Update the capability which is combined with the PC (via a
-    -- call to setAddr) to derive the PCC.
+    -- call to setAddr) to derive the PCC. Implementations will use one
+    -- of these interfaces (either CapPipe or CapMem).
 
   , resultCap :: WriteOnly CapPipe
+  , resultCapMem :: WriteOnly CapMem
     -- ^ Instruction result for capability reg file. The client should
     -- not write 'result' *and* 'resultCap' in the same clock cycle.
+    -- Implementations will use one of these interfaces (either
+    -- CapPipe or CapMem).
+
 
   } deriving (Generic, Interface)
 

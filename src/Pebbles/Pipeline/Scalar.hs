@@ -401,11 +401,17 @@ makeScalarPipeline c pipeIns =
       , pccNew = WriteOnly \pccNew -> do
                    pcNext <== getAddr pccNew
                    pccNext <== pccNew
+      , pccNewCapMem = WriteOnly \pccNew -> do
+          display "pccNewCapMem not used by Scalar pipeline"
+          finish
       , resultCap = WriteOnly \cap ->
                       when destNonZero do
                         let (meta, addr) = splitCapPipe cap
                         resultWire <== addr
                         resultCapWire <== meta
+      , resultCapMem = WriteOnly \cap -> do
+          display "resultCapMem not used by Scalar pipeline"
+          finish
       }
 
     always do

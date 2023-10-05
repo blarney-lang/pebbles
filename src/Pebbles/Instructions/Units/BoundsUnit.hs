@@ -42,7 +42,7 @@ data BoundsReq =
     -- Field to get
   , field :: CapFieldId
     -- Instruction operands
-  , cap :: CapPipe
+  , cap :: CapMem
   , len :: Bit 32
   } deriving (Generic, Interface, Bits)
 
@@ -64,36 +64,37 @@ boundsUnit req =
                (finalCapTag # upper finalCap)
     }
   where
-   addr = getAddr req.cap
-   sbres = setBoundsCombined req.cap req.len
-   boundsInfo = getBoundsInfo req.cap
+   cap = fromMem (unpack req.cap)
+   addr = getAddr cap
+   sbres = setBoundsCombined cap req.len
+   boundsInfo = getBoundsInfo cap
    invalidate =
      orList
-       [ inv (isValidCap req.cap)
-       , isSealed req.cap
+       [ inv (isValidCap cap)
+       , isSealed cap
        , addr .<. boundsInfo.base
        , zeroExtend addr + zeroExtend req.len .>. boundsInfo.top
        , req.isSetBoundsExact .&&. inv sbres.exact
        ]
-   validCap = isValidCap req.cap .&&. inv invalidate
+   validCap = isValidCap cap .&&. inv invalidate
    (finalCapTag, finalCap) = toMem (setValidCap sbres.cap validCap)
    fields =
      [ -- CGetPerms
-       zeroExtend (getPerms req.cap)
+       zeroExtend (getPerms cap)
        -- CGetType
-     , let t = getType req.cap in
-         if isSealedWithType req.cap then zeroExtend t else signExtend t
+     , let t = getType cap in
+         if isSealedWithType cap then zeroExtend t else signExtend t
        -- CGetBase
-     , getBase req.cap
+     , getBase cap
        -- CGetLen
-     , let len = getLength req.cap in
+     , let len = getLength cap in
          if at @32 len then ones else lower len
        -- CGetTag
-     , zeroExtend (isValidCap req.cap)
+     , zeroExtend (isValidCap cap)
        -- CGetSealed
-     , zeroExtend (isSealed req.cap)
+     , zeroExtend (isSealed cap)
        -- CGetFlags
-     , zeroExtend (getFlags req.cap)
+     , zeroExtend (getFlags cap)
        -- CGetAddr
      , addr ]
 
