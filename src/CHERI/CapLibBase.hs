@@ -602,6 +602,16 @@ getBoundsBitsCapMem capMem =
       [toBV $ pack capMem]
       [Just "wrap64_getBoundsBitsCapMem"]
 
+vectorBoundsDecompress :: Bit 15 -> Bit 1024 -> Bit 2080
+vectorBoundsDecompress cboundsRaw addrs = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_vectorBoundsDecompress"
+    [("wrap64_vectorBoundsDecompress_cboundsRaw", 15), ("wrap64_vectorBoundsDecompress_addrs", 1024)]
+    [("wrap64_vectorBoundsDecompress", 2080)]
+    [] False False Nothing) 
+      [toBV $ pack cboundsRaw, toBV $ pack addrs]
+      [Just "wrap64_vectorBoundsDecompress"]
+
 nullCapMemInteger :: Integer = 0
 almightyCapMemInteger :: Integer = 0x1FFF0000000000000
 nullCapPipeInteger :: Integer = 0x00000000000001F690003F0

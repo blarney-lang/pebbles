@@ -297,7 +297,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
   let numBytes :: Bit 4 = 1 .<<. accessWidth
 
   -- Compute new address and check in bounds
-  let useOpA = s.opcode `is` [CSetAddr, CIncOffset, JALR, LOAD, STORE, AMO]
+  let useOpA = s.opcode `is` wantBoundsA
   let base   = if useOpA then s.capA.capBase else s.pcc.capBase 
   let top    = if useOpA then s.capA.capTop  else s.pcc.capTop
   let oldCap = if useOpA then s.capA.capMem  else s.pcc.capMem
@@ -498,3 +498,7 @@ executeBoundsUnit boundsUnit s = do
                     then s.immOrOpB else s.opA
           }
       else s.retry
+
+-- Instructions that require decompressed bounds of their first operand
+wantBoundsA :: [Mnemonic]
+wantBoundsA = [CSetAddr, CIncOffset, JALR, LOAD, STORE, AMO]

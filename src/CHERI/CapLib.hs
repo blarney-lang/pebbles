@@ -15,6 +15,7 @@ module CHERI.CapLib
   , nullCapPipeVal
   , nullCapPipeMetaVal
   , nullCapPipeMetaInteger
+  , makeUncompressedCap
   ) where
 
 -- Blarney imports
@@ -117,3 +118,14 @@ decodeCapMemPipe cm cp =
 decodeCapMem :: CapMem -> Cap
 decodeCapMem cm = decodeCapMemPipe cm cp
   where cp = fromMem (unpack cm)
+
+-- | Just fill the capMem field
+makeUncompressedCap :: CapMemMeta -> CapAddr -> Cap
+makeUncompressedCap meta addr =
+  Cap {
+      capMem     = meta # addr
+    , capPipe    = dontCare
+    , capBase    = dontCare
+    , capLength  = dontCare
+    , capTop     = dontCare
+  }

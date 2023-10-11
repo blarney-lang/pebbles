@@ -143,6 +143,8 @@ data SIMTPipelineConfig tag =
     -- ^ Share vector scatchpad between int and cap reg files?
   , usesCap :: [tag]
     -- ^ Instructions that use cap meta-data of register operands
+  , wantBoundsA :: [tag]
+    -- ^ Instructions that want uncompressed bounds of first operand
   }
 
 -- | SIMT pipeline inputs
@@ -262,8 +264,8 @@ makeSIMTPipeline c inputs =
     -- Register file load latency (for vector pipeline)
     let loadLatency =
           if c.useCapRegFileScalarisation || c.useRegFileScalarisation
-            then simtScalarisingRegFile_loadLatency
-            else if enableCHERI then 2 else 1
+            then simtScalarisingRegFile_loadLatency else 1
+            --else if enableCHERI then 2 else 1
 
     -- Is the pipeline active?
     pipelineActive :: Reg (Bit 1) <- makeReg false
@@ -348,6 +350,7 @@ makeSIMTPipeline c inputs =
     -- Active thread mask
     activeMask2b :: Reg (Bit SIMTLanes) <- makeReg dontCare
     activeMask4 :: Reg (Bit SIMTLanes) <- makeReg dontCare
+    leaderIdx4 :: Reg (Bit (Log2Ceil SIMTLanes)) <- makeReg dontCare
 
     -- Instruction register for each stage
     instr4 :: Reg (Bit 32) <- makeReg dontCare
@@ -412,7 +415,7 @@ makeSIMTPipeline c inputs =
     incScalarAbortCount <- makeDReg false
 
     -- Indicates that current instruction is scalarisable
-    instrScalarisable5 <- makeReg false
+    instrScalarisable5pre <- makeReg false
 
     -- Scalar unit warp queue
     scalarQueue :: [Reg (Bit 1)] <- replicateM SIMTWarps (makeReg false)
@@ -530,57 +533,6 @@ makeSIMTPipeline c inputs =
         sbLoadMissCount <== 0
         sbCapLoadHitCount <== 0
         sbCapLoadMissCount <== 0
-
-    -- Stat counters
-    -- =============
-
-    when c.enableStatCounters do
-      always do
-        when (pipelineActive.val) do
-          -- Increment cycle count
-          cycleCount <== cycleCount.val + 1
-
-          -- Increment instruction count
-          let instrIncs :: [Bit 32] =
-                map zeroExtend (map (.val) incInstrCountRegs)
-          let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
-          let scalarInstrInc =
-                incScalarInstrCount.val ? (SIMTLanes, 0)
-          if c.useScalarUnit
-            then do
-              instrCount <== instrCount.val + instrInc + scalarInstrInc
-              scalarisableInstrCount <==
-                scalarisableInstrCount.val + scalarInstrInc
-            else do
-              instrCount <== instrCount.val + instrInc
-              scalarisableInstrCount <== scalarisableInstrCount.val +
-                (if delay false instrScalarisable5.val then instrInc else 0)
-
-          -- Pipeline bubbles
-          when incRetryCount.val do retryCount <== retryCount.val + 1
-          when incSuspCount.val do suspCount <== suspCount.val + 1
-          when c.useScalarUnit do
-            when incScalarSuspCount.val do
-              scalarSuspCount <== scalarSuspCount.val + 1
-            when incScalarAbortCount.val do
-              scalarAbortCount <== scalarAbortCount.val + 1
-
-          -- DRAM accesses
-          dramAccessCount <==
-            dramAccessCount.val +
-               zeroExtend inputs.simtDRAMStatSigs.dramLoadSig +
-                 zeroExtend inputs.simtDRAMStatSigs.dramStoreSig
-
-          -- Store buffer hit rate
-          when inputs.simtCoalStats.incLoadHit do
-            if inputs.simtCoalStats.isCapMetaAccess
-              then sbCapLoadHitCount <== sbCapLoadHitCount.val + 1
-              else sbLoadHitCount <== sbLoadHitCount.val + 1
-
-          when inputs.simtCoalStats.incLoadMiss do
-            if inputs.simtCoalStats.isCapMetaAccess
-              then sbCapLoadMissCount <== sbCapLoadMissCount.val + 1
-              else sbLoadMissCount <== sbLoadMissCount.val + 1
 
     -- ===============
     -- Vector Pipeline
@@ -927,6 +879,7 @@ makeSIMTPipeline c inputs =
       spill4 <== spill3 .&&. inv capRegFile.stall
       spillFrom4 <== spillFrom3
       spillReg4 <== spillA3Reg.val
+      leaderIdx4 <== binaryEncode (firstHot activeMask3)
       go4 <== go3 .&&. inv capRegFile.stall
 
     -- Stage 4: Operand Latch
@@ -937,6 +890,7 @@ makeSIMTPipeline c inputs =
         loadDelay inp = iterateN (loadLatency - 1) (delay zero) inp
 
     -- Extra latch when shared vector spad in use
+    -- TODO: consider removing this latch
     let extra :: Bits a => a -> a
         extra inp = if enableCHERI && c.useSharedVectorScratchpad
                       then delay zero inp else inp
@@ -948,15 +902,12 @@ makeSIMTPipeline c inputs =
     -- Stage 5 register operands
     let rfAOut = V.map (slice @31 @0) regFile.outA
     let rfBOut = V.map (slice @31 @0) regFile.outB
-    let vecRegA5 = old $ extra rfAOut
-    let vecRegB5 = old $ extra rfBOut
+    let vecRegA5pre = old $ extra rfAOut
+    let vecRegB5pre = old $ extra rfBOut
 
     -- Stage 5 capability register operands
-    let getCapReg intReg capReg =
-          old $ decodeCapMem (extra (capReg # intReg))
-    let vecCapRegA5 = V.zipWith getCapReg rfAOut capRegFile.outA
-    let vecCapRegB5 = V.zipWith getCapReg rfBOut capRegFile.outB
-    let vecRawCapMetaRegA5 = V.map (old . extra) capRegFile.outA
+    let vecCapRegA5pre = old $ extra capRegFile.outA
+    let vecCapRegB5pre = old $ extra capRegFile.outB
 
     -- Determine if field is available in current instruction
     let isFieldInUse fld fldMap =
@@ -967,9 +918,9 @@ makeSIMTPipeline c inputs =
     let usesB = isFieldInUse "rs2" fieldMap4
     let usesDest = isFieldInUse "rd" fieldMap4
     let usesCap = loadDelay (delay false usesCapMetaData3)
-    let usesA5 = delay false $ extra usesA
-    let usesB5 = delay false $ extra usesB
-    let usesDest5 = delay false $ extra usesDest
+    let usesA5pre = delay false $ extra usesA
+    let usesB5pre = delay false $ extra usesB
+    let usesDest5pre = delay false $ extra usesDest
 
     -- Register unspilling (fetching)
     let needsDest4 = usesDest .&&. loadDelay (activeMask4.val .!=. ones)
@@ -993,16 +944,18 @@ makeSIMTPipeline c inputs =
                      (srcB4, dest4))
           else (usesA .&&. regFile.evictedA) ? (srcA4,
                   (usesB .&&. regFile.evictedB) ? (srcB4, dest4))
-    let unspillTo5 = old $ extra unspillTo4
-    let unspillReg5 = old $ extra unspillReg4
     let unspill4_5 = unspill4 .&&. loadDelay (go4.val .&&. inv spill4.val)
-    let unspill5 = delay false $ extra unspill4_5
+
+    -- Stage 5 unspill info
+    let unspillTo5pre = old $ extra unspillTo4
+    let unspillReg5pre = old $ extra unspillReg4
+    let unspill5pre = delay false $ extra unspill4_5
 
     -- Stage 5 scalarised operands
     let trunc32ScalarVal x = ScalarVal { val = slice @31 @0 x.val
                                        , stride = x.stride
                                        , partial = x.partial }
-    let scalarisedOperandB5 =
+    let scalarisedOperandB5pre =
           ScalarisedOperand {
             scalarisedVal = old $ extra (fmap trunc32ScalarVal regFile.scalarB)
           , scalarisedCapVal = old $ extra capRegFile.scalarB
@@ -1017,24 +970,29 @@ makeSIMTPipeline c inputs =
                      r_imm = rs2.valid ? (reg, imm.val)
                  in  (imm_r, r_imm)
             else (reg, reg)
-    let vecRegBorImm5 = V.map getRegBorImm rfBOut
+    let vecRegBorImm5pre = V.map getRegBorImm rfBOut
 
     -- Propagate signals to stage 5
-    let pcc5 = old $ extra (loadDelay pcc4)
-    let isSusp5 = old $ extra (loadDelay isSusp4.val)
-    let warpId5 = old $ extra (loadDelay warpId4.val)
-    let activeMask5 = old $ extra (if unspill4_5 then ones
+    let pcc5pre = old $ extra (loadDelay pcc4)
+    let isSusp5pre = old $ extra (loadDelay isSusp4.val)
+    let warpId5pre = old $ extra (loadDelay warpId4.val)
+    let activeMask5pre = old $ extra (if unspill4_5 then ones
                                      else loadDelay activeMask4.val)
-    let instr5 = old $ extra (loadDelay instr4.val)
-    let state5 = old $ extra (loadDelay state4.val)
-    let spill5 = delay false $ extra (loadDelay spill4.val)
-    let spillFrom5 = old $ extra (loadDelay spillFrom4.val)
-    let spillReg5 = old $ extra (loadDelay spillReg4.val)
-    let go5 = delay false $ extra (loadDelay (go4.val .&&. inv spill4.val)
-                                     .&&. inv unspill4)
+    let instr5pre = old $ extra (loadDelay instr4.val)
+    let state5pre = old $ extra (loadDelay state4.val)
+    let spill5pre = delay false $ extra (loadDelay spill4.val)
+    let spillFrom5pre = old $ extra (loadDelay spillFrom4.val)
+    let spillReg5pre = old $ extra (loadDelay spillReg4.val)
+    let go5pre = delay false $ extra (loadDelay (go4.val .&&. inv spill4.val)
+                                       .&&. inv unspill4)
 
-    -- Buffer the decode tables
-    let tagMap5 = Map.map (old . extra) tagMap4
+    -- Stage 5 decode tables
+    let tagMap5pre = Map.map (old . extra) tagMap4
+
+    -- Compressed bounds of leader's operand A
+    let leaderCBounds5pre =
+          old (V.map (extra . getBoundsBitsCapMem . (# 0)) capRegFile.outA
+                 ! leaderIdx4.val)
 
     -- Determine if this instruction is scalarisable
     when c.useRegFileScalarisation do
@@ -1065,11 +1023,73 @@ makeSIMTPipeline c inputs =
         let isOpcodeScalarisable = orList
               [ Map.findWithDefault false op tagMap4
               | op <- c.scalarUnitAllowList ]
-        instrScalarisable5 <== extra (andList
+        instrScalarisable5pre <== extra (andList
           [ loadDelay (activeMask4.val .==. ones)
           , isOpcodeScalarisable
           , areOperandsScalar
           ])
+
+    -- Pre-execute
+    -- -----------
+
+    let forward5 :: forall a. Bits a => a -> a
+        forward5 inp = if enableCHERI then delay zero inp else inp
+
+    let vecRegA5 = forward5 vecRegA5pre
+    let vecRegB5 = forward5 vecRegB5pre
+    let vecCapRegA5 = forward5 vecCapRegA5pre
+    let vecCapRegB5 = forward5 vecCapRegB5pre
+    let usesA5 = forward5 usesA5pre
+    let usesB5 = forward5 usesB5pre
+    let usesDest5 = forward5 usesDest5pre
+    let unspillTo5 = forward5 unspillTo5pre
+    let unspillReg5 = forward5 unspillReg5pre
+    let unspill5 = forward5 unspill5pre
+    let scalarisedOperandB5 = forward5 scalarisedOperandB5pre
+    let vecRegBorImm5 = forward5 vecRegBorImm5pre
+    let pcc5 = forward5 pcc5pre
+    let isSusp5 = forward5 isSusp5pre
+    let warpId5 = forward5 warpId5pre
+    let instr5 = forward5 instr5pre
+    let state5 = forward5 state5pre
+    let spill5 = forward5 spill5pre
+    let spillFrom5 = forward5 spillFrom5pre
+    let spillReg5 = forward5 spillReg5pre
+    let go5 = forward5 go5pre
+    let tagMap5 = Map.map forward5 tagMap5pre
+    let instrScalarisable5 = forward5 instrScalarisable5pre.val
+
+    -- Constrain active mask to enable shared bounds decompression
+    let instrWantsBounds = orList
+          [ Map.findWithDefault false tag tagMap5pre
+          | tag <- c.wantBoundsA ]
+    let retryMask5pre :: Bit SIMTLanes =
+          if not enableCHERI then 0 else
+            if instrWantsBounds
+              then activeMask5pre .&.
+                     pack (V.map (\meta -> leaderCBounds5pre .!=.
+                       getBoundsBitsCapMem (meta # 0)) vecCapRegA5pre)
+              else 0
+    let retryMask5 = forward5 retryMask5pre
+    let activeMask5 = forward5 (activeMask5pre .&. inv retryMask5pre)
+
+    --let vecCapRegA5 = forward5 $
+    --      V.zipWith (\meta addr -> decodeCapMem (meta # addr))
+    --        vecCapRegA5pre vecRegA5pre
+    --
+    let bounds5pre :: Vec SIMTLanes (CapAddr, Bit (CapAddrWidth+1)) =
+          unpack (vectorBoundsDecompress leaderCBounds5pre (pack vecRegA5pre))
+    let vecCapRegA5 = forward5 $
+          V.zipWith3 (\meta addr (base, top) ->
+            Cap {
+              capMem     = meta # addr
+            , capPipe    = dontCare
+            , capBase    = base
+            , capLength  = dontCare
+            , capTop     = top
+            }) vecCapRegA5pre vecRegA5pre bounds5pre
+    let vecCapRegB5 = forward5 $ V.zipWith makeUncompressedCap
+          vecCapRegB5pre vecRegB5pre
 
     -- Stages 5: Execute
     -- =================
@@ -1102,7 +1122,7 @@ makeSIMTPipeline c inputs =
         -- Update scalar prediction table
         when (inv isSusp5) do
           scalarTableA.store (toInstrAddr state5.simtPC)
-                             instrScalarisable5.val
+                             instrScalarisable5
 
         -- Check that instruction is recognised
         let known = orList [valid | (_, valid) <- Map.toList tagMap5]
@@ -1175,7 +1195,8 @@ makeSIMTPipeline c inputs =
     -- Vector lane definition
     let makeLane makeExecStage threadActive suspMask regA regB regBorImm
                  capRegA capRegB stateMem incInstrCount pccMem
-                 excLocal laneId resultWire resultCapWire pcChange = do
+                 excLocal laneId resultWire resultCapWire pcChange
+                 threadRetry = do
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <- makeWire pcPlusFour
@@ -1245,22 +1266,7 @@ makeSIMTPipeline c inputs =
               -- Trigger execute stage
               execStage.execute
 
-              -- Update thread state
-              let nestInc = zeroExtendCast isSIMTPush
-              let nestDec = zeroExtendCast isSIMTPop
-              let nestLevel = state5.simtNestLevel
-              dynamicAssert (isSIMTPop .==>. nestLevel .!=. 0)
-                  "SIMT pipeliene: SIMT nest level underflow"
-              dynamicAssert (isSIMTPush .==>. nestLevel .!=. ones)
-                  "SIMT pipeliene: SIMT nest level overflow"
-              stateMem.store warpId5
-                SIMTThreadState {
-                    -- Only update PC if not retrying
-                    simtPC = retryWire.val ?
-                      (state5.simtPC, pcNextWire.val)
-                  , simtNestLevel = (nestLevel + nestInc) - nestDec
-                  , simtRetry = retryWire.val
-                  }
+              -- Update PCC
               when (delay false pccNextWire.active) do
                 pccMem.store (old warpId5)
                              (old $ upper $ pccNextWire.val)
@@ -1274,6 +1280,27 @@ makeSIMTPipeline c inputs =
               -- writing a result as suspended
               when (suspWire.val .||. resultWire.active) do
                 suspMask!warpId5 <== true
+
+            -- Update thread state
+            when (go5 .&&. (threadActive .||. threadRetry) .&&.
+                    inv isSusp5 .&&. inv excGlobal.val) do
+
+              -- Update thread state
+              let retry = retryWire.val .||. threadRetry
+              let nestInc = zeroExtendCast isSIMTPush
+              let nestDec = zeroExtendCast isSIMTPop
+              let nestLevel = state5.simtNestLevel
+              dynamicAssert (isSIMTPop .==>. nestLevel .!=. 0)
+                  "SIMT pipeliene: SIMT nest level underflow"
+              dynamicAssert (isSIMTPush .==>. nestLevel .!=. ones)
+                  "SIMT pipeliene: SIMT nest level overflow"
+              stateMem.store warpId5
+                SIMTThreadState {
+                    -- Only update PC if not retrying
+                    simtPC = retry ? (state5.simtPC, pcNextWire.val)
+                  , simtNestLevel = (nestLevel + nestInc) - nestDec
+                  , simtRetry = retry
+                  }
 
     -- Create vector lanes
     sequence $ getZipList $
@@ -1293,6 +1320,7 @@ makeSIMTPipeline c inputs =
                <*> ZipList resultWires
                <*> ZipList resultCapWires
                <*> ZipList pcChangeRegs6
+               <*> ZipList (toBitList retryMask5)
 
     -- Dynamic register spilling
     when enableSpill do
@@ -1319,15 +1347,15 @@ makeSIMTPipeline c inputs =
                       , memReqOp = memStoreOp
                       , memReqAMOInfo = dontCare
                       , memReqAddr = addr + fromInteger (4*laneId)
-                      , memReqData = spillFrom5 ? (lower capVal, val)
-                      , memReqDataTagBit = spillFrom5 ? (upper capVal, 0)
+                      , memReqData = spillFrom5 ? (lower cap.capMem, val)
+                      , memReqDataTagBit = spillFrom5 ? (upper cap.capMem, 0)
                       , memReqDataTagBitMask = 0
                       , memReqIsUnsigned = dontCare
                       , memReqIsFinal = true
                       }
-                | (memReqs, laneId, val, capVal) <-
+                | (memReqs, laneId, val, cap) <-
                     zip4 (toList inputs.simtMemReqs) [0..]
-                         (toList vecRegA5) (toList vecRawCapMetaRegA5) ]
+                         (toList vecRegA5) (toList vecCapRegA5) ]
               when canPutMemReq do
                 spillSuccess6 <== true
 
@@ -1480,6 +1508,59 @@ makeSIMTPipeline c inputs =
           if spillFrom6
             then capRegFile.evict (warpId6, spillReg6)
             else regFile.evict (warpId6, spillReg6)
+
+    -- Stat counters
+    -- =============
+
+    when c.enableStatCounters do
+      always do
+        when (pipelineActive.val) do
+          -- Increment cycle count
+          cycleCount <== cycleCount.val + 1
+
+          -- Increment instruction count
+          let instrIncs :: [Bit 32] =
+                map zeroExtend (map (.val) incInstrCountRegs)
+          let instrInc = tree1 (\a b -> reg 0 (a+b)) instrIncs
+          let scalarInstrInc =
+                incScalarInstrCount.val ? (SIMTLanes, 0)
+          if c.useScalarUnit
+            then do
+              instrCount <== instrCount.val + instrInc + scalarInstrInc
+              scalarisableInstrCount <==
+                scalarisableInstrCount.val + scalarInstrInc
+            else do
+              instrCount <== instrCount.val + instrInc
+              scalarisableInstrCount <== scalarisableInstrCount.val +
+                (if delay false instrScalarisable5 then instrInc else 0)
+
+          -- Pipeline bubbles
+          when incRetryCount.val do retryCount <== retryCount.val + 1
+          when incSuspCount.val do suspCount <== suspCount.val + 1
+          when c.useScalarUnit do
+            when incScalarSuspCount.val do
+              scalarSuspCount <== scalarSuspCount.val + 1
+            when incScalarAbortCount.val do
+              scalarAbortCount <== scalarAbortCount.val + 1
+
+          -- DRAM accesses
+          dramAccessCount <==
+            dramAccessCount.val +
+               zeroExtend inputs.simtDRAMStatSigs.dramLoadSig +
+                 zeroExtend inputs.simtDRAMStatSigs.dramStoreSig
+
+          -- Store buffer hit rate
+          when inputs.simtCoalStats.incLoadHit do
+            if inputs.simtCoalStats.isCapMetaAccess
+              then sbCapLoadHitCount <== sbCapLoadHitCount.val + 1
+              else sbLoadHitCount <== sbLoadHitCount.val + 1
+
+          when inputs.simtCoalStats.incLoadMiss do
+            if inputs.simtCoalStats.isCapMetaAccess
+              then sbCapLoadMissCount <== sbCapLoadMissCount.val + 1
+              else sbLoadMissCount <== sbLoadMissCount.val + 1
+
+
 
     -- ===============
     -- Scalar Pipeline
