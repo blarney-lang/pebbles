@@ -2,6 +2,7 @@
 #define _SIMTHOST_H_
 
 #include <Pebbles/Common.h>
+#include <Pebbles/CSRs/StatIds.h>
 
 // Control/status registers
 #define CSR_SIMTHostCanPut           "0x820"
@@ -13,24 +14,6 @@
 #define CSR_SIMTHostSetKernel        "0x826"
 #define CSR_SIMTHostSetWarpsPerBlock "0x827"
 #define CSR_SIMTHostAskStats         "0x828"
-
-// SIMT stat counter ids
-#define STAT_SIMT_CYCLES 0
-#define STAT_SIMT_INSTRS 1
-#define STAT_SIMT_MAX_VEC_REGS 2
-#define STAT_SIMT_MAX_CAP_VEC_REGS 3
-#define STAT_SIMT_SCALARISABLE_INSTRS 4
-#define STAT_SIMT_RETRIES 5
-#define STAT_SIMT_SUSP_BUBBLES 6
-#define STAT_SIMT_SCALAR_SUSP_BUBBLES 7
-#define STAT_SIMT_SCALAR_ABORTS 8
-#define STAT_SIMT_DRAM_ACCESSES 9
-#define STAT_SIMT_TOTAL_VEC_REGS 10
-#define STAT_SIMT_TOTAL_CAP_VEC_REGS 11
-#define STAT_SIMT_SB_LOAD_HIT 12
-#define STAT_SIMT_SB_LOAD_MISS 13
-#define STAT_SIMT_SB_CAP_LOAD_HIT 14
-#define STAT_SIMT_SB_CAP_LOAD_MISS 15
 
 // Can issue command to SIMT core?
 INLINE int pebblesSIMTCanPut()
