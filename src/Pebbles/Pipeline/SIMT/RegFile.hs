@@ -909,12 +909,16 @@ makeSIMTScalarisingRegFile opts = do
         storeVec1 <== vec
         scalarRegFileE.load idx
         -- Determine leader
-        let oneHotIdx :: Bit SIMTLanes =
-              firstHot $ fromBitList $ map (.valid) (V.toList vec)
-        let idx = binaryEncode oneHotIdx
-        storeLeaderLane1 <== idx
-        storeLeaderVal1 <== select (zip (toBitList oneHotIdx)
-                                   (map (.val) $ V.toList vec))
+        if opts.useInitValOpt
+          then do
+            let oneHotIdx :: Bit SIMTLanes =
+                  firstHot $ fromBitList $ map (.valid) (V.toList vec)
+            storeLeaderLane1 <== binaryEncode oneHotIdx
+            storeLeaderVal1 <== select (zip (toBitList oneHotIdx)
+                                       (map (.val) $ V.toList vec))
+          else do
+            storeLeaderLane1 <== 0
+            storeLeaderVal1 <== (V.head vec).val
     , canStore = \idx ->
         inv $ orList [
                 store1.val .&&. storeIdx1.val .==. idx
