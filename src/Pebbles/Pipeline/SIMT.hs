@@ -686,10 +686,10 @@ makeSIMTPipeline c inputs =
         if spillMode
           then do
             when enableSpill do
+              sequence_
+                [ when c do r <== true
+                | (r, c) <- zip spillingWarps (toBitList chosenSpill) ]
               when (spillAvail .!=. 0) do
-                sequence_
-                  [ when c do r <== true
-                  | (r, c) <- zip spillingWarps (toBitList chosenSpill) ]
                 schedHistorySpill <== newSchedHistorySpill
                 spill0 <== true
                 spillFrom0 <== regSpillModeIntOrCap.val
@@ -736,6 +736,10 @@ makeSIMTPipeline c inputs =
     -- For timing, we split this stage over several cycles
     let stage1Substages = 2
 
+    always do
+      regFile.loadVecMask warpId1.val
+      capRegFile.loadVecMask warpId1.val
+
     -- Active threads are those with the max nesting level
     -- On a tie, favour instructions undergoing a retry
     let maxOf a@(a_nest, a_retry, _)
@@ -766,6 +770,8 @@ makeSIMTPipeline c inputs =
     let warpId2 = iterateN stage1Substages buffer warpId1.val
     let spill2 = iterateN stage1Substages (delay 0) spill1.val
     let spillFrom2 = iterateN stage1Substages (delay 0) spillFrom1.val
+    let vecMask2 = iterateN (stage1Substages - 1) (delay 0) regFile.getVecMask
+    let capVecMask2 = iterateN (stage1Substages - 1) (delay 0) capRegFile.getVecMask
     let go2 = iterateN stage1Substages (delay 0) go1.val
 
     -- Stage 2: Instruction Fetch
@@ -805,9 +811,7 @@ makeSIMTPipeline c inputs =
                 (True , False) -> i
                 (False, True)  -> c
                 (True , True)  -> spillFrom2 ? (c, i)
-        let vecMasks = V.zipWith chooseRF
-                         regFile.getVecMasks capRegFile.getVecMasks
-        let vecMask = vecMasks ! warpId2
+        let vecMask = chooseRF vecMask2 capVecMask2
         vecMask2b <== vecMask
         when c.useLRUSpill do
           let subset xs = [x | (x, i) <- zip xs [0..], i `mod` 2 == 1]

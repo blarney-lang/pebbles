@@ -120,7 +120,8 @@ data SIMTRegFile t_logSize regWidth =
     -- ^ Max number of vector registers used
   , totalVecRegs :: Bit 32
     -- ^ Total vector registers, sampled at parameterised rate
-  , getVecMasks :: Vec SIMTWarps (Bit 32)
+  , loadVecMask :: Bit SIMTLogWarps -> Action ()
+  , getVecMask :: Bit 32
     -- ^ Which registers for each warp are vectors?
   , sharedVecSpad :: SharedVecSpad t_logSize regWidth
     -- ^ Use shared vector scratchpad
@@ -171,7 +172,8 @@ makeNullSIMTRegFile = do
     , totalVecRegs = 0
     , numVecRegsUnused = 0
     , numVecRegs = fromInteger (SIMTWarps * 32)
-    , getVecMasks = V.replicate ones
+    , getVecMask = ones
+    , loadVecMask = \_ -> return ()
     , sharedVecSpad = error "Null SIMT regfile does not produce vec spad"
     , stall = false
     }
@@ -255,7 +257,8 @@ makeSIMTRegFile opts = do
     , totalVecRegs = 0
     , numVecRegs = fromInteger (SIMTWarps * 32)
     , numVecRegsUnused = 0
-    , getVecMasks = V.replicate ones
+    , getVecMask = ones
+    , loadVecMask = \_ -> return ()
     , sharedVecSpad = error "SIMT regfile does not produce vec spad"
     , stall = false
     }
@@ -363,8 +366,18 @@ makeSIMTScalarisingRegFile opts = do
 
   -- For each warp, maintain a 32-bit mask indicating which
   -- registers are (non-evicted) vectors
-  vecMasks :: Vec SIMTWarps (Vec 32 (Reg (Bit 1))) <-
-    V.replicateM (V.replicateM (makeReg dontCare))
+  (vecMasksA, vecMasksB) ::
+    (RAM (Bit SIMTLogWarps) (Bit 32),
+     RAM (Bit SIMTLogWarps) (Bit 32)) <-
+       if opts.useDynRegSpill
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
+  (vecMasksC, vecMasksD) ::
+    (RAM (Bit SIMTLogWarps) (Bit 32),
+     RAM (Bit SIMTLogWarps) (Bit 32)) <-
+       if opts.useDynRegSpill && opts.useScalarUnit
+         then makeQuadRAM
+         else return (nullRAM, nullRAM)
 
   -- Eviction status of each register
   (evictStatus, evictStatusB) :: (RAM SIMTRegFileIdx (Bit 1),
@@ -435,8 +448,8 @@ makeSIMTScalarisingRegFile opts = do
           let slot = truncateCast initIdx.val
           partialSlots.push1 slot
       when opts.useDynRegSpill do
-        sequence_ [ sequence_ [ b <== false | b <- toList mask ]
-                  | mask <- toList vecMasks ]
+        vecMasksB.store (truncateCast initIdx.val) 0
+        vecMasksD.store (truncateCast initIdx.val) 0
       initIdx <== initIdx.val - 1
       when (initIdx.val .==. 0) do
         vecCount <== 0
@@ -615,6 +628,8 @@ makeSIMTScalarisingRegFile opts = do
       storeEvict2 <== storeEvict1.val
       when (anyValid .||. storeEvict1.val) do
         store2 <== true
+      let (warpId, _) = storeIdx1.val
+      vecMasksB.load warpId
  
     -- Stage 2
     when store2.val do
@@ -802,7 +817,11 @@ makeSIMTScalarisingRegFile opts = do
       when opts.useDynRegSpill do
         let (warpId, regId) = storeIdx2.val
         let isVec = isVector .&&. inv storeEvict2.val
-        ((vecMasks ! warpId) ! regId) <== isVec
+        let rmask = 1 .<<. regId
+        let newMask = if isVec then vecMasksB.out .|. rmask
+                               else vecMasksB.out .&. inv rmask
+        vecMasksA.store warpId newMask
+        vecMasksC.store warpId newMask
 
   -- Scalar store path
   -- =================
@@ -839,7 +858,10 @@ makeSIMTScalarisingRegFile opts = do
         -- Track vector registers
         when opts.useDynRegSpill do
           let (warpId, regId) = storeScalarIdx.val
-          ((vecMasks ! warpId) ! regId) <== false
+          let newMask = vecMasksC.out .&. inv (1 .<<. regId)
+          vecMasksB.store warpId newMask
+          vecMasksD.store warpId newMask
+
 
   return
     SIMTRegFile {
@@ -931,6 +953,7 @@ makeSIMTScalarisingRegFile opts = do
         scalarRegFileE.load idx
     , storeScalar = \idx x -> do
         scalarRegFileF.load idx
+        vecMasksC.load (fst idx)
         storeScalarGo <== true
         storeScalarIdx <== idx
         storeScalarVal <== x
@@ -944,8 +967,8 @@ makeSIMTScalarisingRegFile opts = do
     , numVecRegsUnused = fromIntegral opts.size - vecCount.val
     , numVecRegs = vecCount.val
     , totalVecRegs = totalVecCount.val
-    , getVecMasks = 
-        V.map (\mask -> pack (V.map (.val) mask)) vecMasks
+    , loadVecMask = vecMasksA.load
+    , getVecMask = vecMasksA.out
     , sharedVecSpad =
         case opts.useSharedVecSpad of
           Nothing ->
