@@ -24,7 +24,9 @@ import CHERI.CapLib
 data BoundsReq cap =
   BoundsReq {
     -- Bounds opcode
-    isSetBounds :: Bit 1
+    isGetBase :: Bit 1
+  , isGetLen :: Bit 1
+  , isSetBounds :: Bit 1
   , isSetBoundsExact :: Bit 1
   , isCRAM :: Bit 1
   , isCRRL :: Bit 1
@@ -39,7 +41,10 @@ boundsUnit req =
   ResumeReq {
     resumeReqData =
       select
-        [ req.isSetBounds .||. req.isSetBoundsExact --> lower finalCap
+        [ req.isGetBase --> boundsInfo.base
+        , req.isGetLen -->
+            if at @32 boundsInfo.length then ones else lower boundsInfo.length
+        , req.isSetBounds .||. req.isSetBoundsExact --> lower finalCap
         , req.isCRAM --> sbres.mask
         , req.isCRRL --> sbres.length ]
     , resumeReqDataTagBit =

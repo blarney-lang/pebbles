@@ -236,7 +236,6 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
   let cB = s.capB.capPipe
   let topA = s.capA.capTop
   let baseA = s.capA.capBase
-  let lenA = s.capA.capLength
   let addrA = getAddr cA
   let permsA = getHardPerms cA
   let permsB = getHardPerms cB
@@ -245,7 +244,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
   -- ----------------------------------
 
   let isInspect = s.opcode `is`
-        [ CGetPerm, CGetType, CGetBase, CGetLen, CGetTag
+        [ CGetPerm, CGetType, CGetTag
         , CGetSealed, CGetFlags, CGetAddr
         ]
 
@@ -256,9 +255,6 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
         , s.opcode `is` [CGetType] -->
             let t = getType cA in
               if isSealedWithType cA then zeroExtend t else signExtend t
-        , s.opcode `is` [CGetBase] --> baseA
-        , s.opcode `is` [CGetLen] -->
-              if at @32 lenA then ones else lower lenA
         , s.opcode `is` [CGetTag] --> zeroExtend (isValidCap cA)
         , s.opcode `is` [CGetSealed] --> zeroExtend (isSealed cA)
         , s.opcode `is` [CGetFlags] --> zeroExtend (getFlags cA)
@@ -470,20 +466,32 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
               }
          else s.retry
 
--- | Bounds setting instructions
-executeSetBounds ::
+-- | Bounds getting/setting instructions
+executeBounds ::
      State
      -- ^ Pipeline state
   -> Action ()
-executeSetBounds s = do
+executeBounds s = do
 
   -- Shorthands / shared logic for capability operands
   let cA = s.capA.capPipe
   let topA = s.capA.capTop
   let baseA = s.capA.capBase
+  let lenA = s.capA.capLength
   let addrA = getAddr cA
 
-  -- Bounds setting instructions
+  -- Bounds-getting instructions
+  -- ---------------------------
+
+  when (s.opcode `is` [CGetBase, CGetLen]) do
+    s.result <==
+      select
+        [ s.opcode `is` [CGetBase] --> baseA
+        , s.opcode `is` [CGetLen] -->
+            if at @32 lenA then ones else lower lenA
+        ]
+
+  -- Bounds-setting instructions
   -- ---------------------------
 
   when (s.opcode `is` [CSetBounds, CSetBoundsExact]) do
@@ -517,13 +525,16 @@ executeBoundsUnit ::
      -- ^ Pipeline state
   -> Action ()
 executeBoundsUnit boundsUnit s = do
-  when (s.opcode `is` [CSetBounds, CSetBoundsExact, CRRL, CRAM]) do
+  when (s.opcode `is` [CGetBase, CGetLen, CSetBounds,
+                         CSetBoundsExact, CRRL, CRAM]) do
     if boundsUnit.canPut
       then do
         s.suspend
         boundsUnit.put
           BoundsReq {
-            isSetBounds = s.opcode `is` [CSetBounds]
+            isGetBase = s.opcode `is` [CGetBase]
+          , isGetLen = s.opcode `is` [CGetLen]
+          , isSetBounds = s.opcode `is` [CSetBounds]
           , isSetBoundsExact = s.opcode `is` [CSetBoundsExact]
           , isCRAM = s.opcode `is` [CRAM]
           , isCRRL = s.opcode `is` [CRRL]
