@@ -92,8 +92,12 @@ data State =
     -- call to setAddr) to derive the PCC.
 
   , resultCap :: WriteOnly CapPipe
-    -- ^ Instruction result for capability reg file. The client should
-    -- not write 'result' *and* 'resultCap' in the same clock cycle.
+    -- ^ Instruction result for capability reg file.
+    -- Should not be assigned at same time as 'result'.
+
+  , resultCapMem :: WriteOnly CapMem
+    -- ^ Instruction result for capability reg file.
+    -- Should not be assigned at same time as 'result' or 'resultCap'
 
   } deriving (Generic, Interface)
 

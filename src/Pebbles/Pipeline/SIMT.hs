@@ -1236,6 +1236,10 @@ makeSIMTPipeline c inputs =
                               let capMem = pack (toMem cap)
                               resultWire <== lower capMem
                               resultCapWire <== upper capMem
+            , resultCapMem = WriteOnly \capMem ->
+                               when destNonZero do
+                                resultWire <== lower capMem
+                                resultCapWire <== upper capMem
             }
 
           always do
@@ -1785,6 +1789,10 @@ makeSIMTPipeline c inputs =
         , resultCap = WriteOnly \cap ->
             when (dst scalarInstr4.val .!=. 0) do
               let capMem = pack (toMem cap)
+              scalarResultWire <== lower capMem
+              scalarResultCapWire <== upper capMem
+        , resultCapMem = WriteOnly \capMem ->
+            when (dst scalarInstr4.val .!=. 0) do
               scalarResultWire <== lower capMem
               scalarResultCapWire <== upper capMem
         }

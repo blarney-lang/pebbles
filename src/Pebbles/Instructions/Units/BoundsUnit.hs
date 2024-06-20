@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 module Pebbles.Instructions.Units.BoundsUnit where
 
 -- Blarney imports
@@ -20,7 +21,7 @@ import CHERI.CapLib
 -- =========
 
 -- | Bounds unit request
-data BoundsReq =
+data BoundsReq cap =
   BoundsReq {
     -- Bounds opcode
     isSetBounds :: Bit 1
@@ -28,12 +29,12 @@ data BoundsReq =
   , isCRAM :: Bit 1
   , isCRRL :: Bit 1
     -- Instruction operands
-  , cap :: CapPipe
+  , cap :: cap
   , len :: Bit 32
   } deriving (Generic, Interface, Bits)
 
 -- | Bounds unit functionality
-boundsUnit :: BoundsReq -> ResumeReq
+boundsUnit :: BoundsReq CapPipe -> ResumeReq
 boundsUnit req =
   ResumeReq {
     resumeReqData =
@@ -63,9 +64,12 @@ boundsUnit req =
    validCap = isValidCap req.cap .&&. inv invalidate
    (finalCapTag, finalCap) = toMem (setValidCap sbres.cap validCap)
 
+toCapPipe :: BoundsReq CapMem -> BoundsReq CapPipe
+toCapPipe (BoundsReq {..}) = BoundsReq {cap = fromMem (unpack cap), ..}
+
 -- | Vector Bounds unit interface
 type VecBoundsUnit n t_id =
-  Server (t_id, Vec n (Option BoundsReq))
+  Server (t_id, Vec n (Option (BoundsReq CapMem)))
          (t_id, Vec n (Option ResumeReq))
 
 -- | Create vector of bounds units
@@ -73,20 +77,22 @@ makeVecBoundsUnit :: forall n t_id.
       (KnownNat n, Bits t_id)
    => Module (VecBoundsUnit n t_id)
 makeVecBoundsUnit = do
-  inputWire <- makeWire dontCare
+  inputQueue <- makePipelineQueue 1
   resultQueue <- makePipelineQueue 1
   
   always do
-    when inputWire.active do
-      let (info, vec) = inputWire.val
+    when (inputQueue.canDeq .&&. resultQueue.notFull) do
+      let (info, vec) = inputQueue.first
+      inputQueue.deq
       resultQueue.enq (info, V.map (fmap boundsUnit) vec)
 
   return
     Server {
       reqs =
         Sink {
-          canPut = resultQueue.notFull
-        , put = \r -> inputWire <== r
+          canPut = inputQueue.notFull
+        , put = \(info, vec) ->
+            inputQueue.enq (info, V.map (fmap toCapPipe) vec)
         }
     , resps = toSource resultQueue
     }

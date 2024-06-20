@@ -19,6 +19,9 @@ type CapMemMeta = Bit CapMemMetaWidth
 type CapAddrWidth = 32
 type CapAddr = Bit CapAddrWidth
 
+type CapCBoundsWidth = 15
+type CapCBounds = Bit CapCBoundsWidth
+
 data Exact t =
   Exact {
     exact :: Bit 1
@@ -419,26 +422,6 @@ getMeta cap =
       [toBV $ pack cap]
       [Just "wrap64_getMeta"]
 
-almightyCapMem :: Bit 65
-almightyCapMem  = 
-  unpack $ FromBV $ head $ makePrim (Custom
-    "module_wrap64_almightyCapMem"
-    []
-    [("wrap64_almightyCapMem", 65)]
-    [] False False Nothing) 
-      []
-      [Just "wrap64_almightyCapMem"]
-
-nullCapMem :: Bit 65
-nullCapMem  = 
-  unpack $ FromBV $ head $ makePrim (Custom
-    "module_wrap64_nullCapMem"
-    []
-    [("wrap64_nullCapMem", 65)]
-    [] False False Nothing) 
-      []
-      [Just "wrap64_nullCapMem"]
-
 getBoundsInfo :: Bit 91 -> BoundsInfo
 getBoundsInfo cap = 
   unpack $ FromBV $ head $ makePrim (Custom
@@ -459,7 +442,167 @@ setAddrUnsafe cap addr =
       [toBV $ pack cap, toBV $ pack addr]
       [Just "wrap64_setAddrUnsafe"]
 
-nullCapMemInteger :: Integer = 0x00007C30200000000
+almightyCapMem :: Bit 65
+almightyCapMem  = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_almightyCapMem"
+    []
+    [("wrap64_almightyCapMem", 65)]
+    [] False False Nothing) 
+      []
+      [Just "wrap64_almightyCapMem"]
+
+nullCapMem :: Bit 65
+nullCapMem  = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_nullCapMem"
+    []
+    [("wrap64_nullCapMem", 65)]
+    [] False False Nothing) 
+      []
+      [Just "wrap64_nullCapMem"]
+
+isValidCapMem :: Bit 65 -> Bit 1
+isValidCapMem cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_isValidCapMem"
+    [("wrap64_isValidCapMem_cap", 65)]
+    [("wrap64_isValidCapMem", 1)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_isValidCapMem"]
+
+setValidCapMem :: Bit 65 -> Bit 1 -> Bit 65
+setValidCapMem cap valid = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setValidCapMem"
+    [("wrap64_setValidCapMem_cap", 65), ("wrap64_setValidCapMem_valid", 1)]
+    [("wrap64_setValidCapMem", 65)]
+    [] False False Nothing) 
+      [toBV $ pack cap, toBV $ pack valid]
+      [Just "wrap64_setValidCapMem"]
+
+getTypeCapMem :: Bit 65 -> Bit 4
+getTypeCapMem capMem = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getTypeCapMem"
+    [("wrap64_getTypeCapMem_capMem", 65)]
+    [("wrap64_getTypeCapMem", 4)]
+    [] False False Nothing) 
+      [toBV $ pack capMem]
+      [Just "wrap64_getTypeCapMem"]
+
+setTypeCapMem :: Bit 65 -> Bit 4 -> Bit 65
+setTypeCapMem capMem t = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setTypeCapMem"
+    [("wrap64_setTypeCapMem_capMem", 65), ("wrap64_setTypeCapMem_t", 4)]
+    [("wrap64_setTypeCapMem", 65)]
+    [] False False Nothing) 
+      [toBV $ pack capMem, toBV $ pack t]
+      [Just "wrap64_setTypeCapMem"]
+
+isSealedCapMem :: Bit 65 -> Bit 1
+isSealedCapMem cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_isSealedCapMem"
+    [("wrap64_isSealedCapMem_cap", 65)]
+    [("wrap64_isSealedCapMem", 1)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_isSealedCapMem"]
+
+isSentryCapMem :: Bit 65 -> Bit 1
+isSentryCapMem cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_isSentryCapMem"
+    [("wrap64_isSentryCapMem_cap", 65)]
+    [("wrap64_isSentryCapMem", 1)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_isSentryCapMem"]
+
+getFlagsCapMem :: Bit 65 -> Bit 1
+getFlagsCapMem capMem = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getFlagsCapMem"
+    [("wrap64_getFlagsCapMem_capMem", 65)]
+    [("wrap64_getFlagsCapMem", 1)]
+    [] False False Nothing) 
+      [toBV $ pack capMem]
+      [Just "wrap64_getFlagsCapMem"]
+
+setFlagsCapMem :: Bit 65 -> Bit 1 -> Bit 65
+setFlagsCapMem capMem f = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setFlagsCapMem"
+    [("wrap64_setFlagsCapMem_capMem", 65), ("wrap64_setFlagsCapMem_f", 1)]
+    [("wrap64_setFlagsCapMem", 65)]
+    [] False False Nothing) 
+      [toBV $ pack capMem, toBV $ pack f]
+      [Just "wrap64_setFlagsCapMem"]
+
+getPermsCapMem :: Bit 65 -> Bit 31
+getPermsCapMem capMem = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getPermsCapMem"
+    [("wrap64_getPermsCapMem_capMem", 65)]
+    [("wrap64_getPermsCapMem", 31)]
+    [] False False Nothing) 
+      [toBV $ pack capMem]
+      [Just "wrap64_getPermsCapMem"]
+
+setPermsCapMem :: Bit 65 -> Bit 31 -> Bit 65
+setPermsCapMem cap perms = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setPermsCapMem"
+    [("wrap64_setPermsCapMem_cap", 65), ("wrap64_setPermsCapMem_perms", 31)]
+    [("wrap64_setPermsCapMem", 65)]
+    [] False False Nothing) 
+      [toBV $ pack cap, toBV $ pack perms]
+      [Just "wrap64_setPermsCapMem"]
+
+getHardPermsCapMem :: Bit 65 -> HardPerms
+getHardPermsCapMem cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getHardPermsCapMem"
+    [("wrap64_getHardPermsCapMem_cap", 65)]
+    [("wrap64_getHardPermsCapMem", 12)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_getHardPermsCapMem"]
+
+getAddrCapMem :: Bit 65 -> Bit 32
+getAddrCapMem cap = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getAddrCapMem"
+    [("wrap64_getAddrCapMem_cap", 65)]
+    [("wrap64_getAddrCapMem", 32)]
+    [] False False Nothing) 
+      [toBV $ pack cap]
+      [Just "wrap64_getAddrCapMem"]
+
+setAddrUnsafeCapMem :: Bit 65 -> Bit 32 -> Bit 65
+setAddrUnsafeCapMem cap addr = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_setAddrUnsafeCapMem"
+    [("wrap64_setAddrUnsafeCapMem_cap", 65), ("wrap64_setAddrUnsafeCapMem_addr", 32)]
+    [("wrap64_setAddrUnsafeCapMem", 65)]
+    [] False False Nothing) 
+      [toBV $ pack cap, toBV $ pack addr]
+      [Just "wrap64_setAddrUnsafeCapMem"]
+
+getBoundsBitsCapMem :: Bit 65 -> Bit 15
+getBoundsBitsCapMem capMem = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_getBoundsBitsCapMem"
+    [("wrap64_getBoundsBitsCapMem_capMem", 65)]
+    [("wrap64_getBoundsBitsCapMem", 15)]
+    [] False False Nothing) 
+      [toBV $ pack capMem]
+      [Just "wrap64_getBoundsBitsCapMem"]
+
+nullCapMemInteger :: Integer = 0
 almightyCapMemInteger :: Integer = 0x1FFF0000000000000
 nullCapPipeInteger :: Integer = 0x00000000000001F690003F0
 almightyCapPipeInteger :: Integer = 0x40000000003FFDF690003F0

@@ -511,7 +511,7 @@ executeSetBounds s = do
 
 -- | Bounds setting instructions using (possibly shared) bounds unit
 executeBoundsUnit ::
-     Sink BoundsReq
+     Sink (BoundsReq CapMem)
      -- ^ Bounds unit
   -> State
      -- ^ Pipeline state
@@ -527,7 +527,7 @@ executeBoundsUnit boundsUnit s = do
           , isSetBoundsExact = s.opcode `is` [CSetBoundsExact]
           , isCRAM = s.opcode `is` [CRAM]
           , isCRRL = s.opcode `is` [CRRL]
-          , cap = s.capA.capPipe
+          , cap = s.capA.capMem
           , len = if s.opcode `is` [CSetBounds, CSetBoundsExact]
                     then s.immOrOpB else s.opA
           }

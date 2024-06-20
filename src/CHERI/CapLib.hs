@@ -89,23 +89,28 @@ data Cap =
     , capBase     :: CapAddr
     , capLength   :: Bit (CapAddrWidth+1)
     , capTop      :: Bit (CapAddrWidth+1)
+    , capMem      :: CapMem
   }
   deriving (Generic, Interface, Bits)
 
 -- | Partially decode given capability
-decodeCapPipe :: CapPipe -> Cap
-decodeCapPipe c =
+decodeCapPipe' :: CapMem -> CapPipe -> Cap
+decodeCapPipe' cm c =
   Cap {
       capPipe    = c
     , capBase    = base
     , capLength  = len
     , capTop     = zeroExtend base + len
+    , capMem     = cm
   }
   where
     info = getBoundsInfo c
     len  = info.length
     base = info.base
 
+decodeCapPipe :: CapPipe -> Cap
+decodeCapPipe c = decodeCapPipe' dontCare c
+
 -- | Partially decode given capability
 decodeCapMem :: CapMem -> Cap
-decodeCapMem cm = decodeCapPipe $ fromMem $ unpack cm
+decodeCapMem cm = decodeCapPipe' cm (fromMem $ unpack cm)

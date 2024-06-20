@@ -404,6 +404,8 @@ makeScalarPipeline c pipeIns =
                         let (meta, addr) = splitCapPipe cap
                         resultWire <== addr
                         resultCapWire <== meta
+      , resultCapMem = WriteOnly \capMem -> do
+                         display "Scalar pipeline: resultCapMem not supported"
       }
 
     always do
