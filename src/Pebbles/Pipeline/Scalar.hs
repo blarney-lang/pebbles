@@ -399,6 +399,8 @@ makeScalarPipeline c pipeIns =
       , pccNew = WriteOnly \pccNew -> do
                    pcNext <== getAddr pccNew
                    pccNext <== pccNew
+      , pccNewCapMem = WriteOnly \pccNew -> do
+          display "Scalar pipeline: pccNewCapMem not supported"
       , resultCap = WriteOnly \cap ->
                       when destNonZero do
                         let (meta, addr) = splitCapPipe cap

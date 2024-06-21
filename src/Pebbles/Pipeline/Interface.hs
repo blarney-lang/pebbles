@@ -91,6 +91,10 @@ data State =
     -- ^ Update the capability which is combined with the PC (via a
     -- call to setAddr) to derive the PCC.
 
+  , pccNewCapMem :: WriteOnly CapMem
+    -- ^ Update the capability which is combined with the PC (via a
+    -- call to setAddr) to derive the PCC.
+
   , resultCap :: WriteOnly CapPipe
     -- ^ Instruction result for capability reg file.
     -- Should not be assigned at same time as 'result'.

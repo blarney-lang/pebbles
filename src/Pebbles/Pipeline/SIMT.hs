@@ -864,10 +864,10 @@ makeSIMTPipeline c inputs =
                                        else delay zero x
     let warpId3 = stage2Delay warpId2
     let state3 = stage2Delay state2
-    let pcc3 = stage2Delay $ decodeCapPipe $
+    let pcc3 = stage2Delay $
           if c.useSharedPCC
-            then (setAddr pccSharedA.out state2.simtPC).value
-            else fromMem $ unpack (pcc2 # state2.simtPC)
+            then decodeCapPipe (setAddr pccSharedA.out state2.simtPC).value
+            else decodeCapMem (pcc2 # state2.simtPC)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
     let spillFail3 = if enableSpill then spillFail3Reg.val else false
@@ -1191,7 +1191,7 @@ makeSIMTPipeline c inputs =
 
           -- Per lane interfacing
           pcNextWire :: Wire (Bit 32) <- makeWire pcPlusFour
-          pccNextWire :: Wire CapPipe <- makeWire dontCare
+          pccNextWire :: Wire CapMem <- makeWire dontCare
           retryWire  :: Wire (Bit 1) <- makeWire false
           suspWire   :: Wire (Bit 1) <- makeWire false
 
@@ -1230,6 +1230,9 @@ makeSIMTPipeline c inputs =
             , pcc = pcc5
             , pccNew = WriteOnly \pccNew -> do
                 pcNextWire <== getAddr pccNew
+                pccNextWire <== pack (toMem pccNew)
+            , pccNewCapMem = WriteOnly \pccNew -> do
+                pcNextWire <== getAddrCapMem pccNew
                 pccNextWire <== pccNew
             , resultCap = WriteOnly \cap ->
                             when destNonZero do
@@ -1273,7 +1276,7 @@ makeSIMTPipeline c inputs =
                   }
               when (delay false pccNextWire.active) do
                 pccMem.store (old warpId5)
-                             (old $ upper $ pack $ toMem pccNextWire.val)
+                             (old $ upper $ pccNextWire.val)
 
               -- Increment instruction count
               when (inv retryWire.val) do
@@ -1786,6 +1789,9 @@ makeSIMTPipeline c inputs =
         , pccNew = WriteOnly \pccNew -> do
             scalarPCNextWire <== getAddr pccNew
             scalarPCCNextWire <== pccNew
+        , pccNewCapMem = WriteOnly \pccNew -> do
+            scalarPCNextWire <== getAddrCapMem pccNew
+            scalarPCCNextWire <== fromMem (unpack pccNew)
         , resultCap = WriteOnly \cap ->
             when (dst scalarInstr4.val .!=. 0) do
               let capMem = pack (toMem cap)
