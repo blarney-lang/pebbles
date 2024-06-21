@@ -72,6 +72,11 @@ boundsUnit req =
 toCapPipe :: BoundsReq CapMem -> BoundsReq CapPipe
 toCapPipe (BoundsReq {..}) = BoundsReq {cap = fromMem (unpack cap), ..}
 
+-- | Bounds unit interface
+type BoundsUnit t_id =
+  Server (t_id, BoundsReq CapMem)
+         (t_id, ResumeReq)
+
 -- | Vector Bounds unit interface
 type VecBoundsUnit n t_id =
   Server (t_id, Vec n (Option (BoundsReq CapMem)))
@@ -100,4 +105,16 @@ makeVecBoundsUnit = do
             inputQueue.enq (info, V.map (fmap toCapPipe) vec)
         }
     , resps = toSource resultQueue
+    }
+
+-- | Single bounds unit
+makeBoundsUnit :: Bits t_id => Module (BoundsUnit t_id)
+makeBoundsUnit = do
+  vecBoundsUnit <- makeVecBoundsUnit @1
+  return
+    Server {
+      reqs  = mapSink (\(id, req) -> (id, fromList [Option true req]))
+                      vecBoundsUnit.reqs
+    , resps = mapSource (\(id, resp) -> (id, (head (toList resp)).val))
+                        vecBoundsUnit.resps
     }

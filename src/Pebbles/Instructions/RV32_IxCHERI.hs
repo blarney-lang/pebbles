@@ -9,6 +9,7 @@ import Blarney.Queue
 import Blarney.Stream
 import Blarney.BitScan
 import Blarney.SourceSink
+import Blarney.TaggedUnion hiding (is)
 
 -- Pebbles imports
 import Pebbles.CSRs.CSRUnit
@@ -16,9 +17,10 @@ import Pebbles.CSRs.TrapCodes
 import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.Mnemonics
-import Pebbles.Instructions.Units.BoundsUnit
+import Pebbles.Instructions.Units.SFU
 import Pebbles.Instructions.Units.AddUnit
 import Pebbles.Instructions.Units.MulUnit
+import Pebbles.Instructions.Units.BoundsUnit
 
 -- CHERI imports
 import CHERI.CapLib
@@ -519,28 +521,32 @@ executeBounds s = do
 
 -- | Bounds setting instructions using (possibly shared) bounds unit
 executeBoundsUnit ::
-     Sink (BoundsReq CapMem)
+     Sink SFUReq
      -- ^ Bounds unit
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeBoundsUnit boundsUnit s = do
+executeBoundsUnit sfu s = do
   when (s.opcode `is` [CGetBase, CGetLen, CSetBounds,
                          CSetBoundsExact, CRRL, CRAM]) do
-    if boundsUnit.canPut
+    if sfu.canPut
       then do
         s.suspend
-        boundsUnit.put
-          BoundsReq {
-            isGetBase = s.opcode `is` [CGetBase]
-          , isGetLen = s.opcode `is` [CGetLen]
-          , isSetBounds = s.opcode `is` [CSetBounds]
-          , isSetBoundsExact = s.opcode `is` [CSetBoundsExact]
-          , isCRAM = s.opcode `is` [CRAM]
-          , isCRRL = s.opcode `is` [CRRL]
-          , cap = s.capA.capMem
-          , len = if s.opcode `is` [CSetBounds, CSetBoundsExact]
+        sfu.put
+          SFUReq {
+            kind = tag #bounds SFUBoundsReq {
+                                 isGetBase = s.opcode `is` [CGetBase]
+                               , isGetLen = s.opcode `is` [CGetLen]
+                               , isSetBounds = s.opcode `is` [CSetBounds]
+                               , isSetBoundsExact =
+                                   s.opcode `is` [CSetBoundsExact]
+                               , isCRAM = s.opcode `is` [CRAM]
+                               , isCRRL = s.opcode `is` [CRRL]
+                               }
+          , opA = s.opA
+          , opB = if s.opcode `is` [CSetBounds, CSetBoundsExact]
                     then s.immOrOpB else s.opA
+          , capA = upper s.capA.capMem
           }
       else s.retry
 
