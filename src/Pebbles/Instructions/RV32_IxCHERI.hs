@@ -472,6 +472,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
                       , memReqIsFinal = true
                       }
                   , capMemReqUpperData = upper memCap
+                  , capMemReqAbort = false
                   }
 
       -- Memory fence
@@ -496,6 +497,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
                   }
               , capMemReqIsCapAccess = false
               , capMemReqUpperData = dontCare
+              , capMemReqAbort = false
               }
          else s.retry
 
@@ -690,12 +692,9 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
       $ s.capA.capMem )
 
   -- Address-setting logic
-  let oldCap =
-        if s.opcode `is` [CSetAddr, CIncOffset, JALR, LOAD, STORE, AMO]
-          then cA else s.pcc.capPipe
-  let oldCapMem =
-        if s.opcode `is` [CSetAddr, CIncOffset, JALR, LOAD, STORE, AMO]
-          then s.capA.capMem else s.pcc.capMem
+  let useA = s.opcode `is` [CSetAddr, CIncOffset, JALR, LOAD, STORE, AMO]
+  let oldCap = if useA then cA else s.pcc.capPipe
+  let oldCapMem = if useA then s.capA.capMem else s.pcc.capMem
   let newAddr0 = s.immOrOpB +
         (if s.opcode `is` [CSetAddr] then 0 else getAddr oldCap)
   let newAddr1 = upper newAddr0 #
@@ -765,6 +764,7 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
           else do
             -- Address being accessed
             let memAddr = newAddr0
+            --let memAddr = s.opA + s.immOrOpB
             -- Determine access width for memory request
             let accessWidth = getAccessWidth s.instr
             -- Is it a capability load/store?
@@ -812,7 +812,7 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
                             else exc_storeAMOAddrMisaligned
 {-
                   , memAddr .<. baseA
-                     .||. zeroExtend memAddr + zeroExtend numBytes .>. topA
+                     .||. zeroExtend memAddr .>. topA
                       --> cheri_exc_lengthViolation
 -}
                   , inv (isValidCap newCap.value .&&.
@@ -821,48 +821,46 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
                   ]
             -- Check for exception
             let isException = orList [cond | (cond, _) <- exceptionTable]
-            -- Trigger exception
-            if isException
-              then trap s (priorityIf exceptionTable dontCare)
-              else do
-                -- Currently the memory subsystem doesn't issue store
-                -- responses so we make sure to only suspend on a load
-                let hasResp = s.opcode `is` [LOAD]
-                         .||. s.opcode `is` [AMO] .&&. s.resultIndex .!=. 0
-                when hasResp do s.suspend
-                -- Send request to memory unit
-                put memReqs
-                  CapMemReq {
-                    capMemReqIsCapAccess = isCapAccess
-                  , capMemReqStd =
-                      MemReq {
-                        memReqAccessWidth =
-                          -- Capability accesses are serialised
-                          if isCapAccess then 2 else accessWidth
-                      , memReqOp =
-                          select
-                            [ s.opcode `is` [LOAD]  --> memLoadOp
-                            , s.opcode `is` [STORE] --> memStoreOp
-                            , s.opcode `is` [AMO]   --> memAtomicOp
-                            ]
-                      , memReqAMOInfo =
-                          AMOInfo {
-                            amoOp = getAMO s.instr
-                          , amoAcquire = getAcquire s.instr
-                          , amoRelease = getRelease s.instr
-                          , amoNeedsResp = hasResp
-                          }
-                      , memReqAddr = memAddr
-                      , memReqData = s.opB
-                          --if isCapAccess then truncate memCap else s.opB
-                      , memReqDataTagBit = isCapAccess .&&. memCapTag
-                        -- Mask to be applied to tag bit of loaded capability
-                      , memReqDataTagBitMask = permsA.permitLoadCap
-                      , memReqIsUnsigned = getIsUnsignedLoad s.instr
-                      , memReqIsFinal = true
+            when isException do
+              trap s (priorityIf exceptionTable dontCare)
+            -- Currently the memory subsystem doesn't issue store
+            -- responses so we make sure to only suspend on a load
+            let hasResp = s.opcode `is` [LOAD]
+                     .||. s.opcode `is` [AMO] .&&. s.resultIndex .!=. 0
+            when hasResp do s.suspend
+            -- Send request to memory unit
+            put memReqs
+              CapMemReq {
+                capMemReqIsCapAccess = isCapAccess
+              , capMemReqStd =
+                  MemReq {
+                    memReqAccessWidth =
+                      -- Capability accesses are serialised
+                      if isCapAccess then 2 else accessWidth
+                  , memReqOp =
+                      select
+                        [ s.opcode `is` [LOAD]  --> memLoadOp
+                        , s.opcode `is` [STORE] --> memStoreOp
+                        , s.opcode `is` [AMO]   --> memAtomicOp
+                        ]
+                  , memReqAMOInfo =
+                      AMOInfo {
+                        amoOp = getAMO s.instr
+                      , amoAcquire = getAcquire s.instr
+                      , amoRelease = getRelease s.instr
+                      , amoNeedsResp = hasResp
                       }
-                  , capMemReqUpperData = upper memCap
+                  , memReqAddr = memAddr
+                  , memReqData = s.opB
+                  , memReqDataTagBit = isCapAccess .&&. memCapTag
+                    -- Mask to be applied to tag bit of loaded capability
+                  , memReqDataTagBitMask = permsA.permitLoadCap
+                  , memReqIsUnsigned = getIsUnsignedLoad s.instr
+                  , memReqIsFinal = true
                   }
+              , capMemReqUpperData = upper memCap
+              , capMemReqAbort = isException
+              }
 
       -- Memory fence
       when (s.opcode `is` [FENCE]) do
@@ -886,6 +884,7 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
                   }
               , capMemReqIsCapAccess = false
               , capMemReqUpperData = dontCare
+              , capMemReqAbort = false
               }
          else s.retry
 

@@ -36,14 +36,14 @@ data BoundsReq cap =
   } deriving (Generic, Interface, Bits)
 
 -- | Bounds unit functionality
-boundsUnit :: BoundsReq CapPipe -> ResumeReq
+boundsUnit :: BoundsReq Cap -> ResumeReq
 boundsUnit req =
   ResumeReq {
     resumeReqData =
       select
-        [ req.isGetBase --> boundsInfo.base
+        [ req.isGetBase --> req.cap.capBase
         , req.isGetLen -->
-            if at @32 boundsInfo.length then ones else lower boundsInfo.length
+            if at @32 req.cap.capLength then ones else lower req.cap.capLength
         , req.isSetBounds .||. req.isSetBoundsExact --> lower finalCap
         , req.isCRAM --> sbres.mask
         , req.isCRRL --> sbres.length ]
@@ -55,22 +55,21 @@ boundsUnit req =
                (finalCapTag # upper finalCap)
     }
   where
-   addr = getAddr req.cap
-   sbres = setBoundsCombined req.cap req.len
-   boundsInfo = getBoundsInfo req.cap
+   addr = getAddr req.cap.capPipe
+   sbres = setBoundsCombined req.cap.capPipe req.len
    invalidate =
      orList
-       [ inv (isValidCap req.cap)
-       , isSealed req.cap
-       , addr .<. boundsInfo.base
-       , zeroExtend addr + zeroExtend req.len .>. boundsInfo.top
+       [ inv (isValidCap req.cap.capPipe)
+       , isSealed req.cap.capPipe
+       , addr .<. req.cap.capBase
+       , zeroExtend addr + zeroExtend req.len .>. req.cap.capTop
        , req.isSetBoundsExact .&&. inv sbres.exact
        ]
-   validCap = isValidCap req.cap .&&. inv invalidate
+   validCap = isValidCap req.cap.capPipe .&&. inv invalidate
    (finalCapTag, finalCap) = toMem (setValidCap sbres.cap validCap)
 
-toCapPipe :: BoundsReq CapMem -> BoundsReq CapPipe
-toCapPipe (BoundsReq {..}) = BoundsReq {cap = fromMem (unpack cap), ..}
+toCap :: BoundsReq CapMem -> BoundsReq Cap
+toCap (BoundsReq {..}) = BoundsReq {cap = decodeCapMem cap, ..}
 
 -- | Bounds unit interface
 type BoundsUnit t_id =
@@ -102,7 +101,7 @@ makeVecBoundsUnit = do
         Sink {
           canPut = inputQueue.notFull
         , put = \(info, vec) ->
-            inputQueue.enq (info, V.map (fmap toCapPipe) vec)
+            inputQueue.enq (info, V.map (fmap toCap) vec)
         }
     , resps = toSource resultQueue
     }

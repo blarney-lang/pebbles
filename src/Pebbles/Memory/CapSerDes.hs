@@ -38,7 +38,7 @@ makeCapMemReqSerialiser memReqSink = do
         then do
           -- Put the second (final) flits of the serialised requests
           let stdReqs =
-                [ Option valid
+                [ Option (valid .&&. inv req.capMemReqAbort)
                     req.capMemReqStd {
                       memReqData = req.capMemReqUpperData
                     , memReqAddr = req.capMemReqStd.memReqAddr + 4
@@ -53,7 +53,7 @@ makeCapMemReqSerialiser memReqSink = do
         else do
           -- A capability access will require serialisation
           let isCapAccess = orList
-                [ valid .&&. r.capMemReqIsCapAccess
+                [ valid .&&. r.capMemReqIsCapAccess .&&. inv r.capMemReqAbort
                 | Option valid r <- toList reqs ]
           busy <== isCapAccess
           -- Consume input request
@@ -78,7 +78,6 @@ makeCapMemReqSerialiser memReqSink = do
                             scal.scalarisedVal
           -- Produce output request
           memReqSink.put (id, fromList stdReqs, stdScal)
-
 
   return (toSink reqQueue)
 

@@ -165,6 +165,9 @@ data CapMemReq =
     -- ^ Are we accessing a capability?
   , capMemReqUpperData :: Bit 32
     -- ^ Extra data field for capability store
+  , capMemReqAbort :: Bit 1
+    -- ^ Abort memory request?
+    -- (Used to improve Fmax of complex CHERI exception conditions)
   } deriving (Generic, Interface, Bits)
 
 -- | Convert 'MemReq's to 'CapMemReq's, ignoring capability meta-data
@@ -174,4 +177,5 @@ toCapMemReq req =
     capMemReqStd = req
   , capMemReqIsCapAccess = false
   , capMemReqUpperData = dontCare
+  , capMemReqAbort = false
   }
