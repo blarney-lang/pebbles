@@ -112,7 +112,7 @@ regFileInt :: RegFileId = 1
 regFileCapMeta :: RegFileId = 2
 
 -- | Upper bound on number of instruction mnemonics used by the decoder
-type MaxMnemonics = 64
+type MaxMnemonics = 80
 
 -- | Bit vector indentifying one or more active mnemonics
 type MnemonicVec = Bit MaxMnemonics

@@ -182,6 +182,8 @@ data SIMTPipelineOuts =
     , simtScalarisedOpB :: ScalarisedOperand
       -- ^ Scalarised operand B of instruction currently in vector
       -- pipeline's execute stage
+    , simtOpcode :: MnemonicVec
+      -- ^ Opcode for instruction currently in execute stage (vector pipeline)
   }
 
 -- | Per-thread state
@@ -2098,6 +2100,7 @@ makeSIMTPipeline c inputs =
           , regFileId = regFileIntCap
           }
       , simtScalarisedOpB = scalarisedOperandB5
+      , simtOpcode = packTagMap tagMap5
       }
 
 -- Barrier release unit

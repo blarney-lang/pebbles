@@ -44,6 +44,25 @@ data Mnemonic =
     -- A extension
   | AMO
 
+    -- F extension
+  | FADD
+  | FSUB
+  | FMUL
+  | FDIV
+  | FMIN
+  | FMAX
+  | FSQRT
+  | FCVT_W_S     -- Float to signed int
+  | FCVT_WU_S    -- Float to unsigned int
+  | FCVT_S_W     -- Signed int to float
+  | FCVT_S_WU    -- Unsigned int to float
+  | FEQ
+  | FLT
+  | FLE
+  | FSGNJ_S
+  | FSGNJN_S
+  | FSGNJX_S
+
     -- CHERI extension
   | CGetPerm
   | CGetType
