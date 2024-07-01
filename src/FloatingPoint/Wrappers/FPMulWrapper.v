@@ -1,5 +1,5 @@
 module FPMulWrapper (
-    input  clock
+    input  clock,
     input  reset,
     input  wire [31:0] a,
     input  wire [31:0] b,
@@ -12,5 +12,5 @@ module FPMulWrapper (
   , .a(a)
   , .b(b)
   , .q(q)
-  )
+  );
 endmodule
