@@ -86,11 +86,8 @@ data FPUToken n t_id =
 
 -- | Vector FPU
 makeVecFPU ::
-  forall n t_id. (KnownNat n, Bits t_id) =>
-       Bool
-       -- ^ Use native hard FP multiplier?
-    -> Module (VecFPU n t_id)
-makeVecFPU useHardMul = do
+  forall n t_id. (KnownNat n, Bits t_id) => Module (VecFPU n t_id)
+makeVecFPU = do
     -- Request queue
     reqQueue :: Queue (t_id, FPUOpcode, Vec n (Option FPUReq)) <-
       makePipelineQueue 1
@@ -105,7 +102,7 @@ makeVecFPU useHardMul = do
     -- Latencies of FPU operations
     let latencies =
           [ 3                             -- Add/Sub
-          , if useHardMul then 4 else 3   -- Mul
+          , 3                             -- Mul
           , 32                            -- Div
           , 16                            -- Sqrt
           , 1                             -- Min
@@ -126,7 +123,7 @@ makeVecFPU useHardMul = do
           [ -- Add/Sub (control bit high means sub, else add)
             \req -> fpAddSub req.ctrl req.opA req.opB
             -- Mul
-          , \req -> (if useHardMul then fpHardMul else fpMul) req.opA req.opB
+          , \req -> fpMul req.opA req.opB
             -- Div
           , \req -> fpDiv req.opA req.opB
             -- Sqrt
@@ -219,12 +216,9 @@ makeVecFPU useHardMul = do
       }
 
 -- | Single FPU
-makeFPU :: Bits t_id =>
-     Bool
-     -- ^ Use native hard FP multiplier?
-  -> Module (FPU t_id)
-makeFPU useHardMul = do
-  vecFPU <- makeVecFPU @1 useHardMul
+makeFPU :: Bits t_id => Module (FPU t_id)
+makeFPU = do
+  vecFPU <- makeVecFPU @1
   return
     Server {
       reqs  = mapSink (\(id, req) ->

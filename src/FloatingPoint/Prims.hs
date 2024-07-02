@@ -135,19 +135,3 @@ fpFromInt33 a = FromBV q
       }
     [q] = makePrim custom [toBV a]
                           [Just "q"]
-
-fpHardMul :: Bit 32 -> Bit 32 -> Bit 32
-fpHardMul a b = FromBV q
-  where
-    custom =
-      Custom {
-        customName      = "FPHardMulWrapper"
-      , customInputs    = [("ay", 32), ("az", 32), ("ena", 1)]
-      , customOutputs   = [("result", 32)]
-      , customParams    = []
-      , customIsClocked = True
-      , customResetable = True
-      , customNetlist   = Nothing
-      }
-    [q] = makePrim custom [toBV a, toBV b, constBV 1 1]
-                          [Just "result"]
