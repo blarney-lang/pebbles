@@ -12,7 +12,7 @@ extern "C" {
 uint32_t c_FPAddSub(int sel, uint32_t a, uint32_t b) {
   float add = _toFloat(a) + _toFloat(b);
   float sub = _toFloat(a) - _toFloat(b);
-  return sel ? _fromFloat(sub) : _fromFloat(add);
+  return sel ? _fromFloat(add) : _fromFloat(sub);
 }
 
 uint32_t c_FPMul(uint32_t a, uint32_t b) {

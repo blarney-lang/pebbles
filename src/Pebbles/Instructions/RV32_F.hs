@@ -95,7 +95,7 @@ executeF fpu s = do
           , opA    = s.opA
           , opB    = s.opB
           , ctrl   = select [
-                       s.opcode `is` [FSUB] --> true
+                       s.opcode `is` [FADD] --> true
                      , s.opcode `is` [FCVT_S_WU] --> true
                      ]
           } 
