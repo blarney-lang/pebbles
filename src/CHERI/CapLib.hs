@@ -9,6 +9,7 @@ module CHERI.CapLib
   , nullCapMemMetaInteger
   , Cap(..)
   , decodeCapPipe
+  , decodeCapPipe'
   , decodeCapMem
   , almightyCapPipeVal
   , nullCapPipeVal

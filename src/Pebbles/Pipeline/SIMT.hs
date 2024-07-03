@@ -868,7 +868,8 @@ makeSIMTPipeline c inputs =
     let state3 = stage2Delay state2
     let pcc3 = stage2Delay $
           if c.useSharedPCC
-            then decodeCapPipe (setAddr pccSharedA.out state2.simtPC).value
+            then let cap = (setAddr pccSharedA.out state2.simtPC).value in
+                   decodeCapPipe' (pack $ toMem cap) cap
             else decodeCapMem (pcc2 # state2.simtPC)
     let spill3 = stage2Delay spill2
     let spillFrom3 = stage2Delay spillFrom2
