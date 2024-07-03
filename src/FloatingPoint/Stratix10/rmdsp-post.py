@@ -43,8 +43,9 @@ for line in f.readlines():
     output.append("IF (clk'EVENT AND clk = '1') THEN\n")
     output.append("  " + reg1 + " <= std_logic_vector(unsigned(" + ax + ")" +
                   " * unsigned(" + ay + "));\n")
-    output.append("  " + reg2 + " <= " + reg1 + ";\n")
-    output.append("  " + resulta + " <= " + reg2 + ";\n")
+    #output.append("  " + reg2 + " <= " + reg1 + ";\n")
+    #output.append("  " + resulta + " <= " + reg2 + ";\n")
+    output.append("  " + resulta + " <= " + reg1 + ";\n")
     output.append("END IF;\n")
     output.append("END PROCESS;\n")
 f.close()

@@ -86,8 +86,8 @@ data FPUToken n t_id =
 
 -- | Vector FPU
 makeVecFPU ::
-  forall n t_id. (KnownNat n, Bits t_id) => Module (VecFPU n t_id)
-makeVecFPU = do
+  forall n t_id. (KnownNat n, Bits t_id) => Bool -> Module (VecFPU n t_id)
+makeVecFPU disableHardBlocks = do
     -- Request queue
     reqQueue :: Queue (t_id, FPUOpcode, Vec n (Option FPUReq)) <-
       makePipelineQueue 1
@@ -101,18 +101,18 @@ makeVecFPU = do
 
     -- Latencies of FPU operations
     let latencies =
-          [ 3                             -- Add/Sub
-          , 3                             -- Mul
-          , 32                            -- Div
-          , 16                            -- Sqrt
-          , 1                             -- Min
-          , 1                             -- Max
-          , 3                             -- ToInt
-          , 3                             -- ToUInt
-          , 7                             -- FromInt
-          , 1                             -- EQ
-          , 2                             -- LT
-          , 2                             -- LE
+          [ if disableHardBlocks then 10 else 3  -- Add/Sub
+          , if disableHardBlocks then 9  else 3  -- Mul
+          , 32                                   -- Div
+          , 16                                   -- Sqrt
+          , 1                                    -- Min
+          , 1                                    -- Max
+          , 3                                    -- ToInt
+          , 3                                    -- ToUInt
+          , 7                                    -- FromInt
+          , 1                                    -- EQ
+          , 2                                    -- LT
+          , 2                                    -- LE
           ]
 
     -- Check latencies
@@ -216,9 +216,9 @@ makeVecFPU = do
       }
 
 -- | Single FPU
-makeFPU :: Bits t_id => Module (FPU t_id)
-makeFPU = do
-  vecFPU <- makeVecFPU @1
+makeFPU :: Bits t_id => Bool -> Module (FPU t_id)
+makeFPU disableHardBlocks = do
+  vecFPU <- makeVecFPU @1 disableHardBlocks
   return
     Server {
       reqs  = mapSink (\(id, req) ->
