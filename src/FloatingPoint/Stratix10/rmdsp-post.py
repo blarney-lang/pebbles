@@ -39,8 +39,10 @@ for line in f.readlines():
     count = count+1
     reg1 = resulta + "_1";
     reg2 = resulta + "_2";
+    reg3 = resulta + "_3";
     decls.append("signal " + reg1 + " : " + types[resulta] + ";\n")
     decls.append("signal " + reg2 + " : " + types[resulta] + ";\n")
+    decls.append("signal " + reg3 + " : " + types[resulta] + ";\n")
     output.append("mul_" + str(count) + " : PROCESS (clk)\n")
     output.append("BEGIN\n")
     output.append("IF (clk'EVENT AND clk = '1') THEN\n")
@@ -52,9 +54,9 @@ for line in f.readlines():
     else:
       product = "unsigned(" + ax + ") * unsigned(" + ay + ")"
     output.append("  " + reg1 + " <= std_logic_vector(" + product + ");\n")
-    #output.append("  " + reg2 + " <= " + reg1 + ";\n")
-    #output.append("  " + resulta + " <= " + reg2 + ";\n")
-    output.append("  " + resulta + " <= " + reg1 + ";\n")
+    output.append("  " + reg2 + " <= " + reg1 + ";\n")
+    output.append("  " + reg3 + " <= " + reg2 + ";\n")
+    output.append("  " + resulta + " <= " + reg3 + ";\n")
     output.append("END IF;\n")
     output.append("END PROCESS;\n")
 f.close()
