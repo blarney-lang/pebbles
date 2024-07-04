@@ -5,7 +5,9 @@ module FPFromUIntWrapper (
     output wire [31:0] q
   );
 
-  FPFromUInt FPFromUIntInst (
+  parameter LATENCY = 6;
+
+  FPFromUInt#(.LATENCY(LATENCY)) FPFromUIntInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

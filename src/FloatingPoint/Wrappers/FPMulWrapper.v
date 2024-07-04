@@ -6,7 +6,9 @@ module FPMulWrapper (
     output wire [31:0] q
   );
 
-  FPMul FPMulInst (
+  parameter LATENCY = 3;
+
+  FPMul#(.LATENCY(LATENCY)) FPMulInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

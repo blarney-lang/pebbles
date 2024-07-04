@@ -6,7 +6,9 @@ module FPMinWrapper (
     output wire [31:0] q
   );
 
-  FPMin FPMinInst (
+  parameter LATENCY = 1;
+
+  FPMin#(.LATENCY(LATENCY)) FPMinInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

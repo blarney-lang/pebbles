@@ -6,7 +6,9 @@ module FPMaxWrapper (
     output wire [31:0] q
   );
 
-  FPMax FPMaxInst (
+  parameter LATENCY = 1;
+
+  FPMax#(.LATENCY(LATENCY)) FPMaxInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

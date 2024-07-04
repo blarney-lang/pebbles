@@ -121,30 +121,30 @@ makeVecFPU disableHardBlocks = do
     -- Function of each FPU operation
     let funcs :: [FPUReq -> Bit 32] = 
           [ -- Add/Sub (control bit high means sub, else add)
-            \req -> fpAddSub req.ctrl req.opA req.opB
+            \req -> fpAddSub (latencies !! 0) req.ctrl req.opA req.opB
             -- Mul
-          , \req -> fpMul req.opA req.opB
+          , \req -> fpMul (latencies !! 1) req.opA req.opB
             -- Div
-          , \req -> fpDiv req.opA req.opB
+          , \req -> fpDiv (latencies !! 2) req.opA req.opB
             -- Sqrt
-          , \req -> fpSqrt req.opA
+          , \req -> fpSqrt (latencies !! 3) req.opA
             -- Min
-          , \req -> fpMin req.opA req.opB
+          , \req -> fpMin (latencies !! 4) req.opA req.opB
             -- Max
-          , \req -> fpMax req.opA req.opB
+          , \req -> fpMax (latencies !! 5) req.opA req.opB
             -- ToInt
-          , \req -> fpToInt req.opA
+          , \req -> fpToInt (latencies !! 6) req.opA
             -- ToUInt
-          , \req -> fpToUInt req.opA
+          , \req -> fpToUInt (latencies !! 7) req.opA
             -- FromInt (ctrl bit high means unsigned conversion, else signed)
           , \req -> let ext = if req.ctrl then false else at @31 req.opA in
-                      fpFromInt33 (ext # req.opA)
+                      fpFromInt33 (latencies !! 8) (ext # req.opA)
             -- EQ
-          , \req -> zeroExtend (fpCompareEq req.opA req.opB)
+          , \req -> zeroExtend (fpCompareEq (latencies !! 9) req.opA req.opB)
             -- LT
-          , \req -> zeroExtend (fpCompareLT req.opA req.opB)
+          , \req -> zeroExtend (fpCompareLT (latencies !! 10) req.opA req.opB)
             -- LE
-          , \req -> zeroExtend (fpCompareLTE req.opA req.opB)
+          , \req -> zeroExtend (fpCompareLTE (latencies !! 11) req.opA req.opB)
           ]
 
     -- A shift register of FPU tokens.

@@ -9,11 +9,22 @@ module FPMax (
 		output wire [31:0] q
 	);
 
-  reg [31:0] result;
+  parameter LATENCY = 1;
+  reg [31:0] result[LATENCY-1:0];
+
+  generate
+    genvar i;
+    for (i = 0; i < LATENCY-1; i=i+1) begin
+      always @(posedge clk) begin
+        result[i] <= result[i+1];
+      end
+    end
+  endgenerate
 
   always @(posedge clk) begin
-    result <= c_FPMax(a, b);
+    result[LATENCY-1] <= c_FPMax(a, b);
   end
 
-  assign q = result;
+  assign q = result[0];
+
 endmodule

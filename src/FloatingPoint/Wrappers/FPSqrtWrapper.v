@@ -5,7 +5,9 @@ module FPSqrtWrapper (
     output wire [31:0] q
   );
 
-  FPSqrt FPSqrtInst (
+  parameter LATENCY = 16;
+
+  FPSqrt#(.LATENCY(LATENCY)) FPSqrtInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

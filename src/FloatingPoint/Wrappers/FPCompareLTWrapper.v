@@ -6,7 +6,9 @@ module FPCompareLTWrapper (
     output wire [0:0]  q
   );
 
-  FPCompareLT FPCompareLTInst (
+  parameter LATENCY = 2;
+
+  FPCompareLT#(.LATENCY(LATENCY)) FPCompareLTInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

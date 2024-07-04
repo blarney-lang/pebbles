@@ -5,7 +5,9 @@ module FPToInt33Wrapper (
     output wire [32:0] q
   );
 
-  FPToInt33 FPToInt33Inst (
+  parameter LATENCY = 3;
+
+  FPToInt33#(.LATENCY(LATENCY)) FPToInt33Inst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

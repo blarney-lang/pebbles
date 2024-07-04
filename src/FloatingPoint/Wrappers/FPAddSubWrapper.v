@@ -7,7 +7,9 @@ module FPAddSubWrapper (
     input  wire [0:0]  opSel
   );
 
-  FPAddSub FPAddSubInst (
+  parameter LATENCY = 3;
+
+  FPAddSub#(.LATENCY(LATENCY)) FPAddSubInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

@@ -21,6 +21,7 @@ for line in f.readlines():
     types[m.group(1)] = m.group(2)
   if not in_mac_inst and re.search(": fourteennm_mac", line):
     in_mac_inst = True
+    signed_x = False
   if in_mac_inst:
     output.append("-- " + line)
     m = re.search(" ax => (.+),", line)
@@ -29,6 +30,8 @@ for line in f.readlines():
     if m: ay = m.group(1)
     m = re.search(" resulta => (.+)", line)
     if m: resulta = m.group(1)
+    if re.search(" signed_max => \"true\"", line):
+      signed_x = True
   else:
     output.append(line)
   if in_mac_inst and re.search("\);", line):
@@ -41,8 +44,14 @@ for line in f.readlines():
     output.append("mul_" + str(count) + " : PROCESS (clk)\n")
     output.append("BEGIN\n")
     output.append("IF (clk'EVENT AND clk = '1') THEN\n")
-    output.append("  " + reg1 + " <= std_logic_vector(unsigned(" + ax + ")" +
-                  " * unsigned(" + ay + "));\n")
+    if signed_x:
+      product = ("resize("
+                   + "signed(" + ax + "(" + ax + "'high) & signed(" + ax + "))"
+                   + " * signed(\"0\" & " + ay + "), "
+                   + resulta + "'length)")
+    else:
+      product = "unsigned(" + ax + ") * unsigned(" + ay + ")"
+    output.append("  " + reg1 + " <= std_logic_vector(" + product + ");\n")
     #output.append("  " + reg2 + " <= " + reg1 + ";\n")
     #output.append("  " + resulta + " <= " + reg2 + ";\n")
     output.append("  " + resulta + " <= " + reg1 + ";\n")

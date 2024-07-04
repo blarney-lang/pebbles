@@ -5,7 +5,9 @@ module FPToUIntWrapper (
     output wire [31:0] q
   );
 
-  FPToUInt FPToUIntInst (
+  parameter LATENCY = 3;
+
+  FPToUInt#(.LATENCY(LATENCY)) FPToUIntInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

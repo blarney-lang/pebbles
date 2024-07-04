@@ -6,7 +6,9 @@ module FPDivWrapper (
     output wire [31:0] q
   );
 
-  FPDiv FPDivInst (
+  parameter LATENCY = 32;
+
+  FPDiv#(.LATENCY(LATENCY)) FPDivInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)

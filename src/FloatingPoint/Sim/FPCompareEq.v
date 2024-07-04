@@ -9,11 +9,21 @@ module FPCompareEq (
 		output wire [0:0]  q       //      q.q
 	);
 
-  reg [31:0] result;
+  parameter LATENCY = 1;
+  reg [31:0] result[LATENCY-1:0];
+
+  generate
+    genvar i;
+    for (i = 0; i < LATENCY-1; i=i+1) begin
+      always @(posedge clk) begin
+        result[i] <= result[i+1];
+      end
+    end
+  endgenerate
 
   always @(posedge clk) begin
-    result <= c_FPCompareEq(a, b);
+    result[LATENCY-1] <= c_FPCompareEq(a, b);
   end
 
-  assign q = result[0];
+  assign q = result[0][0];
 endmodule
