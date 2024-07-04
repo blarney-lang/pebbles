@@ -8,6 +8,7 @@ module FPCompareLTEWrapper (
 
   parameter LATENCY = 2;
 
+`ifdef _SIM_
   FPCompareLTE#(.LATENCY(LATENCY)) FPCompareLTEInst (
     .clk(clock)
   , .areset(reset)
@@ -15,4 +16,13 @@ module FPCompareLTEWrapper (
   , .b(b)
   , .q(q)
   );
+`else
+  FPCompareLTE FPCompareLTEInst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .b(b)
+  , .q(q)
+  );
+`endif
 endmodule

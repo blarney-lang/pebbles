@@ -8,6 +8,7 @@ module FPMinWrapper (
 
   parameter LATENCY = 1;
 
+`ifdef _SIM_
   FPMin#(.LATENCY(LATENCY)) FPMinInst (
     .clk(clock)
   , .areset(reset)
@@ -15,4 +16,13 @@ module FPMinWrapper (
   , .b(b)
   , .q(q)
   );
+`else
+  FPMin FPMinInst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .b(b)
+  , .q(q)
+  );
+`endif
 endmodule

@@ -46,7 +46,7 @@ for line in f.readlines():
     output.append("IF (clk'EVENT AND clk = '1') THEN\n")
     if signed_x:
       product = ("resize("
-                   + "signed(" + ax + "(" + ax + "'high) & signed(" + ax + "))"
+                   + "signed(" + ax + "(" + ax + "'high) & " + ax + ")"
                    + " * signed(\"0\" & " + ay + "), "
                    + resulta + "'length)")
     else:

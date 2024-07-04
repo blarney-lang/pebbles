@@ -7,10 +7,19 @@ module FPSqrtWrapper (
 
   parameter LATENCY = 16;
 
+`ifdef _SIM_
   FPSqrt#(.LATENCY(LATENCY)) FPSqrtInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)
   , .q(q)
   );
+`else
+  FPSqrt FPSqrtInst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .q(q)
+  );
+`endif
 endmodule

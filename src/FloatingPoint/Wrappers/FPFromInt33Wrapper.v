@@ -7,10 +7,19 @@ module FPFromInt33Wrapper (
 
   parameter LATENCY = 7;
 
+`ifdef _SIM_
   FPFromInt33#(.LATENCY(LATENCY)) FPFromInt33Inst (
     .clk(clock)
   , .areset(reset)
   , .a(a)
   , .q(q)
   );
+`else
+  FPFromInt33 FPFromInt33Inst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .q(q)
+  );
+`endif
 endmodule

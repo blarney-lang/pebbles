@@ -7,10 +7,19 @@ module FPToIntWrapper (
 
   parameter LATENCY = 3;
 
+`ifdef _SIM_
   FPToInt#(.LATENCY(LATENCY)) FPToIntInst (
     .clk(clock)
   , .areset(reset)
   , .a(a)
   , .q(q)
   );
+`else
+  FPToInt FPToIntInst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .q(q)
+  );
+`endif
 endmodule

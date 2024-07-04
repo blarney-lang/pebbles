@@ -8,6 +8,7 @@ module FPDivWrapper (
 
   parameter LATENCY = 32;
 
+`ifdef _SIM_
   FPDiv#(.LATENCY(LATENCY)) FPDivInst (
     .clk(clock)
   , .areset(reset)
@@ -15,4 +16,13 @@ module FPDivWrapper (
   , .b(b)
   , .q(q)
   );
+`else
+  FPDiv FPDivInst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .b(b)
+  , .q(q)
+  );
+`endif
 endmodule

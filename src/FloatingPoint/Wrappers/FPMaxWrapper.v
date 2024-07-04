@@ -8,6 +8,7 @@ module FPMaxWrapper (
 
   parameter LATENCY = 1;
 
+`ifdef _SIM_
   FPMax#(.LATENCY(LATENCY)) FPMaxInst (
     .clk(clock)
   , .areset(reset)
@@ -15,4 +16,13 @@ module FPMaxWrapper (
   , .b(b)
   , .q(q)
   );
+`else
+  FPMax FPMaxInst (
+    .clk(clock)
+  , .areset(reset)
+  , .a(a)
+  , .b(b)
+  , .q(q)
+  );
+`endif
 endmodule
