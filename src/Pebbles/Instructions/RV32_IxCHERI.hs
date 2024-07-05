@@ -812,11 +812,10 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
                             else exc_storeAMOAddrMisaligned
 {-
                   , memAddr .<. baseA
-                     .||. zeroExtend memAddr .>. topA
+                      .||. zeroExtend memAddr + zeroExtend numBytes .>. topA
                       --> cheri_exc_lengthViolation
 -}
-                  , inv (isValidCap newCap.value .&&.
-                           isInBounds newCap.value false)
+                  , inv (isAccessInBounds newCap.value accessWidth)
                       --> cheri_exc_lengthViolation
                   ]
             -- Check for exception

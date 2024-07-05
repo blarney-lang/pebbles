@@ -602,6 +602,16 @@ getBoundsBitsCapMem capMem =
       [toBV $ pack capMem]
       [Just "wrap64_getBoundsBitsCapMem"]
 
+isAccessInBounds :: Bit 91 -> Bit 2 -> Bit 1
+isAccessInBounds capPipe logAccessWidth = 
+  unpack $ FromBV $ head $ makePrim (Custom
+    "module_wrap64_isAccessInBounds"
+    [("wrap64_isAccessInBounds_capPipe", 91), ("wrap64_isAccessInBounds_logAccessWidth", 2)]
+    [("wrap64_isAccessInBounds", 1)]
+    [] False False Nothing) 
+      [toBV $ pack capPipe, toBV $ pack logAccessWidth]
+      [Just "wrap64_isAccessInBounds"]
+
 nullCapMemInteger :: Integer = 0
 almightyCapMemInteger :: Integer = 0x1FFF0000000000000
 nullCapPipeInteger :: Integer = 0x00000000000001F690003F0
