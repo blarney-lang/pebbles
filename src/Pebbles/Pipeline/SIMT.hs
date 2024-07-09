@@ -141,8 +141,11 @@ data SIMTPipelineConfig tag =
     -- ^ Round robin spill strategy
   , useSharedVectorScratchpad :: Bool
     -- ^ Share vector scatchpad between int and cap reg files?
-  , usesCap :: [tag]
-    -- ^ Instructions that use cap meta-data of register operands
+  , usesCapA :: [tag]
+    -- ^ Instructions that use cap meta-data of register operand A
+  , usesCapB :: MnemonicVec -> Bit 32 -> Bit 1
+    -- ^ Function to determine if instruction use cap meta-data of operand B
+  , shareCapSRFPort :: Bool
   }
 
 -- | SIMT pipeline inputs
@@ -284,6 +287,7 @@ makeSIMTPipeline c inputs =
                , useSharedVecSpad = Nothing
                , pipelineActive = pipelineActive.val
                , useInitValOpt = False
+               , sharePortB = False
                }
         else makeSIMTRegFile
                SIMTRegFileConfig {
@@ -312,6 +316,7 @@ makeSIMTPipeline c inputs =
 #endif
                    , pipelineActive = pipelineActive.val
                    , useInitValOpt = SIMTCapRFUseInitValOpt == 1
+                   , sharePortB = c.shareCapSRFPort
                    }
             else makeSIMTRegFile
                    SIMTRegFileConfig {
@@ -880,13 +885,17 @@ makeSIMTPipeline c inputs =
     let activeMask3 =
           if enableSpill then old activeMask2b.val else activeMask2b.val
     let (tagMap3, _) = matchMap False (c.decodeStage) instr3
-    let usesCapMetaData3 = 
+    let usesCapMetaDataA3 = 
           if enableCHERI && c.useSharedVectorScratchpad
             then spill3 .||. orList
                    [ Map.findWithDefault false tag tagMap3
-                   | tag <- c.usesCap ]
+                   | tag <- c.usesCapA ]
             else true
     let go3 = stage2Delay go2
+    let usesCapMetaDataB3 = 
+          if enableCHERI && (c.useSharedVectorScratchpad || c.shareCapSRFPort)
+            then go3 .&&. c.usesCapB (packTagMap tagMap3) instr3
+            else true
 
     -- Stage 3: Operand Fetch
     -- ======================
@@ -901,9 +910,8 @@ makeSIMTPipeline c inputs =
         regFile.loadB (warpId3, srcB instr3)
 
         -- Fetch capability meta-data from register file
-        when usesCapMetaData3 do
-          capRegFile.loadA (warpId3, fetchA3)
-          capRegFile.loadB (warpId3, srcB instr3)
+        when usesCapMetaDataA3 do capRegFile.loadA (warpId3, fetchA3)
+        when usesCapMetaDataB3 do capRegFile.loadB (warpId3, srcB instr3)
 
       -- Load eviction status of destination register
       when enableSpill do
@@ -930,7 +938,7 @@ makeSIMTPipeline c inputs =
               display "SIMT pipeline: PCC exception: code=" trapCode
 
       -- Handle reg file stall
-      when (enableCHERI && enableSpill && c.useSharedVectorScratchpad) do
+      when enableCHERI do
         when (go3 .&&. capRegFile.stall) do
           if spill3
             then (spillingWarps!warpId3) <== false
@@ -983,7 +991,8 @@ makeSIMTPipeline c inputs =
     let usesA = isFieldInUse "rs1" fieldMap4
     let usesB = isFieldInUse "rs2" fieldMap4
     let usesDest = isFieldInUse "rd" fieldMap4
-    let usesCap = loadDelay (delay false usesCapMetaData3)
+    let usesCapA = loadDelay (delay false usesCapMetaDataA3)
+    let usesCapB = loadDelay (delay false usesCapMetaDataB3)
     let usesA5 = delay false $ extra usesA
     let usesB5 = delay false $ extra usesB
     let usesDest5 = delay false $ extra usesDest
@@ -992,21 +1001,21 @@ makeSIMTPipeline c inputs =
     let needsDest4 = usesDest .&&. loadDelay (activeMask4.val .!=. ones)
     let unspill4 = if not enableSpill then false else orList [
             usesA .&&. regFile.evictedA
-          , usesA .&&. capRegFile.evictedA .&&. usesCap
+          , usesA .&&. capRegFile.evictedA .&&. usesCapA
           , usesB .&&. regFile.evictedB
-          , usesB .&&. capRegFile.evictedB .&&. usesCap
+          , usesB .&&. capRegFile.evictedB .&&. usesCapB
           , needsDest4 .&&. regFile.evictedStatus
           , needsDest4 .&&. capRegFile.evictedStatus ]
     let unspillTo4 = orList [
-            usesA .&&. capRegFile.evictedA .&&. usesCap
-          , usesB .&&. capRegFile.evictedB .&&. usesCap
+            usesA .&&. capRegFile.evictedA .&&. usesCapA
+          , usesB .&&. capRegFile.evictedB .&&. usesCapB
           , needsDest4 .&&. capRegFile.evictedStatus ]
     let srcA4 = srcA delayedInstr4
     let srcB4 = srcB delayedInstr4
     let dest4 = dst delayedInstr4
     let unspillReg4 = if unspillTo4
-          then (usesA .&&. capRegFile.evictedA .&&. usesCap) ? (srcA4,
-                  (usesB .&&. capRegFile.evictedB .&&. usesCap) ?
+          then (usesA .&&. capRegFile.evictedA .&&. usesCapA) ? (srcA4,
+                  (usesB .&&. capRegFile.evictedB .&&. usesCapB) ?
                      (srcB4, dest4))
           else (usesA .&&. regFile.evictedA) ? (srcA4,
                   (usesB .&&. regFile.evictedB) ? (srcB4, dest4))
@@ -1430,7 +1439,9 @@ makeSIMTPipeline c inputs =
       let handleResume = inputs.simtResumeReqs.canPeek .&&.
                            regFile.canStore writeIdx .&&.
                              capRegFile.canStore writeIdx .&&.
-                               inv spillSuccess6.val
+                               inv spillSuccess6.val .&&.
+                                 (if c.shareCapSRFPort
+                                    then inv usesCapMetaDataB3 else true)
 
       -- Write to int reg file?
       let writeInt = handleExecute .||. (handleResume .&&.
@@ -1444,6 +1455,9 @@ makeSIMTPipeline c inputs =
       when enableCHERI do
         when writeCapMeta do
           capRegFile.store writeIdx writeCapVec
+          when c.shareCapSRFPort do
+            when usesCapMetaDataB3 do
+              capRegFile.triggerStall
       -- Handle thread resumption
       when (inv handleExecute .&&. handleResume) do
         inputs.simtResumeReqs.consume
@@ -1494,7 +1508,10 @@ makeSIMTPipeline c inputs =
           (spillingWarps!warpId) <== false
         when spillSuccess6.val do
           if spillFrom6
-            then capRegFile.evict (warpId6, spillReg6)
+            then do capRegFile.evict (warpId6, spillReg6)
+                    when c.shareCapSRFPort do
+                      when usesCapMetaDataB3 do
+                        capRegFile.triggerStall
             else regFile.evict (warpId6, spillReg6)
 
     -- ===============

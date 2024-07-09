@@ -910,8 +910,8 @@ checkPCC cap =
 -- ==================
 
 -- Instructions that use the capability meta-data of their operand registers
-instrsThatUseCapMetaData :: [Mnemonic]
-instrsThatUseCapMetaData =
+instrsThatUseCapMetaDataA :: [Mnemonic]
+instrsThatUseCapMetaDataA =
   [ AUIPC, JALR
   , LOAD, STORE, AMO
   , CGetPerm, CGetType
@@ -924,3 +924,7 @@ instrsThatUseCapMetaData =
   , CMove, CClearTag
   , CSpecialRW, CSealEntry
   , CRRL, CRAM ]
+
+usesCapMetaDataB :: MnemonicVec -> Bit 32 -> Bit 1
+usesCapMetaDataB opcode instr =
+  (opcode `is` [STORE]) .&&. getAccessWidth instr .==. 3

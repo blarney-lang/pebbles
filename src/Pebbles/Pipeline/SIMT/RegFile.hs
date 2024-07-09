@@ -1,3 +1,5 @@
+{-# LANGUAGE RecordWildCards #-}
+
 -- SIMT register file implementations
 module Pebbles.Pipeline.SIMT.RegFile where
 
@@ -127,6 +129,8 @@ data SIMTRegFile t_logSize regWidth =
     -- ^ Use shared vector scratchpad
   , stall :: Bit 1
     -- ^ Stall load pipeline
+  , triggerStall :: Action ()
+    -- ^ Explicitly pulse the stall output wire
   }
 
 -- | Vector scratchpad can be shared between register files
@@ -176,6 +180,7 @@ makeNullSIMTRegFile = do
     , loadVecMask = \_ -> return ()
     , sharedVecSpad = error "Null SIMT regfile does not produce vec spad"
     , stall = false
+    , triggerStall = return ()
     }
 
 -- Plain register file implementation
@@ -261,6 +266,7 @@ makeSIMTRegFile opts = do
     , loadVecMask = \_ -> return ()
     , sharedVecSpad = error "SIMT regfile does not produce vec spad"
     , stall = false
+    , triggerStall = return ()
     }
 
 -- Basic scalarising implementation
@@ -306,6 +312,8 @@ data SIMTScalarisingRegFileConfig t_logSize regWidth =
     -- ^ Is processor pipeline active?
   , useInitValOpt :: Bool
     -- ^ Use initial value optimisation
+  , sharePortB :: Bool
+    -- ^ Share SRF port between operand B read and store read
   }
 
 -- | Scalarising implementation
@@ -315,6 +323,10 @@ makeSIMTScalarisingRegFile :: forall t_logSize regWidth.
      -- ^ Config options
   -> Module (SIMTRegFile t_logSize regWidth)
 makeSIMTScalarisingRegFile opts = do
+
+  staticAssert (not (opts.sharePortB && opts.useScalarUnit)) $
+     "makeSIMTScalarisingRegFile: sharePortB and useScalarUnit " ++
+     "cannot be (yet) be used together"
 
   -- Scalar register file (6 read ports, 2 write ports)
   (scalarRegFileA, scalarRegFileB) ::
@@ -328,7 +340,12 @@ makeSIMTScalarisingRegFile opts = do
          else return (nullRAM, nullRAM)
   (scalarRegFileE, scalarRegFileF) ::
     (RAM SIMTRegFileIdx (ScalarReg regWidth),
-     RAM SIMTRegFileIdx (ScalarReg regWidth)) <- makeQuadRAM
+     RAM SIMTRegFileIdx (ScalarReg regWidth)) <- 
+       if opts.sharePortB
+         then return ( case scalarRegFileB of
+                         RAM { .. } -> RAM { store = \_ _ -> return (), .. }
+                     , nullRAM )
+         else makeQuadRAM
 
   -- Vector scratchpad (banked)
   (vecSpadA, vecSpadB) ::
@@ -490,6 +507,9 @@ makeSIMTScalarisingRegFile opts = do
 
   -- Stall load pipeline (to handle shared vector scratchpad)
   loadStallWire <- makePulseWire
+
+  -- External trigger to stall pipeline (to handle shared SRF port)
+  explicitStallWire <- makePulseWire
 
   -- (TODO: don't issue load if not load wire not active?)
   always do
@@ -991,9 +1011,12 @@ makeSIMTScalarisingRegFile opts = do
                 }
             }
           Just spad -> spad
-    , stall = case opts.useSharedVecSpad of
-                Nothing -> false
-                Just spad -> loadStallWire.val
+    , stall = (if opts.sharePortB then explicitStallWire.val else false)
+                 .||. case opts.useSharedVecSpad of
+                        Nothing -> false
+                        Just spad -> loadStallWire.val
+    , triggerStall = if opts.sharePortB
+                       then explicitStallWire.pulse else return ()
     }
 
 -- Helper functions
