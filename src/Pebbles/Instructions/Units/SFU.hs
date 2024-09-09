@@ -89,7 +89,7 @@ makeSFU c
       divUnit <- if c.enDivUnit
         then makeFullDivUnit c.divLatency
         else return nullServer
-      boundsUnit <- if c.enDivUnit
+      boundsUnit <- if c.enBoundsUnit
         then makeBoundsUnit
         else return nullServer
 
