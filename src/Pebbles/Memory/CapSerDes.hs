@@ -74,7 +74,7 @@ makeCapMemReqSerialiser memReqSink = do
           let stdScal = fmap (\s ->
                           ScalarVal { val = scalTagBit # s.val
                                     , stride = s.stride
-                                    , partial = s.partial })
+                                    , mask = s.mask })
                             scal.scalarisedVal
           -- Produce output request
           memReqSink.put (id, fromList stdReqs, stdScal)

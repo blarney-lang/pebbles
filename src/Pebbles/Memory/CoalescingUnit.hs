@@ -448,7 +448,7 @@ makeCoalescingUnit opts memReqsStream dramResps sramResps = do
           -- Write vector is scalarisable
         , scalarVal3.val.valid
           -- And not partially scalarisable
-        , inv scalarVal3.val.val.partial.valid
+        , isMaskZero scalarVal3.val.val.mask
           -- Is the access bufferable?
         , canBuffer
           -- SameBlock strategy, with all lanes active
