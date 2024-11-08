@@ -78,6 +78,7 @@ data Mnemonic =
   | CIncOffset
   | CClearTag
   | CSetBounds
+  | CSetBoundsImm
   | CSetBoundsExact
   | CSub
   | CMove
