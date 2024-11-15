@@ -14,6 +14,7 @@ import qualified Blarney.Vector as V
 
 -- Pebbles imports
 import Pebbles.Pipeline.Interface
+import Pebbles.Instructions.Units.FPU
 import Pebbles.Instructions.Units.DivUnit
 import Pebbles.Instructions.Units.BoundsUnit
 
@@ -38,6 +39,7 @@ type SFUReqKind =
   TaggedUnion
     [ "div" ::: SFUDivReq
     , "bounds" ::: SFUBoundsReq
+    , "fp" ::: SFUFPReq
     ]
 
 -- Division request
@@ -63,6 +65,14 @@ data SFUBoundsReq =
   }
   deriving (Generic, Bits, Interface)
 
+-- Floating-point request
+data SFUFPReq =
+  SFUFPReq {
+    -- Division or square root?
+    isDiv :: Bit 1
+  }
+  deriving (Generic, Bits, Interface)
+
 -- SFU unit interface
 type SFU t_id =
   Server (t_id, SFUReq)
@@ -79,12 +89,14 @@ data SFUConfig =
     enDivUnit :: Bool
   , divLatency :: Int
   , enBoundsUnit :: Bool
+  , enFPUnit :: Bool
+  , disableHardFPBlocks :: Bool
   }
 
 -- Create SFU
 makeSFU :: Bits t_id => SFUConfig -> Module (SFU t_id)
 makeSFU c
-  | not (c.enDivUnit || c.enBoundsUnit) = return nullServer
+  | not (c.enDivUnit || c.enBoundsUnit || c.enFPUnit) = return nullServer
   | otherwise = do
       divUnit <- if c.enDivUnit
         then makeFullDivUnit c.divLatency
@@ -92,12 +104,16 @@ makeSFU c
       boundsUnit <- if c.enBoundsUnit
         then makeBoundsUnit
         else return nullServer
+      fpu <- if c.enFPUnit
+        then makeFPU c.disableHardFPBlocks True True
+        else return nullServer
 
       return
         Server {
           reqs =
             Sink {
-              canPut = divUnit.reqs.canPut .&&. boundsUnit.reqs.canPut
+              canPut = divUnit.reqs.canPut .&&. boundsUnit.reqs.canPut .&&.
+                         fpu.reqs.canPut
             , put = \(info, req) ->
                 if req.kind `is` #div
                   then do
@@ -110,7 +126,7 @@ makeSFU c
                           , divReqGetRemainder = kind.getRemainder
                           }
                     divUnit.reqs.put (info, divReq)
-                  else do
+                  else if req.kind `is` #bounds then do
                     let kind = untag #bounds req.kind
                     let boundsReq = 
                           BoundsReq {
@@ -124,8 +140,18 @@ makeSFU c
                           , len = req.opB
                           } 
                     boundsUnit.reqs.put (info, boundsReq)
+                  else do
+                    let kind = untag #fp req.kind
+                    let fpuReq =
+                          FPUReq {
+                            opcode = if kind.isDiv then fpuDivOp else fpuSqrtOp
+                          , opA = req.opA
+                          , opB = req.opB
+                          , ctrl = 0
+                          }
+                    fpu.reqs.put (info, fpuReq)
             }
-        , resps = divUnit.resps `mergeTwo` boundsUnit.resps
+        , resps = mergeTree [divUnit.resps, boundsUnit.resps, fpu.resps]
         }
 
 

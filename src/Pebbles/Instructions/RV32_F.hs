@@ -13,6 +13,7 @@ import Blarney.Queue
 import Blarney.Stream
 import Blarney.BitScan
 import Blarney.SourceSink
+import Blarney.TaggedUnion hiding (is)
 
 -- Pebbles imports
 import Pebbles.CSRs.CSRUnit
@@ -21,6 +22,10 @@ import Pebbles.Memory.Interface
 import Pebbles.Pipeline.Interface
 import Pebbles.Instructions.Mnemonics
 import Pebbles.Instructions.Units.FPU
+import Pebbles.Instructions.Units.SFU
+
+-- Haskell imports
+import Data.Maybe
 
 -- Decode stage
 -- ============
@@ -77,15 +82,23 @@ toFPUOpcode i =
 executeF ::
      Sink FPUReq
      -- ^ Access to floating-point unit
+  -> Maybe (Sink SFUReq)
+     -- ^ Access to SFU
   -> State
      -- ^ Pipeline state
   -> Action ()
-executeF fpu s = do
+executeF fpu mb_sfu s = do
+
+  -- Opcodes of floating-point operations except FDIV and FSQRT
+  let opcode = [FADD, FSUB, FMUL, FMIN, FMAX,
+                  FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
+                    FEQ, FLT, FLE]
+
+  -- Opcodes of floating-point operations implemented per lane
+  let perLaneOp = opcode ++ (if isNothing mb_sfu then [FDIV, FSQRT] else [])
 
   -- Send most instructions to the FPU
-  when (s.opcode `is` [FADD, FSUB, FMUL, FDIV, FSQRT, FMIN, FMAX,
-                       FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
-                       FEQ, FLT, FLE]) do
+  when (s.opcode `is` perLaneOp) do
     if fpu.canPut
       then do
         s.suspend
@@ -110,3 +123,23 @@ executeF fpu s = do
                   , s.opcode `is` [FSGNJX_S] --> at @31 s.opA .^. at @31 s.opB
                   ]
     s.result <== (newSign # lower s.opA)
+
+  -- Send some instructions to SFU
+  case mb_sfu of
+    Nothing -> return ()
+    Just sfu -> do
+      when (s.opcode `is` [FDIV, FSQRT]) do
+        if sfu.canPut
+          then do
+            s.suspend
+            sfu.put
+              SFUReq {
+                kind = tag #fp SFUFPReq {
+                                 isDiv = s.opcode `is` [FDIV]
+                               }
+              , opA = s.opA
+              , opB = s.opB
+              , capA = dontCare
+              }
+          else do
+            s.retry
