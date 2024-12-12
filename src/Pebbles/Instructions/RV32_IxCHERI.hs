@@ -753,7 +753,7 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
                                }
           , opA = s.opA
           , opB = if s.opcode `is` [CSetBoundsImm]
-                    then zeroExtend (getUImm s.opB)
+                    then zeroExtend (getUImm s.instr)
                     else if s.opcode `is` [CSetBounds, CSetBoundsExact]
                            then s.opB else s.opA
           , capA = upper s.capA.capMem
