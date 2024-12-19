@@ -57,12 +57,14 @@ boundsUnit req =
   where
    addr = getAddr req.cap.capPipe
    sbres = setBoundsCombined req.cap.capPipe req.len
+   last = (false # addr) + (false # req.len)
    invalidate =
      orList
-       [ inv (isValidCap req.cap.capPipe)
+       [ last .>. (true # 0) -- Forbid wrapping the address space
+                             -- so that we can use isAccessInBounds
        , isSealed req.cap.capPipe
        , addr .<. req.cap.capBase
-       , zeroExtend addr + zeroExtend req.len .>. req.cap.capTop
+       , last .>. req.cap.capTop
        , req.isSetBoundsExact .&&. inv sbres.exact
        ]
    validCap = isValidCap req.cap.capPipe .&&. inv invalidate

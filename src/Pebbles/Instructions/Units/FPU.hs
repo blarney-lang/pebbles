@@ -86,8 +86,9 @@ data FPUToken n t_id =
 
 -- | Vector FPU
 makeVecFPU ::
-  forall n t_id. (KnownNat n, Bits t_id) => Bool -> Module (VecFPU n t_id)
-makeVecFPU disableHardBlocks = do
+  forall n t_id. (KnownNat n, Bits t_id) =>
+    Bool -> Bool -> Bool -> Module (VecFPU n t_id)
+makeVecFPU disableHardBlocks enableDivSqrt inOrder = do
     -- Request queue
     reqQueue :: Queue (t_id, FPUOpcode, Vec n (Option FPUReq)) <-
       makePipelineQueue 1
@@ -125,9 +126,11 @@ makeVecFPU disableHardBlocks = do
             -- Mul
           , \req -> fpMul (latencies !! 1) req.opA req.opB
             -- Div
-          , \req -> fpDiv (latencies !! 2) req.opA req.opB
+          , \req -> if enableDivSqrt
+                      then fpDiv (latencies !! 2) req.opA req.opB else 0
             -- Sqrt
-          , \req -> fpSqrt (latencies !! 3) req.opA
+          , \req -> if enableDivSqrt
+                      then fpSqrt (latencies !! 3) req.opA else 0
             -- Min
           , \req -> fpMin (latencies !! 4) req.opA req.opB
             -- Max
@@ -166,7 +169,9 @@ makeVecFPU disableHardBlocks = do
         [ do let canInsert = reqQueue.canDeq
                         .&&. inv inflightCount.isFull
                         .&&. inv next.val.valid
-                        .&&. fromInteger i .==. latency
+                        .&&. fromIntegral i .==. latency
+                        .&&. (if not inOrder then true else 
+                               inv $ orList $ map (.val.valid) (drop i tokens))
              if canInsert
                then do
                  token <== some FPUToken {
@@ -216,9 +221,9 @@ makeVecFPU disableHardBlocks = do
       }
 
 -- | Single FPU
-makeFPU :: Bits t_id => Bool -> Module (FPU t_id)
-makeFPU disableHardBlocks = do
-  vecFPU <- makeVecFPU @1 disableHardBlocks
+makeFPU :: Bits t_id => Bool -> Bool -> Bool -> Module (FPU t_id)
+makeFPU disableHardBlocks enableDivSqrt inOrder = do
+  vecFPU <- makeVecFPU @1 disableHardBlocks enableDivSqrt inOrder
   return
     Server {
       reqs  = mapSink (\(id, req) ->

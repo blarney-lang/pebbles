@@ -80,7 +80,7 @@ decodeIxCHERI =
   , "0010001 rs2<5> rs1<5> 000 rd<5> 1011011" --> CIncOffset
   , "imm[11:0]      rs1<5> 001 rd<5> 1011011" --> CIncOffset
   , "0001000 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetBounds
-  , "imm[11:0]      rs1<5> 010 rd<5> 1011011" --> CSetBounds
+  , "uimm[11:0]     rs1<5> 010 rd<5> 1011011" --> CSetBoundsImm
   , "0001001 rs2<5> rs1<5> 000 rd<5> 1011011" --> CSetBoundsExact
   , "0010100 rs2<5> rs1<5> 000 rd<5> 1011011" --> SUB
   , "1111111 01010  rs1<5> 000 rd<5> 1011011" --> CMove
@@ -121,6 +121,9 @@ getAcquire = makeFieldSelector decodeAxCHERI "aq"
 
 getRelease :: Bit 32 -> Bit 1
 getRelease = makeFieldSelector decodeAxCHERI "rl"
+
+getUImm :: Bit 32 -> Bit 12
+getUImm = makeFieldSelector decodeIxCHERI "uimm"
 
 -- Execute stage (no shared bounds unit)
 -- =====================================
@@ -345,8 +348,11 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
   -- Bounds-setting instructions
   -- ---------------------------
 
-  when (s.opcode `is` [CSetBounds, CSetBoundsExact]) do
-    let newCap = setBounds cA s.immOrOpB
+  when (s.opcode `is` [CSetBounds, CSetBoundsImm, CSetBoundsExact]) do
+    let b = if s.opcode `is` [CSetBoundsImm]
+              then zeroExtend (getUImm s.instr)
+              else s.opB
+    let newCap = setBounds cA b
     let needExact = s.opcode `is` [CSetBoundsExact]
 
     -- Exception path
@@ -355,7 +361,7 @@ executeIxCHERI m_shiftUnit m_csrUnit m_memReqs s = do
     else if isSealed cA then
       trap s cheri_exc_sealViolation
     else if addrA .<. baseA .||.
-              zeroExtend addrA + zeroExtend (s.immOrOpB) .>. topA then
+              zeroExtend addrA + zeroExtend b .>. topA then
       trap s cheri_exc_lengthViolation
     else if needExact .&&. inv newCap.exact then
       trap s cheri_exc_representabilityViolation
@@ -728,7 +734,7 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
   -- Shared bounds unit instructions
   -- -------------------------------
 
-  when (s.opcode `is` [CGetBase, CGetLen, CSetBounds,
+  when (s.opcode `is` [CGetBase, CGetLen, CSetBounds, CSetBoundsImm,
                          CSetBoundsExact, CRRL, CRAM]) do
     if sfu.canPut
       then do
@@ -738,15 +744,18 @@ executeIxCHERIWithSharedBoundsUnit m_shiftUnit m_csrUnit m_memReqs sfu s = do
             kind = tag #bounds SFUBoundsReq {
                                  isGetBase = s.opcode `is` [CGetBase]
                                , isGetLen = s.opcode `is` [CGetLen]
-                               , isSetBounds = s.opcode `is` [CSetBounds]
+                               , isSetBounds =
+                                   s.opcode `is` [CSetBounds, CSetBoundsImm]
                                , isSetBoundsExact =
                                    s.opcode `is` [CSetBoundsExact]
                                , isCRAM = s.opcode `is` [CRAM]
                                , isCRRL = s.opcode `is` [CRRL]
                                }
           , opA = s.opA
-          , opB = if s.opcode `is` [CSetBounds, CSetBoundsExact]
-                    then s.immOrOpB else s.opA
+          , opB = if s.opcode `is` [CSetBoundsImm]
+                    then zeroExtend (getUImm s.instr)
+                    else if s.opcode `is` [CSetBounds, CSetBoundsExact]
+                           then s.opB else s.opA
           , capA = upper s.capA.capMem
           }
       else s.retry
@@ -920,7 +929,7 @@ instrsThatUseCapMetaDataA =
   , CGetFlags, CGetAddr
   , CAndPerm, CSetFlags
   , CSetAddr , CIncOffset
-  , CSetBounds, CSetBoundsExact
+  , CSetBounds, CSetBoundsImm, CSetBoundsExact
   , CMove, CClearTag
   , CSpecialRW, CSealEntry
   , CRRL, CRAM ]
